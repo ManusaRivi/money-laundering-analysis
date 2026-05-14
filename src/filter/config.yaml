@@ -1,0 +1,8 @@
+filter:
+  type: date
+  year: 2026
+  month: 9
+  day:
+    from: 1
+    to: 5
+  
