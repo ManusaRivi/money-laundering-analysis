@@ -4,27 +4,20 @@ import (
 	"log/slog"
 	"net"
 	"time"
+
+	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 )
 
-type ClientConfig struct {
-	ServerHost               string
-	ServerPort               string
-	InputFile                string
-	OutputFile               string
-	ConnectionAttempts       int
-	ConnectionAttemptDelayMs int
-}
-
 type Client struct {
-	config ClientConfig
+	config *config.ClientConfig
 	conn   net.Conn
 }
 
-func NewClient(config ClientConfig) (*Client, error) {
-	conn, err := connectToServer(config.ServerHost,
-		config.ServerPort,
-		config.ConnectionAttempts,
-		config.ConnectionAttemptDelayMs,
+func NewClient(config *config.ClientConfig) (*Client, error) {
+	conn, err := connectToServer(config.Server.Host,
+		config.Server.Port,
+		config.Server.ConnectionAttempts,
+		config.Server.ConnectionAttemptDelayMs,
 	)
 
 	if err != nil {
