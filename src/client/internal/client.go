@@ -3,14 +3,19 @@ package client
 import (
 	"log/slog"
 	"net"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 )
 
 type Client struct {
-	config *config.ClientConfig
-	conn   net.Conn
+	config  *config.ClientConfig
+	conn    net.Conn
+	running atomic.Bool
 }
 
 func NewClient(config *config.ClientConfig) (*Client, error) {
@@ -46,9 +51,20 @@ func connectToServer(host, port string, connectionAttempts int, connectionAttemp
 	return conn, err
 }
 
+func (client *Client) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received")
+	client.running.Store(false)
+	client.conn.Close()
+}
+
 // Add methods for the Client as necessary
 func (c *Client) Start() error {
-	// Implement the functionality here
+	defer c.conn.Close()
+	go c.handleSignals()
+
 	return nil
 }
 
