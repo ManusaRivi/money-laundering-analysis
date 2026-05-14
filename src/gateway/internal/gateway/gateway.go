@@ -52,9 +52,10 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 func (gateway *Gateway) Run() error {
 	defer gateway.listener.Close()
 
-	go gateway.outputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+	// No exchange is created yet
+	/* go gateway.outputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
-	})
+	}) */
 	go gateway.handleSignals()
 
 	slog.Info("Accepting connections...")

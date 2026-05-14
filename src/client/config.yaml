@@ -1,7 +1,7 @@
 dataset_path: ""
 output_path: ""
 server:
-  host: "localhost"
+  host: "gateway"
   port: 8080
   connection_attempts: 5
   connection_attempt_delay_ms: 1000
