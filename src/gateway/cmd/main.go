@@ -4,11 +4,14 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/logger"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/gateway"
 )
 
 func run() int {
+	logger.SetupLogger()
+
 	config, err := config.LoadConfig()
 	if err != nil {
 		slog.Error("While loading config", "err", err)

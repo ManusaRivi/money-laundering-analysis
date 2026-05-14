@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: src/gateway/Dockerfile
     container_name: gateway
+    environment:
+      - LOG_LEVEL=info
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -35,6 +37,8 @@ services:
       context: .
       dockerfile: src/client/Dockerfile
     container_name: client
+    environment:
+      - LOG_LEVEL=error
     networks:
       - money-laundering-analysis-net
     depends_on:

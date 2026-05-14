@@ -6,9 +6,12 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 	client "github.com/ManusaRivi/money-laundering-analysis/src/client/internal"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/logger"
 )
 
 func run() int {
+	logger.SetupLogger()
+
 	config, err := config.LoadConfig()
 	if err != nil {
 		slog.Error("While loading config", "err", err)
