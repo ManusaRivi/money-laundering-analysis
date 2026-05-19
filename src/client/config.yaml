@@ -1,5 +1,6 @@
-dataset_path: ""
+dataset_path: "./.data/LI-Small_accounts.csv"
 output_path: ""
+transaction_batch_size: 100
 server:
   host: "gateway"
   port: 8080
