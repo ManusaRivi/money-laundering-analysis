@@ -18,13 +18,13 @@ func run() int {
 		return 1
 	}
 
-	server, err := client.NewClient(config)
+	client, err := client.NewClient(config)
 	if err != nil {
 		slog.Error("While connecting to server", "err", err)
 		return 1
 	}
 
-	if err := server.Start(); err != nil {
+	if err := client.Start(); err != nil {
 		slog.Error("Client stopped with error", "err", err)
 		return 1
 	}
