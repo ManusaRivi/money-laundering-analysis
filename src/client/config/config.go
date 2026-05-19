@@ -12,9 +12,10 @@ type ServerConfig struct {
 }
 
 type ClientConfig struct {
-	DatasetPath          string `yaml:"dataset_path"`
-	OutputPath           string `yaml:"output_path"`
-	TransactionBatchSize int    `yaml:"transaction_batch_size"`
+	TransactionsDatasetPath string `yaml:"transactions_dataset_path"`
+	AccountsDatasetPath     string `yaml:"accounts_dataset_path"`
+	OutputPath              string `yaml:"output_path"`
+	TransactionBatchSize    int    `yaml:"transaction_batch_size"`
 
 	Server ServerConfig
 }
@@ -29,9 +30,10 @@ func LoadConfig() (*ClientConfig, error) {
 		return nil, err
 	}
 	config := &ClientConfig{
-		DatasetPath:          v.GetString("dataset_path"),
-		OutputPath:           v.GetString("output_path"),
-		TransactionBatchSize: v.GetInt("transaction_batch_size"),
+		TransactionsDatasetPath: v.GetString("transactions_dataset_path"),
+		AccountsDatasetPath:     v.GetString("accounts_dataset_path"),
+		OutputPath:              v.GetString("output_path"),
+		TransactionBatchSize:    v.GetInt("transaction_batch_size"),
 		Server: ServerConfig{
 			Host:                     v.GetString("server.host"),
 			Port:                     v.GetString("server.port"),

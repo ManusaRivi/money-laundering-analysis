@@ -1,4 +1,5 @@
-dataset_path: "./.data/LI-Small_accounts.csv"
+accounts_dataset_path: "../.data/LI-Small_accounts.csv"
+transactions_dataset_path: "../.data/LI-Small_Trans.csv"
 output_path: ""
 transaction_batch_size: 100
 server:

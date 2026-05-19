@@ -38,7 +38,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 	}
 
 	transactionsReader, err := data.NewBatchReader(
-		config.DatasetPath,
+		config.TransactionsDatasetPath,
 		BatchAmount,
 		data.ParseTransaction,
 	)
