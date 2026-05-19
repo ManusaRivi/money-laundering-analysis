@@ -6,7 +6,7 @@ services:
       dockerfile: src/gateway/Dockerfile
     container_name: gateway
     environment:
-      - LOG_LEVEL=info
+      - LOG_LEVEL=debug
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -39,6 +39,9 @@ services:
     container_name: client
     environment:
       - LOG_LEVEL=error
+    volumes:
+      - ./.data:/app/.data
+      - ./.output:/app/.output
     networks:
       - money-laundering-analysis-net
     depends_on:
