@@ -1,0 +1,10 @@
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq:5672/"
+  input_queue: "q_filter_in"
+  output_exchange: "e_next_stage"
+
+filter:
+  type: "amount"
+  field: "Amount"
+  operator: ">"
+  value_float: 1000.0
