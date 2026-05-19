@@ -9,6 +9,9 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientregistry"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
@@ -21,6 +24,7 @@ type Gateway struct {
 	outputExchange middleware.Middleware
 	listener       net.Listener
 	running        atomic.Bool
+	binaryCodec    *codec.BinaryCodec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
@@ -44,7 +48,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 		return nil, err
 	}
 
-	gateway := &Gateway{outputExchange: outputExchange, inputQueue: inputQueue, listener: listener}
+	gateway := &Gateway{outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, binaryCodec: codec.New()}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -72,7 +76,7 @@ func (gateway *Gateway) Run() error {
 		slog.Info("Client connected...")
 
 		handler := messagehandler.NewMessageHandler()
-		client := clientregistry.ClientState{Conn: conn, Handler: &handler}
+		client := clientregistry.ClientState{Conn: network.NewConnection(conn), Handler: &handler}
 		gateway.registry.Add(client)
 
 		go gateway.handleClientRequest(client)
@@ -97,7 +101,32 @@ func (gateway *Gateway) handleSignals() {
 }
 
 func (gateway *Gateway) handleClientRequest(client clientregistry.ClientState) {
-	// TODO: Implement me!
+loop:
+	for {
+		msg, err := client.Conn.Receive(codec.HeaderSize)
+		if err != nil {
+			slog.Error("Error receiving message", "err", err)
+			break
+		}
+
+		msgType, payloadSize := codec.DecodeHeader(msg)
+
+		payload, err := client.Conn.Receive(int(payloadSize))
+		if err != nil {
+			slog.Error("Error receiving message payload", "err", err)
+			break
+		}
+
+		switch msgType {
+		case protocol.MsgTransactionsBatch:
+			transactions, err := gateway.binaryCodec.DecodeTransactionBatch(payload)
+			if err != nil {
+				slog.Error("Error decoding transaction batch", "err", err)
+				break loop
+			}
+			client.Handler.HandleTransactionsBatch(transactions)
+		}
+	}
 }
 
 func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {

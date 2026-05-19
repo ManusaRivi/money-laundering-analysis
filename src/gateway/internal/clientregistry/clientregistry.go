@@ -1,14 +1,14 @@
 package clientregistry
 
 import (
-	"net"
 	"sync"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
 )
 
 type ClientState struct {
-	Conn    net.Conn
+	Conn    *network.Connection
 	Handler *messagehandler.MessageHandler
 }
 
