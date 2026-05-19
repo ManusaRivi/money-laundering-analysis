@@ -1,6 +1,11 @@
 package messagehandler
 
-import "github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
+import (
+	"log/slog"
+
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+)
 
 type MessageHandler struct {
 }
@@ -9,6 +14,12 @@ type MessageHandler struct {
 
 func NewMessageHandler() MessageHandler {
 	return MessageHandler{}
+}
+
+func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []protocol.Transaction) {
+	for _, transaction := range transactions {
+		slog.Debug("Handling transaction", "transaction - account paid", transaction.AmountPaid)
+	}
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage() (*middleware.Message, error) {
