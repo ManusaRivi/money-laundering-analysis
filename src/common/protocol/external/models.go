@@ -1,4 +1,4 @@
-package protocol
+package external
 
 type MsgType uint8
 

@@ -7,14 +7,14 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
 
 // RecordParser turns a single CSV row into a typed record.
 type RecordParser[T any] func(row []string) (T, error)
 
 // BatchReader reads a CSV file and yields records in fixed-size batches.
-// T is the concrete record type (e.g. protocol.Transaction, protocol.AccountData).
+// T is the concrete record type (e.g. external.Transaction, external.AccountData).
 type BatchReader[T any] struct {
 	file      *os.File
 	reader    *csv.Reader
@@ -90,24 +90,24 @@ func (b *BatchReader[T]) Close() error {
 //	Timestamp, FromBank, FromAccount, ToBank, ToAccount,
 //	AmountReceived, ReceivingCurrency, AmountPaid, PaymentCurrency,
 //	PaymentFormat, IsLaundering
-func ParseTransaction(row []string) (protocol.Transaction, error) {
+func ParseTransaction(row []string) (external.Transaction, error) {
 	const expected = 11
 	if len(row) != expected {
-		return protocol.Transaction{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
+		return external.Transaction{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
 	}
 	amountReceived, err := strconv.ParseFloat(row[5], 64)
 	if err != nil {
-		return protocol.Transaction{}, fmt.Errorf("amount received: %w", err)
+		return external.Transaction{}, fmt.Errorf("amount received: %w", err)
 	}
 	amountPaid, err := strconv.ParseFloat(row[7], 64)
 	if err != nil {
-		return protocol.Transaction{}, fmt.Errorf("amount paid: %w", err)
+		return external.Transaction{}, fmt.Errorf("amount paid: %w", err)
 	}
 	isLaundering, err := strconv.ParseBool(row[10])
 	if err != nil {
-		return protocol.Transaction{}, fmt.Errorf("is laundering: %w", err)
+		return external.Transaction{}, fmt.Errorf("is laundering: %w", err)
 	}
-	return protocol.Transaction{
+	return external.Transaction{
 		Timestamp:         row[0],
 		FromBank:          row[1],
 		FromAccount:       row[2],
@@ -124,12 +124,12 @@ func ParseTransaction(row []string) (protocol.Transaction, error) {
 
 // ParseAccount parses a CSV row into a protocol.AccountData.
 // Expected columns: BankName, BankID, AccountNumber, EntityID, EntityName.
-func ParseAccount(row []string) (protocol.AccountData, error) {
+func ParseAccount(row []string) (external.AccountData, error) {
 	const expected = 5
 	if len(row) != expected {
-		return protocol.AccountData{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
+		return external.AccountData{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
 	}
-	return protocol.AccountData{
+	return external.AccountData{
 		BankName:      row[0],
 		BankID:        row[1],
 		AccountNumber: row[2],

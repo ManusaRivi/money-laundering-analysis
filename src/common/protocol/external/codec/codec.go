@@ -7,7 +7,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
 
 const (
@@ -18,8 +18,8 @@ const (
 // DecodeHeader parses a 5-byte frame header into its message type and payload
 // length. Framing is uniform across codec implementations, so this is a
 // package-level function rather than an interface method.
-func DecodeHeader(header []byte) (protocol.MsgType, uint32) {
-	msgType := protocol.MsgType(header[0])
+func DecodeHeader(header []byte) (external.MsgType, uint32) {
+	msgType := external.MsgType(header[0])
 	payloadLen := binary.BigEndian.Uint32(header[1:HeaderSize])
 	return msgType, payloadLen
 }
@@ -31,7 +31,7 @@ func New() *BinaryCodec { return &BinaryCodec{} }
 
 // --- envelope ---
 
-func (BinaryCodec) EncodeEnvelope(envelope protocol.Envelope) ([]byte, error) {
+func (BinaryCodec) EncodeEnvelope(envelope external.Envelope) ([]byte, error) {
 	buffer := make([]byte, HeaderSize+len(envelope.Payload))
 	buffer[0] = byte(envelope.MsgType)
 	binary.BigEndian.PutUint32(buffer[1:HeaderSize], uint32(len(envelope.Payload)))
@@ -44,7 +44,7 @@ func (BinaryCodec) EncodeEnvelope(envelope protocol.Envelope) ([]byte, error) {
 // Layout:
 //   [uint32 count][uint16 len][tx bytes][uint16 len][tx bytes]...
 
-func (BinaryCodec) EncodeTransactionBatch(transactions []protocol.Transaction) ([]byte, error) {
+func (BinaryCodec) EncodeTransactionBatch(transactions []external.Transaction) ([]byte, error) {
 	var batch bytes.Buffer
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(transactions)))
@@ -66,7 +66,7 @@ func (BinaryCodec) EncodeTransactionBatch(transactions []protocol.Transaction) (
 	return batch.Bytes(), nil
 }
 
-func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]protocol.Transaction, error) {
+func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]external.Transaction, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -74,7 +74,7 @@ func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]protocol.Transactio
 	}
 	count := binary.BigEndian.Uint32(countBytes[:])
 
-	txs := make([]protocol.Transaction, 0, count)
+	txs := make([]external.Transaction, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var lengthBytes [2]byte
 		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
@@ -133,7 +133,7 @@ func decodeMoney(r *bytes.Reader) (float64, string, error) {
 	return amount, currency, nil
 }
 
-func encodeTransaction(buf *bytes.Buffer, t protocol.Transaction) error {
+func encodeTransaction(buf *bytes.Buffer, t external.Transaction) error {
 	if err := writeString(buf, t.Timestamp); err != nil {
 		return err
 	}
@@ -160,8 +160,8 @@ func encodeTransaction(buf *bytes.Buffer, t protocol.Transaction) error {
 	return nil
 }
 
-func decodeTransaction(r *bytes.Reader) (protocol.Transaction, error) {
-	var t protocol.Transaction
+func decodeTransaction(r *bytes.Reader) (external.Transaction, error) {
+	var t external.Transaction
 	var err error
 	if t.Timestamp, err = readString(r); err != nil {
 		return t, err
