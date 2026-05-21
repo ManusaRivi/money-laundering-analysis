@@ -40,7 +40,58 @@ func (BinaryCodec) EncodeEnvelope(envelope protocol.Envelope) ([]byte, error) {
 }
 
 // --- batch ---
-//
+
+func (BinaryCodec) EncodeAccountBatch(accounts []protocol.AccountData) ([]byte, error) {
+	var batch bytes.Buffer
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(accounts)))
+	batch.Write(count[:])
+
+	for i, a := range accounts {
+		var accBuf bytes.Buffer
+		if err := encodeAccountData(&accBuf, a.BankName, a.BankID, a.AccountNumber, a.EntityID, a.EntityName); err != nil {
+			return nil, fmt.Errorf("encoding account %d: %w", i, err)
+		}
+		if accBuf.Len() > math.MaxUint16 {
+			return nil, fmt.Errorf("account %d too large: %d bytes (max %d)", i, accBuf.Len(), math.MaxUint16)
+		}
+		var length [2]byte
+		binary.BigEndian.PutUint16(length[:], uint16(accBuf.Len()))
+		batch.Write(length[:])
+		batch.Write(accBuf.Bytes())
+	}
+	return batch.Bytes(), nil
+}
+
+func (BinaryCodec) DecodeAccountBatch(payload []byte) ([]protocol.AccountData, error) {
+	r := bytes.NewReader(payload)
+	var countBytes [4]byte
+	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
+		return nil, fmt.Errorf("reading batch count: %w", err)
+	}
+	count := binary.BigEndian.Uint32(countBytes[:])
+
+	accounts := make([]protocol.AccountData, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var lengthBytes [2]byte
+		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
+			return nil, fmt.Errorf("reading length of account %d: %w", i, err)
+		}
+		length := binary.BigEndian.Uint16(lengthBytes[:])
+
+		accBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, accBytes); err != nil {
+			return nil, fmt.Errorf("reading account %d body: %w", i, err)
+		}
+		account, err := decodeAccountData(bytes.NewReader(accBytes))
+		if err != nil {
+			return nil, fmt.Errorf("decoding account %d: %w", i, err)
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
+}
+
 // Layout:
 //   [uint32 count][uint16 len][tx bytes][uint16 len][tx bytes]...
 
@@ -97,14 +148,51 @@ func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]protocol.Transactio
 
 // --- model codecs ---
 
-func encodeAccount(buf *bytes.Buffer, bank, number string) error {
+func encodeAccountData(buf *bytes.Buffer, bankName, bankID, accountNumber, entityID, entityName string) error {
+	if err := writeString(buf, bankName); err != nil {
+		return err
+	}
+	if err := writeString(buf, bankID); err != nil {
+		return err
+	}
+	if err := writeString(buf, accountNumber); err != nil {
+		return err
+	}
+	if err := writeString(buf, entityID); err != nil {
+		return err
+	}
+	return writeString(buf, entityName)
+}
+
+func decodeAccountData(r *bytes.Reader) (protocol.AccountData, error) {
+	var a protocol.AccountData
+	var err error
+	if a.BankName, err = readString(r); err != nil {
+		return a, fmt.Errorf("bank name: %w", err)
+	}
+	if a.BankID, err = readString(r); err != nil {
+		return a, fmt.Errorf("bank id: %w", err)
+	}
+	if a.AccountNumber, err = readString(r); err != nil {
+		return a, fmt.Errorf("account number: %w", err)
+	}
+	if a.EntityID, err = readString(r); err != nil {
+		return a, fmt.Errorf("entity id: %w", err)
+	}
+	if a.EntityName, err = readString(r); err != nil {
+		return a, fmt.Errorf("entity name: %w", err)
+	}
+	return a, nil
+}
+
+func encodeTransactionAccount(buf *bytes.Buffer, bank, number string) error {
 	if err := writeString(buf, bank); err != nil {
 		return err
 	}
 	return writeString(buf, number)
 }
 
-func decodeAccount(r *bytes.Reader) (string, string, error) {
+func decodeTransactionAccount(r *bytes.Reader) (string, string, error) {
 	bank, err := readString(r)
 	if err != nil {
 		return "", "", err
@@ -138,11 +226,11 @@ func encodeTransaction(buf *bytes.Buffer, t protocol.Transaction) error {
 		return err
 	}
 	// From Bank
-	if err := encodeAccount(buf, t.FromBank, t.FromAccount); err != nil {
+	if err := encodeTransactionAccount(buf, t.FromBank, t.FromAccount); err != nil {
 		return err
 	}
 	// To Bank
-	if err := encodeAccount(buf, t.ToBank, t.ToAccount); err != nil {
+	if err := encodeTransactionAccount(buf, t.ToBank, t.ToAccount); err != nil {
 		return err
 	}
 	// Receiving Money
@@ -166,10 +254,10 @@ func decodeTransaction(r *bytes.Reader) (protocol.Transaction, error) {
 	if t.Timestamp, err = readString(r); err != nil {
 		return t, err
 	}
-	if t.FromBank, t.FromAccount, err = decodeAccount(r); err != nil {
+	if t.FromBank, t.FromAccount, err = decodeTransactionAccount(r); err != nil {
 		return t, err
 	}
-	if t.ToBank, t.ToAccount, err = decodeAccount(r); err != nil {
+	if t.ToBank, t.ToAccount, err = decodeTransactionAccount(r); err != nil {
 		return t, err
 	}
 	if t.AmountReceived, t.ReceivingCurrency, err = decodeMoney(r); err != nil {
