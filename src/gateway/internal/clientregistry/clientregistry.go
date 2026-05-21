@@ -8,7 +8,7 @@ import (
 )
 
 type ClientState struct {
-	Conn    *network.Connection
+	Conn    network.Connection
 	Handler *messagehandler.MessageHandler
 }
 

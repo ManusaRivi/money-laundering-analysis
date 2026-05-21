@@ -125,7 +125,7 @@ loop:
 				break loop
 			}
 			client.Handler.HandleTransactionsBatch(transactions)
-		case protocol.MsgEOF:
+		case protocol.MsgTransactionsEOF:
 			if err := gateway.handleEndOfRecordsMessage(client); err != nil {
 				slog.Error("Error handling end of records message", "err", err)
 			}

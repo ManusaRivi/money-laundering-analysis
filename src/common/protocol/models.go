@@ -4,9 +4,22 @@ type MsgType uint8
 
 const (
 	MsgTypeInvalid       MsgType = 0
-	MsgTransactionsBatch MsgType = 1
-	MsgAccountsBatch     MsgType = 2
-	MsgEOF               MsgType = 3
+	MsgAccountsBatch     MsgType = 1
+	MsgAccountsEOF       MsgType = 2
+	MsgTransactionsBatch MsgType = 3
+	MsgTransactionsEOF   MsgType = 4
+
+	MsgQuery1ResultBatch MsgType = 5
+	MsgQuery2ResultBatch MsgType = 6
+	MsgQuery3ResultBatch MsgType = 7
+	MsgQuery4ResultBatch MsgType = 8
+	MsgQuery5ResultBatch MsgType = 9
+
+	MsgQuery1ResultEOF MsgType = 10
+	MsgQuery2ResultEOF MsgType = 11
+	MsgQuery3ResultEOF MsgType = 12
+	MsgQuery4ResultEOF MsgType = 13
+	MsgQuery5ResultEOF MsgType = 14
 )
 
 type Envelope struct {

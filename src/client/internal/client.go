@@ -12,7 +12,6 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
@@ -20,10 +19,11 @@ const BatchAmount = 3
 
 type Client struct {
 	config             *config.ClientConfig
-	conn               network.Connection
+	sender             *Sender
 	running            atomic.Bool
-	TransactionsReader *data.BatchReader[protocol.Transaction]
-	BinaryCodec        *codec.BinaryCodec
+	conn               network.Connection
+	AccountsStream     accountStream
+	TransactionsStream transactionStream
 }
 
 func NewClient(config *config.ClientConfig) (*Client, error) {
@@ -37,6 +37,23 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
+	codec := codec.New()
+
+	connection := network.NewConnection(conn)
+
+	sender := NewSender(&connection, codec)
+
+	accountsReader, err := data.NewBatchReader(
+		config.AccountsDatasetPath,
+		BatchAmount,
+		data.ParseAccount,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	accountsStream := NewAccountStream(accountsReader, codec)
+
 	transactionsReader, err := data.NewBatchReader(
 		config.TransactionsDatasetPath,
 		BatchAmount,
@@ -46,11 +63,14 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
+	transactionsStream := NewTransactionStream(transactionsReader, codec)
+
 	return &Client{
 		config:             config,
-		conn:               *network.NewConnection(conn),
-		TransactionsReader: transactionsReader,
-		BinaryCodec:        codec.New(),
+		sender:             sender,
+		conn:               connection,
+		AccountsStream:     *accountsStream,
+		TransactionsStream: *transactionsStream,
 	}, nil
 }
 
@@ -85,58 +105,8 @@ func (c *Client) Start() error {
 	defer c.conn.Close()
 	go c.handleSignals()
 
-	for range BatchAmount {
-		batch, err := c.TransactionsReader.Next()
-		if err != nil {
-			if err == os.ErrClosed {
-				slog.Info("Batch reader closed, stopping client")
-				return nil
-			}
-		}
-
-		if len(batch) == 0 {
-			slog.Info("No more transactions to read, stopping client")
-			break
-		}
-
-		slog.Debug("Read batch of transactions", "batch_size", len(batch))
-
-		payload, err := c.BinaryCodec.EncodeTransactionBatch(batch)
-		if err != nil {
-			slog.Error("Error encoding batch", "err", err)
-			return err
-		}
-
-		envelope, err := c.BinaryCodec.EncodeEnvelope(protocol.Envelope{
-			MsgType: protocol.MsgTransactionsBatch,
-			Payload: payload,
-		})
-		if err != nil {
-			slog.Error("Error encoding envelope", "err", err)
-			return err
-		}
-
-		if err := c.conn.Send(envelope); err != nil {
-			slog.Error("Error sending batch", "err", err)
-			return err
-		}
-	}
-
-	eofEnvelope, err := c.BinaryCodec.EncodeEnvelope(protocol.Envelope{
-		MsgType: protocol.MsgEOF,
-		Payload: nil,
-	})
-	if err != nil {
-		slog.Error("Error encoding EOF envelope", "err", err)
-		return err
-	}
-
-	if err := c.conn.Send(eofEnvelope); err != nil {
-		slog.Error("Error sending EOF envelope", "err", err)
-		return err
-	}
-
-	slog.Debug("EOF Message sent, stopping client")
+	c.sender.Stream(&c.AccountsStream)
+	c.sender.Stream(&c.TransactionsStream)
 
 	return nil
 }
