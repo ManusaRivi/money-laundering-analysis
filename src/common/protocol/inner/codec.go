@@ -2,20 +2,28 @@ package inner
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 )
 
-func SerializeTransactionMessage(clientID string, tx domain.Transaction) (*broker.Message, error) {
-	var msg InnerMessage
+var (
+	ErrInvalidPacket = errors.New("Invalid packet")
+)
+
+func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.Message, error) {
+	var msg Packet
 	msg.ClientID = clientID
-	msg.Type = MsgTypeTransaction
+	msg.Type = TypeTransaction
 
 	data, err := json.Marshal(tx)
 	if err != nil {
 		return nil, err
 	}
 	msg.Data = data
+
 	serializedMsg, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
@@ -23,3 +31,51 @@ func SerializeTransactionMessage(clientID string, tx domain.Transaction) (*broke
 	return &broker.Message{Body: string(serializedMsg)}, nil
 }
 
+func MarshalEOFPacket(clientID string) (*broker.Message, error) {
+	var msg Packet
+	msg.ClientID = clientID
+	msg.Type = TypeEOF
+	msg.Data = nil
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: string(serializedMsg)}, nil
+}
+
+func MarshalBankInfoPacket(clientID string, bankInfo domain.BankInfo) (*broker.Message, error) {
+	var msg Packet
+	msg.ClientID = clientID
+	msg.Type = TypeBankInfo
+
+	data, err := json.Marshal(bankInfo)
+	if err != nil {
+		return nil, err
+	}
+	msg.Data = data
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: string(serializedMsg)}, nil
+}
+
+func UnmarshalPacket(msg broker.Message) (*Packet, error) {
+	var packet Packet
+	err := json.Unmarshal([]byte(msg.Body), &packet)
+	if err != nil {
+		return nil, err
+	}
+	if packet.ClientID == "" {
+		return nil, fmt.Errorf("%w: missing ClientID field", ErrInvalidPacket)
+	}
+
+	return &packet, nil
+}
+
+// UnmarshalData is a helper method to unmarshal the Data field of the Packet into the provided destination struct.
+func (p *Packet) UnmarshalData(dest any) error {
+	return json.Unmarshal(p.Data, dest)
+}
