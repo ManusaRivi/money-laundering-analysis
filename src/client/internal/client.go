@@ -38,7 +38,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 	}
 
 	transactionsReader, err := data.NewBatchReader(
-		config.DatasetPath,
+		config.TransactionsDatasetPath,
 		BatchAmount,
 		data.ParseTransaction,
 	)
@@ -99,7 +99,7 @@ func (c *Client) Start() error {
 			break
 		}
 
-		slog.Info("Read batch of transactions", "batch_size", len(batch))
+		slog.Debug("Read batch of transactions", "batch_size", len(batch))
 
 		payload, err := c.BinaryCodec.EncodeTransactionBatch(batch)
 		if err != nil {
@@ -121,6 +121,22 @@ func (c *Client) Start() error {
 			return err
 		}
 	}
+
+	eofEnvelope, err := c.BinaryCodec.EncodeEnvelope(external.Envelope{
+		MsgType: external.MsgEOF,
+		Payload: nil,
+	})
+	if err != nil {
+		slog.Error("Error encoding EOF envelope", "err", err)
+		return err
+	}
+
+	if err := c.conn.Send(eofEnvelope); err != nil {
+		slog.Error("Error sending EOF envelope", "err", err)
+		return err
+	}
+
+	slog.Debug("EOF Message sent, stopping client")
 
 	return nil
 }

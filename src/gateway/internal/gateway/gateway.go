@@ -125,6 +125,12 @@ loop:
 				break loop
 			}
 			client.Handler.HandleTransactionsBatch(transactions)
+		case external.MsgEOF:
+			if err := gateway.handleEndOfRecordsMessage(client); err != nil {
+				slog.Error("Error handling end of records message", "err", err)
+			}
+			slog.Info("End of records message received.")
+			break loop
 		}
 	}
 }
@@ -134,6 +140,6 @@ func (gateway *Gateway) handleClientResponse(msg broker.Message, ack func(), nac
 }
 
 func (gateway *Gateway) handleEndOfRecordsMessage(client clientregistry.ClientState) error {
-	// TODO: Implement me!
+	// TODO: Send EOF to output corresponding outputs
 	return nil
 }
