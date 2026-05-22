@@ -14,15 +14,16 @@ var (
 )
 
 func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.Message, error) {
-	var msg Packet
-	msg.ClientID = clientID
-	msg.Type = TypeTransaction
-
 	data, err := json.Marshal(tx)
 	if err != nil {
 		return nil, err
 	}
-	msg.Data = data
+
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeTransaction,
+		Data:     data,
+	}
 
 	serializedMsg, err := json.Marshal(msg)
 	if err != nil {
@@ -32,10 +33,11 @@ func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.M
 }
 
 func MarshalEOFPacket(clientID string) (*broker.Message, error) {
-	var msg Packet
-	msg.ClientID = clientID
-	msg.Type = TypeEOF
-	msg.Data = nil
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeEOF,
+		Data:     nil,
+	}
 
 	serializedMsg, err := json.Marshal(msg)
 	if err != nil {
@@ -45,15 +47,15 @@ func MarshalEOFPacket(clientID string) (*broker.Message, error) {
 }
 
 func MarshalBankInfoPacket(clientID string, bankInfo domain.BankInfo) (*broker.Message, error) {
-	var msg Packet
-	msg.ClientID = clientID
-	msg.Type = TypeBankInfo
-
 	data, err := json.Marshal(bankInfo)
 	if err != nil {
 		return nil, err
 	}
-	msg.Data = data
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeBankInfo,
+		Data:     data,
+	}
 
 	serializedMsg, err := json.Marshal(msg)
 	if err != nil {
