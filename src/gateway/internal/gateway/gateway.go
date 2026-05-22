@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientregistry"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
@@ -20,22 +20,22 @@ import (
 type Gateway struct {
 	config         *config.GatewayConfig
 	registry       clientregistry.ClientRegistry
-	inputQueue     middleware.Middleware
-	outputExchange middleware.Middleware
+	inputQueue     broker.Broker
+	outputExchange broker.Broker
 	listener       net.Listener
 	running        atomic.Bool
 	binaryCodec    *codec.BinaryCodec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
-	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
+	connSettings := broker.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
 
-	inputQueue, err := middleware.CreateQueueMiddleware(config.OutputQueueName, connSettings)
+	inputQueue, err := broker.CreateQueueBroker(config.OutputQueueName, connSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.InputQueueName, []string{}, connSettings)
+	outputExchange, err := broker.CreateExchangeBroker(config.InputQueueName, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
 		return nil, err
@@ -118,14 +118,14 @@ loop:
 		}
 
 		switch msgType {
-		case protocol.MsgTransactionsBatch:
+		case external.MsgTransactionsBatch:
 			transactions, err := gateway.binaryCodec.DecodeTransactionBatch(payload)
 			if err != nil {
 				slog.Error("Error decoding transaction batch", "err", err)
 				break loop
 			}
 			client.Handler.HandleTransactionsBatch(transactions)
-		case protocol.MsgEOF:
+		case external.MsgEOF:
 			if err := gateway.handleEndOfRecordsMessage(client); err != nil {
 				slog.Error("Error handling end of records message", "err", err)
 			}
@@ -135,7 +135,7 @@ loop:
 	}
 }
 
-func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {
+func (gateway *Gateway) handleClientResponse(msg broker.Message, ack func(), nack func()) {
 	// TODO: Implement me!
 }
 

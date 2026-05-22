@@ -12,8 +12,8 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 )
 
 const BatchAmount = 3
@@ -22,7 +22,7 @@ type Client struct {
 	config             *config.ClientConfig
 	conn               network.Connection
 	running            atomic.Bool
-	TransactionsReader *data.BatchReader[protocol.Transaction]
+	TransactionsReader *data.BatchReader[external.Transaction]
 	BinaryCodec        *codec.BinaryCodec
 }
 
@@ -107,8 +107,8 @@ func (c *Client) Start() error {
 			return err
 		}
 
-		envelope, err := c.BinaryCodec.EncodeEnvelope(protocol.Envelope{
-			MsgType: protocol.MsgTransactionsBatch,
+		envelope, err := c.BinaryCodec.EncodeEnvelope(external.Envelope{
+			MsgType: external.MsgTransactionsBatch,
 			Payload: payload,
 		})
 		if err != nil {
@@ -122,8 +122,8 @@ func (c *Client) Start() error {
 		}
 	}
 
-	eofEnvelope, err := c.BinaryCodec.EncodeEnvelope(protocol.Envelope{
-		MsgType: protocol.MsgEOF,
+	eofEnvelope, err := c.BinaryCodec.EncodeEnvelope(external.Envelope{
+		MsgType: external.MsgEOF,
 		Payload: nil,
 	})
 	if err != nil {
