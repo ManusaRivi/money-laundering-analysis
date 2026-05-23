@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
@@ -19,22 +19,22 @@ import (
 type Gateway struct {
 	config         *config.GatewayConfig
 	registry       *clientregistry.ClientRegistry
-	inputQueue     middleware.Middleware
-	outputExchange middleware.Middleware
+	inputQueue     broker.Broker
+	outputExchange broker.Broker
 	listener       net.Listener
 	running        atomic.Bool
 	codec          codec.Codec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
-	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
+	connSettings := broker.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
 
-	inputQueue, err := middleware.CreateQueueMiddleware(config.OutputQueueName, connSettings)
+	inputQueue, err := broker.CreateQueueBroker(config.OutputQueueName, connSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.InputQueueName, []string{}, connSettings)
+	outputExchange, err := broker.CreateExchangeBroker(config.InputQueueName, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
 		return nil, err

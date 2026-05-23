@@ -3,8 +3,8 @@ package messagehandler
 import (
 	"log/slog"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
 
 const TransactionResultBatchSize = 10
@@ -12,7 +12,7 @@ const TransactionResultBatchSize = 10
 type MessageHandler struct {
 	accountsTotal        int
 	transactionsTotal    int
-	filteredTransactions []protocol.Transaction
+	filteredTransactions []external.Transaction
 	nextResultIdx        int
 }
 
@@ -23,8 +23,7 @@ func NewMessageHandler() MessageHandler {
 	}
 }
 
-// Forwarding to middleware would happen here
-func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []protocol.Transaction) {
+func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []external.Transaction) {
 	for _, transaction := range transactions {
 		if transaction.PaymentCurrency == "US Dollar" && transaction.AmountPaid < 50 {
 			messageHandler.filteredTransactions = append(messageHandler.filteredTransactions, transaction)
@@ -34,7 +33,7 @@ func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []pro
 }
 
 // Receiving info from middleware would happen here
-func (messageHandler *MessageHandler) GetTransactionResultBatch() []protocol.Transaction {
+func (messageHandler *MessageHandler) GetTransactionResultBatch() []external.Transaction {
 	remaining := len(messageHandler.filteredTransactions) - messageHandler.nextResultIdx
 	if remaining <= 0 {
 		return nil
@@ -46,7 +45,7 @@ func (messageHandler *MessageHandler) GetTransactionResultBatch() []protocol.Tra
 	return batch
 }
 
-func (messageHandler *MessageHandler) HandleAccountsBatch(accounts []protocol.AccountData) {
+func (messageHandler *MessageHandler) HandleAccountsBatch(accounts []external.AccountData) {
 	messageHandler.accountsTotal += len(accounts)
 }
 
@@ -58,12 +57,12 @@ func (messageHandler *MessageHandler) HandleAccountsEOF() {
 	slog.Info("Received all accounts", slog.Int("total", messageHandler.accountsTotal))
 }
 
-func (messageHandler *MessageHandler) SerializeDataMessage() (*middleware.Message, error) {
+func (messageHandler *MessageHandler) SerializeDataMessage() (*broker.Message, error) {
 	// TODO: Implement me!
 	return nil, nil
 }
 
-func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
+func (messageHandler *MessageHandler) SerializeEOFMessage() (*broker.Message, error) {
 	// TODO: Implement me!
 	return nil, nil
 }

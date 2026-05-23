@@ -12,7 +12,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 )
 
 type Client struct {
@@ -135,8 +135,4 @@ func (c *Client) Start() error {
 
 	<-c.stopped
 	return nil
-}
-
-func (c *Client) Stop() {
-	// Implement the functionality here
 }

@@ -11,6 +11,6 @@ type Codec interface {
 	EncodeTransactionBatch(transactions []external.Transaction) ([]byte, error)
 	DecodeTransactionBatch(payload []byte) ([]external.Transaction, error)
 
-	EncodeQuery1ResultBatch(results []external.Query1Result) ([]byte, error)
+	EncodeQuery1ResultBatch(result []external.Query1Result) ([]byte, error)
 	DecodeQuery1ResultBatch(payload []byte) ([]external.Query1Result, error)
 }

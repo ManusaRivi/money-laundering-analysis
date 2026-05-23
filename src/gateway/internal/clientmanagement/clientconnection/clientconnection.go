@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
 )
 
@@ -74,23 +74,23 @@ func (c *ClientConnection) receiveUntilEOF() error {
 		}
 
 		switch msgType {
-		case protocol.MsgAccountsBatch:
+		case external.MsgAccountsBatch:
 			accounts, err := c.codec.DecodeAccountBatch(payload)
 			if err != nil {
 				return fmt.Errorf("decoding account batch: %w", err)
 			}
 			c.Handler.HandleAccountsBatch(accounts)
-		case protocol.MsgAccountsEOF:
+		case external.MsgAccountsEOF:
 			slog.Debug("Received accounts EOF")
 			c.Handler.HandleAccountsEOF()
 			accountsDone = true
-		case protocol.MsgTransactionsBatch:
+		case external.MsgTransactionsBatch:
 			transactions, err := c.codec.DecodeTransactionBatch(payload)
 			if err != nil {
 				return fmt.Errorf("decoding transaction batch: %w", err)
 			}
 			c.Handler.HandleTransactionsBatch(transactions)
-		case protocol.MsgTransactionsEOF:
+		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
 			c.Handler.HandleTransactionsEOF()
 			transactionsDone = true
@@ -101,8 +101,8 @@ func (c *ClientConnection) receiveUntilEOF() error {
 	return nil
 }
 
-func (c *ClientConnection) sendEnvelope(msgType protocol.MsgType, payload []byte) error {
-	envelope, err := c.codec.EncodeEnvelope(protocol.Envelope{
+func (c *ClientConnection) sendEnvelope(msgType external.MsgType, payload []byte) error {
+	envelope, err := c.codec.EncodeEnvelope(external.Envelope{
 		MsgType: msgType,
 		Payload: payload,
 	})
@@ -126,13 +126,13 @@ func (c *ClientConnection) sendResults() error {
 		}
 	}
 
-	return c.sendEnvelope(protocol.MsgQuery1ResultEOF, nil)
+	return c.sendEnvelope(external.MsgQuery1ResultEOF, nil)
 }
 
-func (c *ClientConnection) sendQuery1Batch(transactions []protocol.Transaction) error {
-	results := make([]protocol.Query1Result, len(transactions))
+func (c *ClientConnection) sendQuery1Batch(transactions []external.Transaction) error {
+	results := make([]external.Query1Result, len(transactions))
 	for i, t := range transactions {
-		results[i] = protocol.Query1Result{
+		results[i] = external.Query1Result{
 			FromBank:    t.FromBank,
 			FromAccount: t.FromAccount,
 			ToBank:      t.ToBank,
@@ -145,5 +145,5 @@ func (c *ClientConnection) sendQuery1Batch(transactions []protocol.Transaction) 
 	if err != nil {
 		return fmt.Errorf("encoding query 1 batch: %w", err)
 	}
-	return c.sendEnvelope(protocol.MsgQuery1Result, payload)
+	return c.sendEnvelope(external.MsgQuery1Result, payload)
 }
