@@ -9,11 +9,11 @@ const (
 	MsgTransactionsBatch MsgType = 3
 	MsgTransactionsEOF   MsgType = 4
 
-	MsgQuery1ResultBatch MsgType = 5
-	MsgQuery2ResultBatch MsgType = 6
-	MsgQuery3ResultBatch MsgType = 7
-	MsgQuery4ResultBatch MsgType = 8
-	MsgQuery5ResultBatch MsgType = 9
+	MsgQuery1Result MsgType = 5
+	MsgQuery2Result MsgType = 6
+	MsgQuery3Result MsgType = 7
+	MsgQuery4Result MsgType = 8
+	MsgQuery5Result MsgType = 9
 
 	MsgQuery1ResultEOF MsgType = 10
 	MsgQuery2ResultEOF MsgType = 11
@@ -47,4 +47,12 @@ type AccountData struct {
 	AccountNumber string
 	EntityID      string
 	EntityName    string
+}
+
+type Query1Result struct {
+	FromBank    string
+	FromAccount string
+	ToBank      string
+	ToAccount   string
+	AmountPaid  float64
 }
