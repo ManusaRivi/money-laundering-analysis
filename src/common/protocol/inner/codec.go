@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 )
@@ -13,7 +15,7 @@ var (
 	ErrInvalidPacket = errors.New("Invalid packet")
 )
 
-func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.Message, error) {
+func MarshalTransactionPacket(clientID uuid.UUID, tx domain.Transaction) (*broker.Message, error) {
 	data, err := json.Marshal(tx)
 	if err != nil {
 		return nil, err
@@ -32,7 +34,7 @@ func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.M
 	return &broker.Message{Body: serializedMsg}, nil
 }
 
-func MarshalEOFPacket(clientID string) (*broker.Message, error) {
+func MarshalEOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 	msg := Packet{
 		ClientID: clientID,
 		Type:     TypeEOF,
@@ -46,7 +48,7 @@ func MarshalEOFPacket(clientID string) (*broker.Message, error) {
 	return &broker.Message{Body: serializedMsg}, nil
 }
 
-func MarshalBankInfoPacket(clientID string, bankInfo domain.BankInfo) (*broker.Message, error) {
+func MarshalBankInfoPacket(clientID uuid.UUID, bankInfo domain.BankInfo) (*broker.Message, error) {
 	data, err := json.Marshal(bankInfo)
 	if err != nil {
 		return nil, err
@@ -70,7 +72,7 @@ func UnmarshalPacket(msg broker.Message) (*Packet, error) {
 	if err != nil {
 		return nil, err
 	}
-	if packet.ClientID == "" {
+	if packet.ClientID == uuid.Nil {
 		return nil, fmt.Errorf("%w: missing ClientID field", ErrInvalidPacket)
 	}
 
