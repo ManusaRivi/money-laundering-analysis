@@ -20,10 +20,12 @@ const BatchAmount = 3
 type Client struct {
 	config             *config.ClientConfig
 	sender             *Sender
+	receiver           *Receiver
 	running            atomic.Bool
 	conn               network.Connection
-	AccountsStream     accountStream
-	TransactionsStream transactionStream
+	stopped            chan struct{}
+	AccountsStream     data.AccountStream
+	TransactionsStream data.TransactionStream
 }
 
 func NewClient(config *config.ClientConfig) (*Client, error) {
@@ -42,6 +44,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 	connection := network.NewConnection(conn)
 
 	sender := NewSender(&connection, codec)
+	receiver := NewReceiver(&connection, codec, config.OutputPath)
 
 	accountsReader, err := data.NewBatchReader(
 		config.AccountsDatasetPath,
@@ -52,7 +55,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	accountsStream := NewAccountStream(accountsReader, codec)
+	accountsStream := data.NewAccountStream(accountsReader, codec)
 
 	transactionsReader, err := data.NewBatchReader(
 		config.TransactionsDatasetPath,
@@ -63,12 +66,14 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	transactionsStream := NewTransactionStream(transactionsReader, codec)
+	transactionsStream := data.NewTransactionStream(transactionsReader, codec)
 
 	return &Client{
 		config:             config,
 		sender:             sender,
+		receiver:           receiver,
 		conn:               connection,
+		stopped:            make(chan struct{}),
 		AccountsStream:     *accountsStream,
 		TransactionsStream: *transactionsStream,
 	}, nil
@@ -98,16 +103,35 @@ func (client *Client) handleSignals() {
 	slog.Info("SIGTERM signal received")
 	client.running.Store(false)
 	client.conn.Close()
+	close(client.stopped)
 }
 
-// Add methods for the Client as necessary
+// Client streams accounts dataset first, the streams transactions dataset.
+// Meanwhile, the receiver goroutine listens for results from the server
+// and writes them to the corresponding output file, depending on the msgType.
 func (c *Client) Start() error {
 	defer c.conn.Close()
+
 	go c.handleSignals()
 
-	c.sender.Stream(&c.AccountsStream)
-	c.sender.Stream(&c.TransactionsStream)
+	go c.receiver.Listen()
 
+	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
+		return err
+	}
+	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
+		return err
+	}
+
+	slog.Info("Finished streaming datasets, waiting for results...")
+
+	<-c.receiver.Done()
+
+	// Added stopped channel to keep the client container running to verify the output file is correctly written
+	// Should be ultimately removed and the client should exit after receiving results EOF
+	slog.Info("Finished receiving results, container will stay alive — send SIGINT/SIGTERM to exit")
+
+	<-c.stopped
 	return nil
 }
 

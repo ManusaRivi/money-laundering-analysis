@@ -164,6 +164,23 @@ func ParseAccount(row []string) (protocol.AccountData, error) {
 	}, nil
 }
 
-func WriteResultsToOutput(path string, results <-chan []string) {
-	// TODO: Implement me!!
+func WriteResultsToOutput(path string, header []string, results <-chan []string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("writing header to %s: %w", path, err)
+	}
+	for row := range results {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("writing row to %s: %w", path, err)
+		}
+	}
+	return nil
 }

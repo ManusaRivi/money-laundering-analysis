@@ -12,7 +12,7 @@ import (
 )
 
 type DatasetStream interface {
-	Next() ([]byte, error)
+	GetNextBatch() ([]byte, error)
 	BatchMsgType() protocol.MsgType
 	EOFMsgType() protocol.MsgType
 	Name() string
@@ -27,9 +27,9 @@ func NewSender(conn *network.Connection, codec *codec.BinaryCodec) *Sender {
 	return &Sender{conn: conn, codec: codec}
 }
 
-func (s *Sender) Stream(ds DatasetStream) error {
+func (s *Sender) StreamDataset(ds DatasetStream) error {
 	for {
-		payload, err := ds.Next()
+		payload, err := ds.GetNextBatch()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -50,6 +50,8 @@ func (s *Sender) Stream(ds DatasetStream) error {
 		}
 	}
 
+	slog.Debug("Finished streaming dataset batches", "dataset", ds.Name())
+
 	eof, err := s.codec.EncodeEnvelope(protocol.Envelope{
 		MsgType: ds.EOFMsgType(),
 		Payload: nil,
@@ -61,6 +63,6 @@ func (s *Sender) Stream(ds DatasetStream) error {
 		return fmt.Errorf("sending %s EOF: %w", ds.Name(), err)
 	}
 
-	slog.Debug("Finished streaming dataset", "dataset", ds.Name())
+	slog.Debug("Sent EOF message", "dataset", ds.Name())
 	return nil
 }
