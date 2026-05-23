@@ -32,12 +32,14 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	inputQueue, err := broker.CreateQueueBroker(config.OutputQueueName, connSettings)
 	if err != nil {
+		slog.Error("Error creating input queue broker", "err", err)
 		return nil, err
 	}
 
 	outputExchange, err := broker.CreateExchangeBroker(config.InputQueueName, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
+		slog.Error("Error creating output exchange broker", "err", err)
 		return nil, err
 	}
 
@@ -45,6 +47,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 	if err != nil {
 		inputQueue.Close()
 		outputExchange.Close()
+		slog.Error("Error creating listener", "err", err)
 		return nil, err
 	}
 
@@ -58,9 +61,9 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 func (gateway *Gateway) Run() error {
 	defer gateway.listener.Close()
 
-	go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
+	/* go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
-	})
+	}) */
 	go gateway.handleSignals()
 
 	slog.Info("Accepting connections...")
