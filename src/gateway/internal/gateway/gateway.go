@@ -10,6 +10,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
@@ -57,10 +58,9 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 func (gateway *Gateway) Run() error {
 	defer gateway.listener.Close()
 
-	// No exchange is created yet
-	/* go gateway.outputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+	go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
-	}) */
+	})
 	go gateway.handleSignals()
 
 	slog.Info("Accepting connections...")
@@ -105,28 +105,28 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
-/* func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack, nack func()) {
+func (gateway *Gateway) handleClientResponse(msg broker.Message, ack, nack func()) {
 	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
-		clientId, err := uuid.Parse(msg.GetCorrelationId())
+		packet, err := inner.UnmarshalPacket(msg)
 		if err != nil {
-			slog.Error("Invalid correlation ID in response message", "correlationId", msg.GetCorrelationId(), "err", err)
+			slog.Error("Error unmarshalling message", "err", err)
 			nack()
 			return
 		}
 
-		client, exists := clients[clientId]
+		client, exists := clients[packet.ClientID]
 		if !exists {
-			slog.Error("No client found for response message", "clientId", clientId)
+			slog.Error("No client found for response message", "clientId", packet.ClientID)
 			nack()
 			return
 		}
 
-		if err := client.Handler.HandleResponseMessage(msg); err != nil {
-			slog.Error("Error handling client response message", "clientId", clientId, "err", err)
+		if err := client.HandleResponseMessage(packet); err != nil {
+			slog.Error("Error handling client response message", "clientId", packet.ClientID, "err", err)
 			nack()
 			return
 		}
 
 		ack()
 	})
-} */
+}

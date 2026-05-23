@@ -10,6 +10,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
 )
 
@@ -101,6 +102,45 @@ func (c *ClientConnection) receiveUntilEOF() error {
 	return nil
 }
 
+// Dispatches msg type and sends appropriate query result or EOF to client.
+// TODO: Keep track of EOF sent per client to close connection when no longer messages
+// Should be expected for a given client.
+func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
+	// Implementation for handling response messages
+	switch pkt.Type {
+	case inner.TypeQuery1Result:
+		result := &external.Query1Result{}
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 1 result: %w", err)
+		}
+
+		if err := c.sendQuery1Result(result); err != nil {
+			return fmt.Errorf("sending query 1 result: %w", err)
+		}
+	case inner.TypeQuery1EOF:
+		return c.sendEnvelope(external.MsgQuery1ResultEOF, nil)
+	case inner.TypeQuery2Result:
+		// Handle query 2 result response
+	case inner.TypeQuery2EOF:
+		return c.sendEnvelope(external.MsgQuery2ResultEOF, nil)
+	case inner.TypeQuery3Result:
+		// Handle query 3 result response
+	case inner.TypeQuery3EOF:
+		return c.sendEnvelope(external.MsgQuery3ResultEOF, nil)
+	case inner.TypeQuery4Result:
+		// Handle query 4 result response
+	case inner.TypeQuery4EOF:
+		return c.sendEnvelope(external.MsgQuery4ResultEOF, nil)
+	case inner.TypeQuery5Result:
+		// Handle query 5 result response
+	case inner.TypeQuery5EOF:
+		return c.sendEnvelope(external.MsgQuery5ResultEOF, nil)
+	default:
+		slog.Warn("Unknown packet type received", "type", pkt.Type)
+	}
+	return nil
+}
+
 func (c *ClientConnection) sendEnvelope(msgType external.MsgType, payload []byte) error {
 	envelope, err := c.codec.EncodeEnvelope(external.Envelope{
 		MsgType: msgType,
@@ -129,6 +169,16 @@ func (c *ClientConnection) sendResults() error {
 	return c.sendEnvelope(external.MsgQuery1ResultEOF, nil)
 }
 
+// Method for sending a query result received from middleware
+func (c *ClientConnection) sendQuery1Result(result *external.Query1Result) error {
+	payload, err := c.codec.EncodeQuery1ResultBatch([]external.Query1Result{(*result)})
+	if err != nil {
+		return fmt.Errorf("encoding query 1 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery1Result, payload)
+}
+
+// Soon to be deprecated method
 func (c *ClientConnection) sendQuery1Batch(transactions []external.Transaction) error {
 	results := make([]external.Query1Result, len(transactions))
 	for i, t := range transactions {
