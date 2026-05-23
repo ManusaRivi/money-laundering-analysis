@@ -3,7 +3,7 @@ module github.com/ManusaRivi/money-laundering-analysis
 go 1.26.3
 
 require (
-	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/rabbitmq/amqp091-go v1.11.0
 	github.com/spf13/viper v1.21.0
 )
 

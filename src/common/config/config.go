@@ -12,10 +12,19 @@ type Config struct {
 }
 
 type BrokerConfig struct {
-	Type           string `yaml:"type"`
-	RabbitURL      string `yaml:"url"`
-	InputQueue     string `yaml:"input_queue"`
-	OutputExchange string `yaml:"output_exchange"`
+	Type           string   `yaml:"type"`
+	RabbitURL      string   `yaml:"url"`
+	InputQueue     string   `yaml:"input_queue"`
+	OutputQueue    string   `yaml:"output_queue"`
+	OutputExchange string   `yaml:"output_exchange"`
+	ExchangeType   string   `yaml:"exchange_type"`
+	RoutingKeys    []string `yaml:"routing_keys"`
+	Prefetch       int      `yaml:"prefetch"`
+	Durable        bool     `yaml:"durable"`
+	AutoDelete     bool     `yaml:"auto_delete"`
+	Exclusive      bool     `yaml:"exclusive"`
+	NoWait         bool     `yaml:"no_wait"`
+	Internal       bool     `yaml:"internal"`
 }
 
 type WorkerConfig struct {

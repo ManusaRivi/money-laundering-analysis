@@ -49,10 +49,23 @@ type Broker interface {
 }
 
 func NewBroker(cfg config.BrokerConfig) (Broker, error) {
+	cfg = parseBrokerDefaults(cfg)
 	switch cfg.Type {
 	case "q_q":
-		return NewQueueQueueBroker(cfg)
+		return NewQueueToQueueBroker(cfg)
+	case "q_e":
+		return NewQueueToExchangeBroker(cfg)
 	default:
 		return nil, errors.New("unsupported broker type: " + cfg.Type)
 	}
+}
+
+func parseBrokerDefaults(cfg config.BrokerConfig) config.BrokerConfig {
+	if cfg.ExchangeType == "" {
+		cfg.ExchangeType = "direct"
+	}
+	if cfg.Prefetch == 0 {
+		cfg.Prefetch = 30
+	}
+	return cfg
 }
