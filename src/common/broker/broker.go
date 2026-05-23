@@ -1,6 +1,10 @@
 package broker
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+)
 
 var (
 	ErrMessageBrokerMessage      = errors.New("message broker: message error")
@@ -9,7 +13,7 @@ var (
 )
 
 type Message struct {
-	Body string
+	Body []byte
 }
 
 type ConnSettings struct {
@@ -42,4 +46,13 @@ type Broker interface {
 	//Se desconecta de la cola o exchange al que estaba conectado.
 	//Si ocurre un error interno que no puede resolverse devuelve ErrMessageBrokerClose.
 	Close() error
+}
+
+func NewBroker(cfg config.BrokerConfig) (Broker, error) {
+	switch cfg.Type {
+	case "q_q":
+		return NewQueueQueueBroker(cfg)
+	default:
+		return nil, errors.New("unsupported broker type: " + cfg.Type)
+	}
 }

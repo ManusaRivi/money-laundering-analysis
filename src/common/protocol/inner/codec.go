@@ -29,7 +29,7 @@ func MarshalTransactionPacket(clientID string, tx domain.Transaction) (*broker.M
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: string(serializedMsg)}, nil
+	return &broker.Message{Body: serializedMsg}, nil
 }
 
 func MarshalEOFPacket(clientID string) (*broker.Message, error) {
@@ -43,7 +43,7 @@ func MarshalEOFPacket(clientID string) (*broker.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: string(serializedMsg)}, nil
+	return &broker.Message{Body: serializedMsg}, nil
 }
 
 func MarshalBankInfoPacket(clientID string, bankInfo domain.BankInfo) (*broker.Message, error) {
@@ -61,12 +61,12 @@ func MarshalBankInfoPacket(clientID string, bankInfo domain.BankInfo) (*broker.M
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: string(serializedMsg)}, nil
+	return &broker.Message{Body: serializedMsg}, nil
 }
 
 func UnmarshalPacket(msg broker.Message) (*Packet, error) {
 	var packet Packet
-	err := json.Unmarshal([]byte(msg.Body), &packet)
+	err := json.Unmarshal(msg.Body, &packet)
 	if err != nil {
 		return nil, err
 	}

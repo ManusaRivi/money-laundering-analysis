@@ -46,6 +46,22 @@ services:
       - money-laundering-analysis-net
     depends_on:
       - gateway
+  
+  sync_amount_filter:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: sync_amount_filter
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml 
+    volumes:
+      - ./configs/sync_amount_filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
 networks:
   money-laundering-analysis-net:
