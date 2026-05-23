@@ -4,9 +4,22 @@ type MsgType uint8
 
 const (
 	MsgTypeInvalid       MsgType = 0
-	MsgTransactionsBatch MsgType = 1
-	MsgAccountsBatch     MsgType = 2
-	MsgEOF               MsgType = 3
+	MsgAccountsBatch     MsgType = 1
+	MsgAccountsEOF       MsgType = 2
+	MsgTransactionsBatch MsgType = 3
+	MsgTransactionsEOF   MsgType = 4
+
+	MsgQuery1Result MsgType = 5
+	MsgQuery2Result MsgType = 6
+	MsgQuery3Result MsgType = 7
+	MsgQuery4Result MsgType = 8
+	MsgQuery5Result MsgType = 9
+
+	MsgQuery1ResultEOF MsgType = 10
+	MsgQuery2ResultEOF MsgType = 11
+	MsgQuery3ResultEOF MsgType = 12
+	MsgQuery4ResultEOF MsgType = 13
+	MsgQuery5ResultEOF MsgType = 14
 )
 
 type Envelope struct {
@@ -34,4 +47,12 @@ type AccountData struct {
 	AccountNumber string
 	EntityID      string
 	EntityName    string
+}
+
+type Query1Result struct {
+	FromBank    string
+	FromAccount string
+	ToBank      string
+	ToAccount   string
+	AmountPaid  float64
 }

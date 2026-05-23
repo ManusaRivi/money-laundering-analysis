@@ -12,18 +12,18 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 )
 
-const BatchAmount = 3
-
 type Client struct {
 	config             *config.ClientConfig
-	conn               network.Connection
+	sender             *Sender
+	receiver           *Receiver
 	running            atomic.Bool
-	TransactionsReader *data.BatchReader[external.Transaction]
-	BinaryCodec        *codec.BinaryCodec
+	conn               network.Connection
+	stopped            chan struct{}
+	AccountsStream     data.AccountStream
+	TransactionsStream data.TransactionStream
 }
 
 func NewClient(config *config.ClientConfig) (*Client, error) {
@@ -37,20 +37,43 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
+	codec := codec.New()
+
+	connection := network.NewConnection(conn)
+
+	sender := NewSender(&connection, codec)
+	receiver := NewReceiver(&connection, codec, config.OutputPath)
+
+	accountsReader, err := data.NewBatchReader(
+		config.AccountsDatasetPath,
+		config.AccountBatchSize,
+		data.ParseAccount,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	accountsStream := data.NewAccountStream(accountsReader, codec)
+
 	transactionsReader, err := data.NewBatchReader(
 		config.TransactionsDatasetPath,
-		BatchAmount,
+		config.TransactionBatchSize,
 		data.ParseTransaction,
 	)
 	if err != nil {
 		return nil, err
 	}
 
+	transactionsStream := data.NewTransactionStream(transactionsReader, codec)
+
 	return &Client{
 		config:             config,
-		conn:               *network.NewConnection(conn),
-		TransactionsReader: transactionsReader,
-		BinaryCodec:        codec.New(),
+		sender:             sender,
+		receiver:           receiver,
+		conn:               connection,
+		stopped:            make(chan struct{}),
+		AccountsStream:     *accountsStream,
+		TransactionsStream: *transactionsStream,
 	}, nil
 }
 
@@ -78,69 +101,38 @@ func (client *Client) handleSignals() {
 	slog.Info("SIGTERM signal received")
 	client.running.Store(false)
 	client.conn.Close()
+	close(client.stopped)
 }
 
-// Add methods for the Client as necessary
+// Client streams accounts dataset first, the streams transactions dataset.
+// Meanwhile, the receiver goroutine listens for results from the server
+// and writes them to the corresponding output file, depending on the msgType.
 func (c *Client) Start() error {
-	defer c.conn.Close()
+	defer func() {
+		c.conn.Close()
+		c.AccountsStream.Close()
+		c.TransactionsStream.Close()
+	}()
+
 	go c.handleSignals()
 
-	for range BatchAmount {
-		batch, err := c.TransactionsReader.Next()
-		if err != nil {
-			if err == os.ErrClosed {
-				slog.Info("Batch reader closed, stopping client")
-				return nil
-			}
-		}
+	go c.receiver.Listen()
 
-		if len(batch) == 0 {
-			slog.Info("No more transactions to read, stopping client")
-			break
-		}
-
-		slog.Debug("Read batch of transactions", "batch_size", len(batch))
-
-		payload, err := c.BinaryCodec.EncodeTransactionBatch(batch)
-		if err != nil {
-			slog.Error("Error encoding batch", "err", err)
-			return err
-		}
-
-		envelope, err := c.BinaryCodec.EncodeEnvelope(external.Envelope{
-			MsgType: external.MsgTransactionsBatch,
-			Payload: payload,
-		})
-		if err != nil {
-			slog.Error("Error encoding envelope", "err", err)
-			return err
-		}
-
-		if err := c.conn.Send(envelope); err != nil {
-			slog.Error("Error sending batch", "err", err)
-			return err
-		}
+	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
+		return err
 	}
-
-	eofEnvelope, err := c.BinaryCodec.EncodeEnvelope(external.Envelope{
-		MsgType: external.MsgEOF,
-		Payload: nil,
-	})
-	if err != nil {
-		slog.Error("Error encoding EOF envelope", "err", err)
+	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
 		return err
 	}
 
-	if err := c.conn.Send(eofEnvelope); err != nil {
-		slog.Error("Error sending EOF envelope", "err", err)
-		return err
-	}
+	slog.Info("Finished streaming datasets, waiting for results...")
 
-	slog.Debug("EOF Message sent, stopping client")
+	<-c.receiver.Done()
 
+	// Added stopped channel to keep the client container running to verify the output file is correctly written
+	// Should be ultimately removed and the client should exit after receiving results EOF
+	slog.Info("Finished receiving results, container will stay alive — send SIGINT/SIGTERM to exit")
+
+	<-c.stopped
 	return nil
-}
-
-func (c *Client) Stop() {
-	// Implement the functionality here
 }

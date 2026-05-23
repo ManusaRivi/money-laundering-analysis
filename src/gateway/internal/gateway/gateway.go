@@ -9,22 +9,22 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientregistry"
-	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
+	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
+	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
+	"github.com/google/uuid"
 )
 
 type Gateway struct {
 	config         *config.GatewayConfig
-	registry       clientregistry.ClientRegistry
+	registry       *clientregistry.ClientRegistry
 	inputQueue     broker.Broker
 	outputExchange broker.Broker
 	listener       net.Listener
 	running        atomic.Bool
-	binaryCodec    *codec.BinaryCodec
+	codec          codec.Codec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
@@ -32,12 +32,14 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	inputQueue, err := broker.CreateQueueBroker(config.OutputQueueName, connSettings)
 	if err != nil {
+		slog.Error("Error creating input queue broker", "err", err)
 		return nil, err
 	}
 
 	outputExchange, err := broker.CreateExchangeBroker(config.InputQueueName, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
+		slog.Error("Error creating output exchange broker", "err", err)
 		return nil, err
 	}
 
@@ -45,10 +47,13 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 	if err != nil {
 		inputQueue.Close()
 		outputExchange.Close()
+		slog.Error("Error creating listener", "err", err)
 		return nil, err
 	}
 
-	gateway := &Gateway{outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, binaryCodec: codec.New()}
+	registry := clientregistry.NewClientRegistry()
+
+	gateway := &Gateway{registry: &registry, outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, codec: codec.New()}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -56,8 +61,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 func (gateway *Gateway) Run() error {
 	defer gateway.listener.Close()
 
-	// No exchange is created yet
-	/* go gateway.outputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+	/* go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
 	}) */
 	go gateway.handleSignals()
@@ -75,15 +79,19 @@ func (gateway *Gateway) Run() error {
 
 		slog.Info("Client connected...")
 
-		handler := messagehandler.NewMessageHandler()
-		client := clientregistry.ClientState{Conn: network.NewConnection(conn), Handler: &handler}
+		clientId := uuid.New()
+
+		client := clientconnection.NewClientConnection(clientId, conn, gateway.codec)
 		gateway.registry.Add(client)
 
-		go gateway.handleClientRequest(client)
+		go func() {
+			defer gateway.registry.Remove(client)
+			client.Run()
+		}()
 	}
 
 	gateway.outputExchange.StopConsuming()
-	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
+	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
 		for _, client := range clients {
 			client.Conn.Close()
 		}
@@ -100,46 +108,28 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
-func (gateway *Gateway) handleClientRequest(client clientregistry.ClientState) {
-loop:
-	for {
-		msg, err := client.Conn.Receive(codec.HeaderSize)
+func (gateway *Gateway) handleClientResponse(msg broker.Message, ack, nack func()) {
+	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
+		packet, err := inner.UnmarshalPacket(msg)
 		if err != nil {
-			slog.Error("Error receiving message", "err", err)
-			break
+			slog.Error("Error unmarshalling message", "err", err)
+			nack()
+			return
 		}
 
-		msgType, payloadSize := codec.DecodeHeader(msg)
-
-		payload, err := client.Conn.Receive(int(payloadSize))
-		if err != nil {
-			slog.Error("Error receiving message payload", "err", err)
-			break
+		client, exists := clients[packet.ClientID]
+		if !exists {
+			slog.Error("No client found for response message", "clientId", packet.ClientID)
+			nack()
+			return
 		}
 
-		switch msgType {
-		case external.MsgTransactionsBatch:
-			transactions, err := gateway.binaryCodec.DecodeTransactionBatch(payload)
-			if err != nil {
-				slog.Error("Error decoding transaction batch", "err", err)
-				break loop
-			}
-			client.Handler.HandleTransactionsBatch(transactions)
-		case external.MsgEOF:
-			if err := gateway.handleEndOfRecordsMessage(client); err != nil {
-				slog.Error("Error handling end of records message", "err", err)
-			}
-			slog.Info("End of records message received.")
-			break loop
+		if err := client.HandleResponseMessage(packet); err != nil {
+			slog.Error("Error handling client response message", "clientId", packet.ClientID, "err", err)
+			nack()
+			return
 		}
-	}
-}
 
-func (gateway *Gateway) handleClientResponse(msg broker.Message, ack func(), nack func()) {
-	// TODO: Implement me!
-}
-
-func (gateway *Gateway) handleEndOfRecordsMessage(client clientregistry.ClientState) error {
-	// TODO: Send EOF to output corresponding outputs
-	return nil
+		ack()
+	})
 }

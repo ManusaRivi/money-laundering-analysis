@@ -1,12 +1,12 @@
 # src/cmd/node/Dockerfile
 
 # Etapa 1: Build
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
 # Descargar dependencias aprovechando la caché de Docker
-COPY go.mod go.sum ./
+COPY go.mod go.sum ../
 RUN go mod download
 
 # Copiar todo el código fuente
