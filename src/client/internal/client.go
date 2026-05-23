@@ -15,8 +15,6 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
-const BatchAmount = 3
-
 type Client struct {
 	config             *config.ClientConfig
 	sender             *Sender
@@ -48,7 +46,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 
 	accountsReader, err := data.NewBatchReader(
 		config.AccountsDatasetPath,
-		BatchAmount,
+		config.AccountBatchSize,
 		data.ParseAccount,
 	)
 	if err != nil {
@@ -59,7 +57,7 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 
 	transactionsReader, err := data.NewBatchReader(
 		config.TransactionsDatasetPath,
-		BatchAmount,
+		config.TransactionBatchSize,
 		data.ParseTransaction,
 	)
 	if err != nil {
@@ -110,7 +108,11 @@ func (client *Client) handleSignals() {
 // Meanwhile, the receiver goroutine listens for results from the server
 // and writes them to the corresponding output file, depending on the msgType.
 func (c *Client) Start() error {
-	defer c.conn.Close()
+	defer func() {
+		c.conn.Close()
+		c.AccountsStream.Close()
+		c.TransactionsStream.Close()
+	}()
 
 	go c.handleSignals()
 
