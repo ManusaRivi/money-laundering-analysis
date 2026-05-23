@@ -6,8 +6,8 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 )
 
 type Receiver struct {
@@ -15,7 +15,7 @@ type Receiver struct {
 	codec     codec.Codec
 	outputDir string
 	done      chan struct{}
-	writers   map[protocol.MsgType]*data.QueryWriter
+	writers   map[external.MsgType]*data.QueryWriter
 }
 
 func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) *Receiver {
@@ -24,7 +24,7 @@ func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) 
 		codec:     codec,
 		outputDir: outputDir,
 		done:      make(chan struct{}),
-		writers:   make(map[protocol.MsgType]*data.QueryWriter),
+		writers:   make(map[external.MsgType]*data.QueryWriter),
 	}
 }
 
@@ -60,17 +60,17 @@ func (r *Receiver) Listen() {
 		}
 
 		switch msgType {
-		case protocol.MsgQuery1Result:
+		case external.MsgQuery1Result:
 			results, err := r.codec.DecodeQuery1ResultBatch(payload)
 			if err != nil {
 				// Should close the writer, close the connection.
 				slog.Warn("Failed to decode query 1 result", "err", err)
 				continue
 			}
-			r.writeRows(protocol.MsgQuery1Result, query1RowsToString(results))
-		case protocol.MsgQuery1ResultEOF:
+			r.writeRows(external.MsgQuery1Result, query1RowsToString(results))
+		case external.MsgQuery1ResultEOF:
 			slog.Info("Received Query 1 EOF")
-			if w, ok := r.writers[protocol.MsgQuery1Result]; ok {
+			if w, ok := r.writers[external.MsgQuery1Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
@@ -98,7 +98,7 @@ func (r *Receiver) shutdownWriters() {
 	}
 }
 
-func (r *Receiver) writeRows(resultType protocol.MsgType, rows [][]string) {
+func (r *Receiver) writeRows(resultType external.MsgType, rows [][]string) {
 	w, ok := r.writers[resultType]
 	if !ok {
 		return
@@ -106,7 +106,7 @@ func (r *Receiver) writeRows(resultType protocol.MsgType, rows [][]string) {
 	w.WriteRows(rows)
 }
 
-func query1RowsToString(results []protocol.Query1Result) [][]string {
+func query1RowsToString(results []external.Query1Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
 		rows = append(rows, []string{

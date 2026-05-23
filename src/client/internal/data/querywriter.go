@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
 
 const resultChannelBuffer = 16
@@ -12,7 +12,7 @@ const resultChannelBuffer = 16
 type QueryResultData struct {
 	filename string
 	header   []string
-	eofType  protocol.MsgType
+	eofType  external.MsgType
 }
 
 type QueryWriter struct {
@@ -38,12 +38,12 @@ func (qw *QueryWriter) WriteRows(rows [][]string) {
 	}
 }
 
-func GetQueryResultData() map[protocol.MsgType]QueryResultData {
-	return map[protocol.MsgType]QueryResultData{
-		protocol.MsgQuery1Result: {
+func GetQueryResultData() map[external.MsgType]QueryResultData {
+	return map[external.MsgType]QueryResultData{
+		external.MsgQuery1Result: {
 			filename: "query1.csv",
 			header:   []string{"from_bank", "from_account", "to_bank", "to_account", "total_amount"},
-			eofType:  protocol.MsgQuery1ResultEOF,
+			eofType:  external.MsgQuery1ResultEOF,
 		},
 	}
 }
