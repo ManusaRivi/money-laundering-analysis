@@ -9,12 +9,10 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/middleware"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientregistry"
-	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
+	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
+	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
 )
 
 type Gateway struct {
@@ -75,15 +73,17 @@ func (gateway *Gateway) Run() error {
 
 		slog.Info("Client connected...")
 
-		handler := messagehandler.NewMessageHandler()
-		client := clientregistry.ClientState{Conn: network.NewConnection(conn), Handler: &handler}
+		client := clientconnection.NewClientConnection(conn, gateway.binaryCodec)
 		gateway.registry.Add(client)
 
-		go gateway.handleClientRequest(client)
+		go func() {
+			defer gateway.registry.Remove(client)
+			client.Run()
+		}()
 	}
 
 	gateway.outputExchange.StopConsuming()
-	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
+	gateway.registry.WithLock(func(clients []*clientconnection.ClientConnection) {
 		for _, client := range clients {
 			client.Conn.Close()
 		}
@@ -98,48 +98,4 @@ func (gateway *Gateway) handleSignals() {
 	slog.Info("SIGTERM signal received")
 	gateway.running.Store(false)
 	gateway.listener.Close()
-}
-
-func (gateway *Gateway) handleClientRequest(client clientregistry.ClientState) {
-loop:
-	for {
-		msg, err := client.Conn.Receive(codec.HeaderSize)
-		if err != nil {
-			slog.Error("Error receiving message", "err", err)
-			break
-		}
-
-		msgType, payloadSize := codec.DecodeHeader(msg)
-
-		payload, err := client.Conn.Receive(int(payloadSize))
-		if err != nil {
-			slog.Error("Error receiving message payload", "err", err)
-			break
-		}
-
-		switch msgType {
-		case protocol.MsgTransactionsBatch:
-			transactions, err := gateway.binaryCodec.DecodeTransactionBatch(payload)
-			if err != nil {
-				slog.Error("Error decoding transaction batch", "err", err)
-				break loop
-			}
-			client.Handler.HandleTransactionsBatch(transactions)
-		case protocol.MsgTransactionsEOF:
-			if err := gateway.handleEndOfRecordsMessage(client); err != nil {
-				slog.Error("Error handling end of records message", "err", err)
-			}
-			slog.Info("End of records message received.")
-			break loop
-		}
-	}
-}
-
-func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {
-	// TODO: Implement me!
-}
-
-func (gateway *Gateway) handleEndOfRecordsMessage(client clientregistry.ClientState) error {
-	// TODO: Send EOF to output corresponding outputs
-	return nil
 }

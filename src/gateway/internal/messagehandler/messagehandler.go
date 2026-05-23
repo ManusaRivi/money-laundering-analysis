@@ -7,19 +7,55 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 )
 
-type MessageHandler struct {
-}
+const TransactionResultBatchSize = 10
 
-// TODO: Definir interfaz
+type MessageHandler struct {
+	accountsTotal        int
+	transactionsTotal    int
+	filteredTransactions []protocol.Transaction
+	nextResultIdx        int
+}
 
 func NewMessageHandler() MessageHandler {
-	return MessageHandler{}
+	return MessageHandler{
+		accountsTotal:     0,
+		transactionsTotal: 0,
+	}
 }
 
+// Forwarding to middleware would happen here
 func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []protocol.Transaction) {
 	for _, transaction := range transactions {
-		slog.Debug("Handling transaction", "transaction - account paid", transaction.AmountPaid)
+		if transaction.PaymentCurrency == "US Dollar" && transaction.AmountPaid < 50 {
+			messageHandler.filteredTransactions = append(messageHandler.filteredTransactions, transaction)
+		}
 	}
+	messageHandler.transactionsTotal += len(transactions)
+}
+
+// Receiving info from middleware would happen here
+func (messageHandler *MessageHandler) GetTransactionResultBatch() []protocol.Transaction {
+	remaining := len(messageHandler.filteredTransactions) - messageHandler.nextResultIdx
+	if remaining <= 0 {
+		return nil
+	}
+	size := TransactionResultBatchSize
+	size = min(size, remaining)
+	batch := messageHandler.filteredTransactions[messageHandler.nextResultIdx : messageHandler.nextResultIdx+size]
+	messageHandler.nextResultIdx += size
+	return batch
+}
+
+func (messageHandler *MessageHandler) HandleAccountsBatch(accounts []protocol.AccountData) {
+	messageHandler.accountsTotal += len(accounts)
+}
+
+func (messageHandler *MessageHandler) HandleTransactionsEOF() {
+	slog.Info("Received all transactions", slog.Int("total", messageHandler.transactionsTotal))
+}
+
+func (messageHandler *MessageHandler) HandleAccountsEOF() {
+	slog.Info("Received all accounts", slog.Int("total", messageHandler.accountsTotal))
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage() (*middleware.Message, error) {
