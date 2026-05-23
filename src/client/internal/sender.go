@@ -20,10 +20,10 @@ type DatasetStream interface {
 
 type Sender struct {
 	conn  *network.Connection
-	codec *codec.BinaryCodec
+	codec codec.Codec
 }
 
-func NewSender(conn *network.Connection, codec *codec.BinaryCodec) *Sender {
+func NewSender(conn *network.Connection, codec codec.Codec) *Sender {
 	return &Sender{conn: conn, codec: codec}
 }
 

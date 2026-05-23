@@ -13,16 +13,17 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
+	"github.com/google/uuid"
 )
 
 type Gateway struct {
 	config         *config.GatewayConfig
-	registry       clientregistry.ClientRegistry
+	registry       *clientregistry.ClientRegistry
 	inputQueue     middleware.Middleware
 	outputExchange middleware.Middleware
 	listener       net.Listener
 	running        atomic.Bool
-	binaryCodec    *codec.BinaryCodec
+	codec          codec.Codec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
@@ -46,7 +47,9 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 		return nil, err
 	}
 
-	gateway := &Gateway{outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, binaryCodec: codec.New()}
+	registry := clientregistry.NewClientRegistry()
+
+	gateway := &Gateway{registry: &registry, outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, codec: codec.New()}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -73,7 +76,9 @@ func (gateway *Gateway) Run() error {
 
 		slog.Info("Client connected...")
 
-		client := clientconnection.NewClientConnection(conn, gateway.binaryCodec)
+		clientId := uuid.New()
+
+		client := clientconnection.NewClientConnection(clientId, conn, gateway.codec)
 		gateway.registry.Add(client)
 
 		go func() {
@@ -83,7 +88,7 @@ func (gateway *Gateway) Run() error {
 	}
 
 	gateway.outputExchange.StopConsuming()
-	gateway.registry.WithLock(func(clients []*clientconnection.ClientConnection) {
+	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
 		for _, client := range clients {
 			client.Conn.Close()
 		}
@@ -99,3 +104,29 @@ func (gateway *Gateway) handleSignals() {
 	gateway.running.Store(false)
 	gateway.listener.Close()
 }
+
+/* func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack, nack func()) {
+	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
+		clientId, err := uuid.Parse(msg.GetCorrelationId())
+		if err != nil {
+			slog.Error("Invalid correlation ID in response message", "correlationId", msg.GetCorrelationId(), "err", err)
+			nack()
+			return
+		}
+
+		client, exists := clients[clientId]
+		if !exists {
+			slog.Error("No client found for response message", "clientId", clientId)
+			nack()
+			return
+		}
+
+		if err := client.Handler.HandleResponseMessage(msg); err != nil {
+			slog.Error("Error handling client response message", "clientId", clientId, "err", err)
+			nack()
+			return
+		}
+
+		ack()
+	})
+} */

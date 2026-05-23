@@ -12,13 +12,13 @@ import (
 
 type Receiver struct {
 	conn      *network.Connection
-	codec     *codec.BinaryCodec
+	codec     codec.Codec
 	outputDir string
 	done      chan struct{}
 	writers   map[protocol.MsgType]*data.QueryWriter
 }
 
-func NewReceiver(conn *network.Connection, codec *codec.BinaryCodec, outputDir string) *Receiver {
+func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) *Receiver {
 	return &Receiver{
 		conn:      conn,
 		codec:     codec,
@@ -61,8 +61,9 @@ func (r *Receiver) Listen() {
 
 		switch msgType {
 		case protocol.MsgQuery1Result:
-			results, err := r.codec.DecodeQuery1Result(payload)
+			results, err := r.codec.DecodeQuery1ResultBatch(payload)
 			if err != nil {
+				// Should close the writer, close the connection.
 				slog.Warn("Failed to decode query 1 result", "err", err)
 				continue
 			}

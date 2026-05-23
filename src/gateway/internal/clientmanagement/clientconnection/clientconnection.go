@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/google/uuid"
+
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
@@ -16,17 +18,19 @@ import (
 // dataset EOFs arrive, then sends a result EOF back. Middleware routing will
 // hook in here later.
 type ClientConnection struct {
-	Conn    network.Connection
-	Handler *messagehandler.MessageHandler
-	codec   *codec.BinaryCodec
+	ClientId uuid.UUID
+	Conn     network.Connection
+	Handler  *messagehandler.MessageHandler
+	codec    codec.Codec
 }
 
-func NewClientConnection(conn net.Conn, binaryCodec *codec.BinaryCodec) *ClientConnection {
+func NewClientConnection(clientId uuid.UUID, conn net.Conn, codec codec.Codec) *ClientConnection {
 	handler := messagehandler.NewMessageHandler()
 	return &ClientConnection{
-		Conn:    network.NewConnection(conn),
-		Handler: &handler,
-		codec:   binaryCodec,
+		ClientId: clientId,
+		Conn:     network.NewConnection(conn),
+		Handler:  &handler,
+		codec:    codec,
 	}
 }
 
@@ -44,7 +48,7 @@ func (c *ClientConnection) Run() {
 	}
 
 	if err := c.sendResults(); err != nil {
-		slog.Error("Error sending results EOF", "err", err)
+		slog.Error("Error sending results", "err", err)
 	}
 }
 
@@ -97,7 +101,20 @@ func (c *ClientConnection) receiveUntilEOF() error {
 	return nil
 }
 
-// Gets transactions saved in the handler cache in batches.
+func (c *ClientConnection) sendEnvelope(msgType protocol.MsgType, payload []byte) error {
+	envelope, err := c.codec.EncodeEnvelope(protocol.Envelope{
+		MsgType: msgType,
+		Payload: payload,
+	})
+	if err != nil {
+		return fmt.Errorf("encoding envelope of type %v: %w", msgType, err)
+	}
+	if err := c.Conn.Send(envelope); err != nil {
+		return fmt.Errorf("sending envelope of type %v: %w", msgType, err)
+	}
+	return nil
+}
+
 func (c *ClientConnection) sendResults() error {
 	for {
 		batch := c.Handler.GetTransactionResultBatch()
@@ -109,17 +126,7 @@ func (c *ClientConnection) sendResults() error {
 		}
 	}
 
-	envelope, err := c.codec.EncodeEnvelope(protocol.Envelope{
-		MsgType: protocol.MsgQuery1ResultEOF,
-		Payload: nil,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding query 1 EOF: %w", err)
-	}
-	if err := c.Conn.Send(envelope); err != nil {
-		return fmt.Errorf("sending query 1 EOF: %w", err)
-	}
-	return nil
+	return c.sendEnvelope(protocol.MsgQuery1ResultEOF, nil)
 }
 
 func (c *ClientConnection) sendQuery1Batch(transactions []protocol.Transaction) error {
@@ -138,15 +145,5 @@ func (c *ClientConnection) sendQuery1Batch(transactions []protocol.Transaction) 
 	if err != nil {
 		return fmt.Errorf("encoding query 1 batch: %w", err)
 	}
-	envelope, err := c.codec.EncodeEnvelope(protocol.Envelope{
-		MsgType: protocol.MsgQuery1Result,
-		Payload: payload,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding query 1 envelope: %w", err)
-	}
-	if err := c.Conn.Send(envelope); err != nil {
-		return fmt.Errorf("sending query 1 batch: %w", err)
-	}
-	return nil
+	return c.sendEnvelope(protocol.MsgQuery1Result, payload)
 }

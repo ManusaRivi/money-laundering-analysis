@@ -59,7 +59,7 @@ func (qw *QueryWriter) Start(spec QueryResultData, outputDir string) {
 		defer close(qw.done)
 		if err := WriteResultsToOutput(path, header, ch); err != nil {
 			slog.Error("Result writer failed", "path", path, "err", err)
-			// Drain so producers don't block if writing fails early.
+			// Consume from channel anyway to prevent the producer (WriteRows method) from blocking the client.
 			for range ch {
 			}
 		}

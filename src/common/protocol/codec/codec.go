@@ -330,7 +330,7 @@ func (BinaryCodec) EncodeQuery1ResultBatch(results []protocol.Query1Result) ([]b
 	return batch.Bytes(), nil
 }
 
-func (BinaryCodec) DecodeQuery1Result(payload []byte) ([]protocol.Query1Result, error) {
+func (BinaryCodec) DecodeQuery1ResultBatch(payload []byte) ([]protocol.Query1Result, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {

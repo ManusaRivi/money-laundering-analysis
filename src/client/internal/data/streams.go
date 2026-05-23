@@ -8,10 +8,10 @@ import (
 // accountStream adapts a type accounts BatchReader to DatasetStream.
 type AccountStream struct {
 	reader *BatchReader[protocol.AccountData]
-	codec  *codec.BinaryCodec
+	codec  codec.Codec
 }
 
-func NewAccountStream(reader *BatchReader[protocol.AccountData], codec *codec.BinaryCodec) *AccountStream {
+func NewAccountStream(reader *BatchReader[protocol.AccountData], codec codec.Codec) *AccountStream {
 	return &AccountStream{reader: reader, codec: codec}
 }
 
@@ -26,14 +26,17 @@ func (a *AccountStream) GetNextBatch() ([]byte, error) {
 func (a *AccountStream) BatchMsgType() protocol.MsgType { return protocol.MsgAccountsBatch }
 func (a *AccountStream) EOFMsgType() protocol.MsgType   { return protocol.MsgAccountsEOF }
 func (a *AccountStream) Name() string                   { return "accounts" }
+func (a *AccountStream) Close() error {
+	return a.reader.Close()
+}
 
 // TransactionStream adapts a typed transactions BatchReader to DatasetStream.
 type TransactionStream struct {
 	reader *BatchReader[protocol.Transaction]
-	codec  *codec.BinaryCodec
+	codec  codec.Codec
 }
 
-func NewTransactionStream(reader *BatchReader[protocol.Transaction], codec *codec.BinaryCodec) *TransactionStream {
+func NewTransactionStream(reader *BatchReader[protocol.Transaction], codec codec.Codec) *TransactionStream {
 	return &TransactionStream{reader: reader, codec: codec}
 }
 
@@ -48,3 +51,6 @@ func (t *TransactionStream) GetNextBatch() ([]byte, error) {
 func (t *TransactionStream) BatchMsgType() protocol.MsgType { return protocol.MsgTransactionsBatch }
 func (t *TransactionStream) EOFMsgType() protocol.MsgType   { return protocol.MsgTransactionsEOF }
 func (t *TransactionStream) Name() string                   { return "transactions" }
+func (t *TransactionStream) Close() error {
+	return t.reader.Close()
+}
