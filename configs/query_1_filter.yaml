@@ -2,7 +2,7 @@ broker:
     type: "q_q"
     url: "amqp://guest:guest@rabbitmq:5672/"
     input: "q_filter_in"
-    output: "q_next_stage"
+    output: "q_output"
 
 worker:
     type: "SyncFilter"
@@ -10,5 +10,5 @@ worker:
     params:
         type: "amount"
         field: "Amount"
-        operator: ">"
-        value_float: 1000.0
+        operator: "<"
+        value_float: 50.0
