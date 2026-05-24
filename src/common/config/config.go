@@ -14,8 +14,8 @@ type Config struct {
 type BrokerConfig struct {
 	Type           string `yaml:"type"`
 	RabbitURL      string `yaml:"url"`
-	InputQueue     string `yaml:"input_queue"`
-	OutputExchange string `yaml:"output_exchange"`
+	InputQueue     string `yaml:"input"`
+	OutputExchange string `yaml:"output"`
 }
 
 type WorkerConfig struct {
