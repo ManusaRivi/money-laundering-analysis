@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
@@ -59,11 +61,15 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 }
 
 func (gateway *Gateway) Run() error {
-	defer gateway.listener.Close()
-
-	/* go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
+	defer func() {
+		gateway.listener.Close()
+		gateway.inputQueue.StopConsuming()
+		gateway.inputQueue.Close()
+	}()
+	go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
-	}) */
+	})
+
 	go gateway.handleSignals()
 
 	slog.Info("Accepting connections...")
@@ -86,7 +92,7 @@ func (gateway *Gateway) Run() error {
 
 		go func() {
 			defer gateway.registry.Remove(client)
-			client.Run()
+			gateway.HandleClientRequest(client)
 		}()
 	}
 
@@ -106,6 +112,103 @@ func (gateway *Gateway) handleSignals() {
 	slog.Info("SIGTERM signal received")
 	gateway.running.Store(false)
 	gateway.listener.Close()
+}
+
+func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection) {
+loop:
+	for {
+		header, err := c.Conn.Receive(codec.HeaderSize)
+		if err != nil {
+			slog.Error("Error receiving header", "err", err)
+			return
+		}
+
+		msgType, payloadSize := codec.DecodeHeader(header)
+
+		payload, err := c.Conn.Receive(int(payloadSize))
+		if err != nil {
+			slog.Error("Error receiving payload", "err", err)
+			return
+		}
+
+		switch msgType {
+		case external.MsgAccountsBatch:
+			accounts, err := gateway.codec.DecodeAccountBatch(payload)
+			if err != nil {
+				slog.Error("decoding account batch", "error", err)
+				return
+			}
+			// Since our internal protocol handles single account messages, we're sending
+			// one message for each account in the inbound batch.
+			for _, account := range accounts {
+				bankInfo := domain.BankInfo{
+					ID:            account.BankID,
+					Name:          account.BankName,
+					AccountNumber: account.AccountNumber,
+					EntityID:      account.EntityID,
+					EntityName:    account.EntityName,
+				}
+				msg, err := inner.MarshalBankInfoPacket(c.ClientId, bankInfo)
+				if err != nil {
+					slog.Error("Error marshalling bank info packet", "error", err)
+					return
+				}
+				gateway.outputExchange.Send(msg)
+				// ACK to Client would be sent here.
+			}
+		case external.MsgAccountsEOF:
+			// This case will be potentially deprecated.
+			slog.Debug("Received accounts EOF")
+			c.Handler.HandleAccountsEOF()
+		case external.MsgTransactionsBatch:
+			transactions, err := gateway.codec.DecodeTransactionBatch(payload)
+			if err != nil {
+				slog.Error("decoding transaction batch", "error", err)
+				return
+			}
+			for _, transaction := range transactions {
+				tx := domain.Transaction{
+					Timestamp: transaction.Timestamp,
+					Origin: domain.Account{
+						BankID: transaction.FromBank,
+						ID:     transaction.FromAccount,
+					},
+					Dest: domain.Account{
+						BankID: transaction.ToBank,
+						ID:     transaction.ToAccount,
+					},
+					Paid: domain.Money{
+						Amount:   transaction.AmountPaid,
+						Currency: transaction.PaymentCurrency,
+					},
+					Received: domain.Money{
+						Amount:   transaction.AmountReceived,
+						Currency: transaction.ReceivingCurrency,
+					},
+					Format: transaction.PaymentFormat,
+				}
+				msg, err := inner.MarshalTransactionPacket(c.ClientId, tx)
+				if err != nil {
+					slog.Error("Error marshalling transaction packet", "error", err)
+					return
+				}
+				gateway.outputExchange.Send(msg)
+				// ACK to Client would be sent here.
+			}
+		case external.MsgTransactionsEOF:
+			slog.Debug("Received transactions EOF")
+			msg, err := inner.MarshalEOFPacket(c.ClientId)
+			if err != nil {
+				slog.Error("Error marshalling EOF packet", "error", err)
+				return
+			}
+			gateway.outputExchange.Send(msg)
+			// ACK to Client would be sent here.
+			break loop
+		default:
+			slog.Warn("Unknown message type received", "msgType", msgType)
+		}
+	}
 }
 
 func (gateway *Gateway) handleClientResponse(msg broker.Message, ack, nack func()) {

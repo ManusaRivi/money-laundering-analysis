@@ -1,5 +1,5 @@
-input_queue_name: "input_queue"
-output_queue_name: "output_queue"
+input_queue_name: "q_output"
+output_queue_name: "q_filter_in"
 server_host: "0.0.0.0"
 server_port: 8080
 mom_host: "rabbitmq"
