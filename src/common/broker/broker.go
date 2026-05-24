@@ -52,9 +52,9 @@ func NewBroker(cfg config.BrokerConfig) (Broker, error) {
 	cfg = parseBrokerDefaults(cfg)
 	switch cfg.Type {
 	case "q_q":
-		return NewQueueToQueueBroker(cfg)
+		return newQueueToQueueBroker(cfg)
 	case "q_e":
-		return NewQueueToExchangeBroker(cfg)
+		return newQueueToExchangeBroker(cfg)
 	default:
 		return nil, errors.New("unsupported broker type: " + cfg.Type)
 	}

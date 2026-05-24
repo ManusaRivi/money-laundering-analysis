@@ -12,7 +12,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type QueueToExchangeBroker struct {
+type queueToExchangeBroker struct {
 	conn           *amqp.Connection
 	channel        *amqp.Channel
 	inputQueue     amqp.Queue
@@ -24,7 +24,7 @@ type QueueToExchangeBroker struct {
 	config         config.BrokerConfig
 }
 
-func NewQueueToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
+func newQueueToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
 	if cfg.InputQueue == "" {
 		return nil, errors.New("input_queue is required for q_e broker")
 	}
@@ -41,10 +41,10 @@ func NewQueueToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
 		cfg.ExchangeType = "direct"
 	}
 
-	return createQueueToExchangeBroker(cfg, cfg.RabbitURL)
+	return buildQueueToExchangeBroker(cfg, cfg.RabbitURL)
 }
 
-func createQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
+func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
 	conn, channel, err := connectRabbit(rabbitURL)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func createQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Bro
 		}
 	}
 
-	return &QueueToExchangeBroker{
+	return &queueToExchangeBroker{
 		conn:           conn,
 		channel:        channel,
 		inputQueue:     inputQueue,
@@ -112,7 +112,7 @@ func createQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Bro
 	}, nil
 }
 
-func (qb *QueueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
+func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -162,7 +162,7 @@ func (qb *QueueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, a
 	return nil
 }
 
-func (qb *QueueToExchangeBroker) StopConsuming() error {
+func (qb *queueToExchangeBroker) StopConsuming() error {
 	qb.mu.Lock()
 	if qb.state != consuming {
 		qb.mu.Unlock()
@@ -182,7 +182,7 @@ func (qb *QueueToExchangeBroker) StopConsuming() error {
 	return nil
 }
 
-func (qb *QueueToExchangeBroker) Send(msg Message) error {
+func (qb *queueToExchangeBroker) Send(msg Message) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -218,7 +218,7 @@ func (qb *QueueToExchangeBroker) Send(msg Message) error {
 	return nil
 }
 
-func (qb *QueueToExchangeBroker) Close() error {
+func (qb *queueToExchangeBroker) Close() error {
 	errStop := qb.StopConsuming()
 	errChannel := qb.channel.Close()
 	errConn := qb.conn.Close()
