@@ -111,7 +111,7 @@ func (qb *exchangeToQueueBroker) StartConsuming(callbackFunc func(msg Message, a
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	if qb.state == consuming {
 		qb.mu.Unlock()
@@ -133,9 +133,9 @@ func (qb *exchangeToQueueBroker) StartConsuming(callbackFunc func(msg Message, a
 	)
 	if err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
-			return ErrMessageBrokerDisconnected
+			return ErrBrokerDisconnected
 		}
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 
 	qb.mu.Lock()
@@ -151,7 +151,7 @@ func (qb *exchangeToQueueBroker) StartConsuming(callbackFunc func(msg Message, a
 	defer qb.mu.Unlock()
 	if qb.state == consuming {
 		qb.state = closed
-		return ErrMessageBrokerDisconnected
+		return ErrBrokerDisconnected
 	}
 
 	return nil
@@ -167,7 +167,7 @@ func (qb *exchangeToQueueBroker) StopConsuming() error {
 	qb.mu.Unlock()
 
 	if err := qb.channel.Cancel(consumerTag, false); err != nil {
-		return ErrMessageBrokerDisconnected
+		return ErrBrokerDisconnected
 	}
 
 	qb.mu.Lock()
@@ -181,7 +181,7 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	qb.mu.Unlock()
 
@@ -199,9 +199,9 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 		},
 	); err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
-			return ErrMessageBrokerDisconnected
+			return ErrBrokerDisconnected
 		}
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	return nil
 }
@@ -217,7 +217,7 @@ func (qb *exchangeToQueueBroker) Close() error {
 	qb.mu.Unlock()
 
 	if errStop != nil || errChannel != nil || errConn != nil {
-		return ErrMessageBrokerClose
+		return ErrBrokerClose
 	}
 	return nil
 }

@@ -54,7 +54,7 @@ func buildBrokerConfig(cfg config.BrokerConfig) (config.BrokerConfig, error) {
 		return config.BrokerConfig{}, err
 	}
 
-	if isInputExchangeType(cfg.Type) {
+	if broker.IsInputExchangeType(cfg.Type) {
 		if cfg.Input == "" {
 			if cfg.WorkerPrefix == "" {
 				return config.BrokerConfig{}, fmt.Errorf("WORKER_PREFIX environment variable is required for input exchange")
@@ -77,7 +77,7 @@ func buildBrokerConfig(cfg config.BrokerConfig) (config.BrokerConfig, error) {
 		cfg.Input = cfg.WorkerPrefix
 	}
 
-	if isOutputExchangeType(cfg.Type) {
+	if broker.IsOutputExchangeType(cfg.Type) {
 		if cfg.Output == "" {
 			if cfg.NextWorkerPrefix == "" {
 				return config.BrokerConfig{}, fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output exchange")
@@ -149,12 +149,4 @@ func buildRoutingKeys(prefix string, amount int) []string {
 		keys[i] = fmt.Sprintf("%s_%d", prefix, i)
 	}
 	return keys
-}
-
-func isInputExchangeType(brokerType string) bool {
-	return brokerType == "e-q" || brokerType == "e-e"
-}
-
-func isOutputExchangeType(brokerType string) bool {
-	return brokerType == "q-e" || brokerType == "e-e"
 }

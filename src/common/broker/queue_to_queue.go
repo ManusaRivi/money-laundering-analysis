@@ -104,7 +104,7 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	if qb.state == consuming {
 		qb.mu.Unlock()
@@ -118,9 +118,9 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	if qb.config.Prefetch > 0 {
 		if err := qb.channel.Qos(qb.config.Prefetch, 0, false); err != nil {
 			if errors.Is(err, amqp.ErrClosed) {
-				return ErrMessageBrokerDisconnected
+				return ErrBrokerDisconnected
 			}
-			return ErrMessageBrokerMessage
+			return ErrBrokerMessage
 		}
 	}
 
@@ -138,9 +138,9 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	)
 	if err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
-			return ErrMessageBrokerDisconnected
+			return ErrBrokerDisconnected
 		}
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 
 	qb.mu.Lock()
@@ -156,7 +156,7 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	defer qb.mu.Unlock()
 	if qb.state == consuming {
 		qb.state = closed
-		return ErrMessageBrokerDisconnected
+		return ErrBrokerDisconnected
 	}
 
 	return nil
@@ -172,7 +172,7 @@ func (qb *queueToQueueBroker) StopConsuming() error {
 	qb.mu.Unlock()
 
 	if err := qb.channel.Cancel(consumerTag, false); err != nil {
-		return ErrMessageBrokerDisconnected
+		return ErrBrokerDisconnected
 	}
 
 	qb.mu.Lock()
@@ -186,7 +186,7 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	qb.mu.Unlock()
 
@@ -209,9 +209,9 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 		},
 	); err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
-			return ErrMessageBrokerDisconnected
+			return ErrBrokerDisconnected
 		}
-		return ErrMessageBrokerMessage
+		return ErrBrokerMessage
 	}
 	return nil
 }
@@ -227,7 +227,7 @@ func (qb *queueToQueueBroker) Close() error {
 	qb.mu.Unlock()
 
 	if errStop != nil || errChannel != nil || errConn != nil {
-		return ErrMessageBrokerClose
+		return ErrBrokerClose
 	}
 	return nil
 }
