@@ -2,13 +2,14 @@ package filter
 
 import (
 	"fmt"
+
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 )
 
-type SyncAmountFilter struct {
+type SyncFilter struct {
 	Broker broker.Broker
-	Type  string `json:"type"`  // Tipo de filtro: "amount", "date_range", etc.
-	Field string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
+	Type   string `json:"type"`  // Tipo de filtro: "amount", "date_range", etc.
+	Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
 
 	// Campos para filtros simples (amount, string)
 	Operator   string  `json:"operator"`
@@ -20,20 +21,24 @@ type SyncAmountFilter struct {
 	// ToDate      string  `json:"to_date"`
 }
 
-func NewSyncAmountFilter(params map[string]any, broker broker.Broker) (*SyncAmountFilter, error) {
-	typeVal, ok := params["type"].(string); if !ok {
+func NewSyncFilter(params map[string]any, broker broker.Broker) (*SyncFilter, error) {
+	typeVal, ok := params["type"].(string)
+	if !ok {
 		return nil, fmt.Errorf("Invalid type parameter for SyncAmountFilter")
 	}
-	field, ok := params["field"].(string); if !ok {
+	field, ok := params["field"].(string)
+	if !ok {
 		return nil, fmt.Errorf("Invalid field parameter for SyncAmountFilter")
 	}
-	operator, ok := params["operator"].(string); if !ok {
+	operator, ok := params["operator"].(string)
+	if !ok {
 		return nil, fmt.Errorf("Invalid operator parameter for SyncAmountFilter")
 	}
-	valueFloat, ok := params["value_float"].(float64); if !ok {
+	valueFloat, ok := params["value_float"].(float64)
+	if !ok {
 		return nil, fmt.Errorf("Invalid value_float parameter for SyncAmountFilter")
 	}
-	return &SyncAmountFilter{
+	return &SyncFilter{
 		Broker:     broker,
 		Type:       typeVal,
 		Field:      field,
@@ -42,8 +47,8 @@ func NewSyncAmountFilter(params map[string]any, broker broker.Broker) (*SyncAmou
 	}, nil
 }
 
-func (f *SyncAmountFilter) Run() error {
+func (f *SyncFilter) Run() error {
 	return nil
 }
 
-func (f *SyncAmountFilter) Stop() {}
+func (f *SyncFilter) Stop() {}

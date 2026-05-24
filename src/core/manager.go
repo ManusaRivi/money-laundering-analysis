@@ -23,10 +23,10 @@ func RunManager(cfg *config.Config) error {
 	workerConfig := cfg.Worker
 	var w Worker
 	switch workerConfig.Type {
-	case "SyncAmountFilter":
-		w, err = filter.NewSyncAmountFilter(workerConfig.Params, communicationBroker)
+	case "SyncFilter":
+		w, err = filter.NewSyncFilter(workerConfig.Params, communicationBroker)
 		if err != nil {
-			return fmt.Errorf("Failed to create SyncAmountFilter: %v", err)
+			return fmt.Errorf("Failed to create SyncFilter: %v", err)
 		}
 	// case "MaxAggregator":
 	// 	w, err = aggregator.NewMaxAggregator(workerConfig.Params, communicationBroker)
