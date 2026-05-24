@@ -51,10 +51,14 @@ type Broker interface {
 func NewBroker(cfg config.BrokerConfig) (Broker, error) {
 	cfg = parseBrokerDefaults(cfg)
 	switch cfg.Type {
-	case "q_q":
+	case "q-q":
 		return newQueueToQueueBroker(cfg)
-	case "q_e":
+	case "q-e":
 		return newQueueToExchangeBroker(cfg)
+	case "e-q":
+		return newExchangeToQueueBroker(cfg)
+	case "e-e":
+		return newExchangeToExchangeBroker(cfg)
 	default:
 		return nil, errors.New("unsupported broker type: " + cfg.Type)
 	}

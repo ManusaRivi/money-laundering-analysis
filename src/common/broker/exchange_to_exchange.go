@@ -12,39 +12,39 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type queueToExchangeBroker struct {
+type exchangeToExchangeBroker struct {
 	conn           *amqp.Connection
 	channel        *amqp.Channel
 	inputQueue     amqp.Queue
 	outputExchange string
-	routingKeys    []string
+	outputKeys     []string
 	state          consumerState
 	consumerTag    string
 	mu             sync.Mutex
 	config         config.BrokerConfig
 }
 
-func newQueueToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
+func newExchangeToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
 	if cfg.Input == "" {
-		return nil, errors.New("input is required for q-e broker")
+		return nil, errors.New("input is required for e-e broker")
 	}
 	if cfg.Output == "" {
-		return nil, errors.New("output is required for q-e broker")
+		return nil, errors.New("output is required for e-e broker")
 	}
 	if cfg.RabbitURL == "" {
-		return nil, errors.New("url is required for q-e broker")
+		return nil, errors.New("url is required for e-e broker")
+	}
+	if len(cfg.InputKeys) == 0 {
+		return nil, errors.New("input_keys is required for e-e broker")
 	}
 	if len(cfg.OutputKeys) == 0 {
-		return nil, errors.New("output_keys is required for q-e broker")
-	}
-	if cfg.ExchangeType == "" {
-		cfg.ExchangeType = "direct"
+		return nil, errors.New("output_keys is required for e-e broker")
 	}
 
-	return buildQueueToExchangeBroker(cfg, cfg.RabbitURL)
+	return buildExchangeToExchangeBroker(cfg, cfg.RabbitURL)
 }
 
-func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
+func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
 	conn, channel, err := connectRabbit(rabbitURL)
 	if err != nil {
 		return nil, err
@@ -54,23 +54,24 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		cfg.Prefetch = 30
 	}
 
-	queueArgs := amqp.Table{}
-	if cfg.Durable {
-		queueArgs[amqp.QueueTypeArg] = amqp.QueueTypeQuorum
-	}
-
 	inputQueue, err := channel.QueueDeclare(
-		cfg.Input,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
-		queueArgs,
+		"",
+		false,
+		false,
+		true,
+		false,
+		nil,
 	)
 	if err != nil {
 		channel.Close()
 		conn.Close()
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
+		return nil, fmt.Errorf("failed to declare input queue: %w", err)
+	}
+
+	if err := bindInputQueue(channel, cfg, inputQueue.Name); err != nil {
+		channel.Close()
+		conn.Close()
+		return nil, err
 	}
 
 	if cfg.Prefetch > 0 {
@@ -92,21 +93,21 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 	); err != nil {
 		channel.Close()
 		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
+		return nil, fmt.Errorf("failed to declare output exchange: %w", err)
 	}
 
-	return &queueToExchangeBroker{
+	return &exchangeToExchangeBroker{
 		conn:           conn,
 		channel:        channel,
 		inputQueue:     inputQueue,
 		outputExchange: cfg.Output,
-		routingKeys:    cfg.OutputKeys,
+		outputKeys:     cfg.OutputKeys,
 		state:          idle,
 		config:         cfg,
 	}, nil
 }
 
-func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
+func (qb *exchangeToExchangeBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -156,7 +157,7 @@ func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, a
 	return nil
 }
 
-func (qb *queueToExchangeBroker) StopConsuming() error {
+func (qb *exchangeToExchangeBroker) StopConsuming() error {
 	qb.mu.Lock()
 	if qb.state != consuming {
 		qb.mu.Unlock()
@@ -176,7 +177,7 @@ func (qb *queueToExchangeBroker) StopConsuming() error {
 	return nil
 }
 
-func (qb *queueToExchangeBroker) Send(msg Message) error {
+func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -184,14 +185,10 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if len(qb.routingKeys) == 0 {
-		return ErrMessageBrokerMessage
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, key := range qb.routingKeys {
+	for _, key := range qb.outputKeys {
 		if err := qb.channel.PublishWithContext(
 			ctx,
 			qb.outputExchange,
@@ -212,7 +209,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	return nil
 }
 
-func (qb *queueToExchangeBroker) Close() error {
+func (qb *exchangeToExchangeBroker) Close() error {
 	errStop := qb.StopConsuming()
 	errChannel := qb.channel.Close()
 	errConn := qb.conn.Close()

@@ -1,12 +1,12 @@
+# q-q example (queue -> queue)
+# Names can be provided here or derived from env.
+
 rabbitmq:
-  type: q_q
+  type: q-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input_queue: input_queue
-  output_queue: output_queue
-  output_exchange: tx.usd
+  input: tx_1
+  output: tx_2
   exchange_type: direct
-  routing_keys:
-    - tx.usd
   prefetch: 30
   durable: true
   auto_delete: false
@@ -21,3 +21,9 @@ worker:
     field: Amount
     operator: lt
     value_float: 50
+
+# Optional envs used when input/output are omitted
+# WORKER_PREFIX=tx_1
+# NEXT_WORKER_PREFIX=tx_2
+# ID=0
+# NEXT_WORKER_AMOUNT=3

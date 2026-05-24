@@ -24,17 +24,17 @@ type queueToQueueBroker struct {
 }
 
 func newQueueToQueueBroker(cfg config.BrokerConfig) (Broker, error) {
-	if cfg.InputQueue == "" {
-		return nil, errors.New("input_queue is required for q_q broker")
+	if cfg.Input == "" {
+		return nil, errors.New("input is required for q-q broker")
 	}
-	if cfg.OutputQueue == "" {
-		return nil, errors.New("output_queue is required for q_q broker")
+	if cfg.Output == "" {
+		return nil, errors.New("output is required for q-q broker")
 	}
 	if cfg.RabbitURL == "" {
-		return nil, errors.New("url is required for q_q broker")
+		return nil, errors.New("url is required for q-q broker")
 	}
 
-	return buildQueueToQueueBroker(cfg.InputQueue, cfg.OutputQueue, cfg.RabbitURL, cfg)
+	return buildQueueToQueueBroker(cfg.Input, cfg.Output, cfg.RabbitURL, cfg)
 }
 
 func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabbitURL string, cfg config.BrokerConfig) (Broker, error) {

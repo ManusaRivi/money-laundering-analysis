@@ -12,39 +12,35 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type queueToExchangeBroker struct {
-	conn           *amqp.Connection
-	channel        *amqp.Channel
-	inputQueue     amqp.Queue
-	outputExchange string
-	routingKeys    []string
-	state          consumerState
-	consumerTag    string
-	mu             sync.Mutex
-	config         config.BrokerConfig
+type exchangeToQueueBroker struct {
+	conn        *amqp.Connection
+	channel     *amqp.Channel
+	inputQueue  amqp.Queue
+	outputQueue string
+	state       consumerState
+	consumerTag string
+	mu          sync.Mutex
+	config      config.BrokerConfig
 }
 
-func newQueueToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
+func newExchangeToQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 	if cfg.Input == "" {
-		return nil, errors.New("input is required for q-e broker")
+		return nil, errors.New("input is required for e-q broker")
 	}
 	if cfg.Output == "" {
-		return nil, errors.New("output is required for q-e broker")
+		return nil, errors.New("output is required for e-q broker")
 	}
 	if cfg.RabbitURL == "" {
-		return nil, errors.New("url is required for q-e broker")
+		return nil, errors.New("url is required for e-q broker")
 	}
-	if len(cfg.OutputKeys) == 0 {
-		return nil, errors.New("output_keys is required for q-e broker")
-	}
-	if cfg.ExchangeType == "" {
-		cfg.ExchangeType = "direct"
+	if len(cfg.InputKeys) == 0 {
+		return nil, errors.New("input_keys is required for e-q broker")
 	}
 
-	return buildQueueToExchangeBroker(cfg, cfg.RabbitURL)
+	return buildExchangeToQueueBroker(cfg, cfg.RabbitURL)
 }
 
-func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
+func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
 	conn, channel, err := connectRabbit(rabbitURL)
 	if err != nil {
 		return nil, err
@@ -54,23 +50,24 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		cfg.Prefetch = 30
 	}
 
-	queueArgs := amqp.Table{}
-	if cfg.Durable {
-		queueArgs[amqp.QueueTypeArg] = amqp.QueueTypeQuorum
-	}
-
 	inputQueue, err := channel.QueueDeclare(
-		cfg.Input,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
-		queueArgs,
+		"",
+		false,
+		false,
+		true,
+		false,
+		nil,
 	)
 	if err != nil {
 		channel.Close()
 		conn.Close()
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
+		return nil, fmt.Errorf("failed to declare input queue: %w", err)
+	}
+
+	if err := bindInputQueue(channel, cfg, inputQueue.Name); err != nil {
+		channel.Close()
+		conn.Close()
+		return nil, err
 	}
 
 	if cfg.Prefetch > 0 {
@@ -81,32 +78,36 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		}
 	}
 
-	if err := channel.ExchangeDeclare(
-		cfg.Output,
-		cfg.ExchangeType,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Internal,
-		cfg.NoWait,
-		nil,
-	); err != nil {
-		channel.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
+	queueArgs := amqp.Table{}
+	if cfg.Durable {
+		queueArgs[amqp.QueueTypeArg] = amqp.QueueTypeQuorum
 	}
 
-	return &queueToExchangeBroker{
-		conn:           conn,
-		channel:        channel,
-		inputQueue:     inputQueue,
-		outputExchange: cfg.Output,
-		routingKeys:    cfg.OutputKeys,
-		state:          idle,
-		config:         cfg,
+	_, err = channel.QueueDeclare(
+		cfg.Output,
+		cfg.Durable,
+		cfg.AutoDelete,
+		cfg.Exclusive,
+		cfg.NoWait,
+		queueArgs,
+	)
+	if err != nil {
+		channel.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to declare output queue: %w", err)
+	}
+
+	return &exchangeToQueueBroker{
+		conn:        conn,
+		channel:     channel,
+		inputQueue:  inputQueue,
+		outputQueue: cfg.Output,
+		state:       idle,
+		config:      cfg,
 	}, nil
 }
 
-func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
+func (qb *exchangeToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -156,7 +157,7 @@ func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, a
 	return nil
 }
 
-func (qb *queueToExchangeBroker) StopConsuming() error {
+func (qb *exchangeToQueueBroker) StopConsuming() error {
 	qb.mu.Lock()
 	if qb.state != consuming {
 		qb.mu.Unlock()
@@ -176,7 +177,7 @@ func (qb *queueToExchangeBroker) StopConsuming() error {
 	return nil
 }
 
-func (qb *queueToExchangeBroker) Send(msg Message) error {
+func (qb *exchangeToQueueBroker) Send(msg Message) error {
 	qb.mu.Lock()
 	if qb.state == closed {
 		qb.mu.Unlock()
@@ -184,35 +185,28 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if len(qb.routingKeys) == 0 {
-		return ErrMessageBrokerMessage
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	for _, key := range qb.routingKeys {
-		if err := qb.channel.PublishWithContext(
-			ctx,
-			qb.outputExchange,
-			key,
-			false,
-			false,
-			amqp.Publishing{
-				ContentType: "application/json",
-				Body:        msg.Body,
-			},
-		); err != nil {
-			if errors.Is(err, amqp.ErrClosed) {
-				return ErrMessageBrokerDisconnected
-			}
-			return ErrMessageBrokerMessage
+	if err := qb.channel.PublishWithContext(
+		ctx,
+		"",
+		qb.outputQueue,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        msg.Body,
+		},
+	); err != nil {
+		if errors.Is(err, amqp.ErrClosed) {
+			return ErrMessageBrokerDisconnected
 		}
+		return ErrMessageBrokerMessage
 	}
 	return nil
 }
 
-func (qb *queueToExchangeBroker) Close() error {
+func (qb *exchangeToQueueBroker) Close() error {
 	errStop := qb.StopConsuming()
 	errChannel := qb.channel.Close()
 	errConn := qb.conn.Close()

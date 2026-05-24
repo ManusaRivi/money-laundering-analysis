@@ -1,0 +1,34 @@
+# e-e example (exchange -> exchange)
+
+rabbitmq:
+  type: e-e
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: agg
+  output: join
+  exchange_type: direct
+  # Optional overrides; otherwise built from WORKER_PREFIX/ID and NEXT_WORKER_PREFIX/NEXT_WORKER_AMOUNT
+  # input_keys:
+  #   - agg_0
+  # output_keys:
+  #   - join_0
+  #   - join_1
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: SyncAmountFilter
+  params:
+    type: amount
+    field: Amount
+    operator: lt
+    value_float: 50
+
+# Required envs if keys are omitted
+# WORKER_PREFIX=agg
+# ID=0
+# NEXT_WORKER_PREFIX=join
+# NEXT_WORKER_AMOUNT=2
