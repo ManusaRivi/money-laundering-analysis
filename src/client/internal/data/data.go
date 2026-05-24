@@ -84,6 +84,32 @@ func (b *BatchReader[T]) Close() error {
 	return b.file.Close()
 }
 
+const (
+	TransactionColumnAmount = 11
+
+	FloatBitSize = 64
+
+	TimestampColumnIndex         = 0
+	FromBankColumnIndex          = 1
+	FromAccountColumnIndex       = 2
+	ToBankColumnIndex            = 3
+	ToAccountColumnIndex         = 4
+	AmountReceivedColumnIndex    = 5
+	ReceivingCurrencyColumnIndex = 6
+	AmountPaidColumnIndex        = 7
+	PaymentCurrencyColumnIndex   = 8
+	PaymentFormatColumnIndex     = 9
+	IsLaunderingColumnIndex      = 10
+
+	AccountColumnAmount = 5
+
+	BankNameColumnIndex   = 0
+	BankIDColumnIndex     = 1
+	AccountNumberIndex    = 2
+	EntityIDColumnIndex   = 3
+	EntityNameColumnIndex = 4
+)
+
 // ParseTransaction parses a CSV row into a protocol.Transaction.
 // Expected columns (in order):
 //
@@ -91,33 +117,33 @@ func (b *BatchReader[T]) Close() error {
 //	AmountReceived, ReceivingCurrency, AmountPaid, PaymentCurrency,
 //	PaymentFormat, IsLaundering
 func ParseTransaction(row []string) (external.Transaction, error) {
-	const expected = 11
+	const expected = TransactionColumnAmount
 	if len(row) != expected {
 		return external.Transaction{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
 	}
-	amountReceived, err := strconv.ParseFloat(row[5], 64)
+	amountReceived, err := strconv.ParseFloat(row[AmountReceivedColumnIndex], FloatBitSize)
 	if err != nil {
 		return external.Transaction{}, fmt.Errorf("amount received: %w", err)
 	}
-	amountPaid, err := strconv.ParseFloat(row[7], 64)
+	amountPaid, err := strconv.ParseFloat(row[AmountPaidColumnIndex], FloatBitSize)
 	if err != nil {
 		return external.Transaction{}, fmt.Errorf("amount paid: %w", err)
 	}
-	isLaundering, err := strconv.ParseBool(row[10])
+	isLaundering, err := strconv.ParseBool(row[IsLaunderingColumnIndex])
 	if err != nil {
 		return external.Transaction{}, fmt.Errorf("is laundering: %w", err)
 	}
 	return external.Transaction{
-		Timestamp:         row[0],
-		FromBank:          row[1],
-		FromAccount:       row[2],
-		ToBank:            row[3],
-		ToAccount:         row[4],
+		Timestamp:         row[TimestampColumnIndex],
+		FromBank:          row[FromBankColumnIndex],
+		FromAccount:       row[FromAccountColumnIndex],
+		ToBank:            row[ToBankColumnIndex],
+		ToAccount:         row[ToAccountColumnIndex],
 		AmountReceived:    amountReceived,
-		ReceivingCurrency: row[6],
+		ReceivingCurrency: row[ReceivingCurrencyColumnIndex],
 		AmountPaid:        amountPaid,
-		PaymentCurrency:   row[8],
-		PaymentFormat:     row[9],
+		PaymentCurrency:   row[PaymentCurrencyColumnIndex],
+		PaymentFormat:     row[PaymentFormatColumnIndex],
 		IsLaundering:      isLaundering,
 	}, nil
 }
@@ -125,19 +151,36 @@ func ParseTransaction(row []string) (external.Transaction, error) {
 // ParseAccount parses a CSV row into a protocol.AccountData.
 // Expected columns: BankName, BankID, AccountNumber, EntityID, EntityName.
 func ParseAccount(row []string) (external.AccountData, error) {
-	const expected = 5
+	const expected = AccountColumnAmount
 	if len(row) != expected {
 		return external.AccountData{}, fmt.Errorf("expected %d columns, got %d", expected, len(row))
 	}
 	return external.AccountData{
-		BankName:      row[0],
-		BankID:        row[1],
-		AccountNumber: row[2],
-		EntityID:      row[3],
-		EntityName:    row[4],
+		BankName:      row[BankNameColumnIndex],
+		BankID:        row[BankIDColumnIndex],
+		AccountNumber: row[AccountNumberIndex],
+		EntityID:      row[EntityIDColumnIndex],
+		EntityName:    row[EntityNameColumnIndex],
 	}, nil
 }
 
-func WriteResultsToOutput(path string, results <-chan []string) {
-	// TODO: Implement me!!
+func WriteResultsToOutput(path string, header []string, results <-chan []string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("writing header to %s: %w", path, err)
+	}
+	for row := range results {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("writing row to %s: %w", path, err)
+		}
+	}
+	return nil
 }

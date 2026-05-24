@@ -13,8 +13,8 @@ type Connection struct {
 	conn net.Conn
 }
 
-func NewConnection(conn net.Conn) *Connection {
-	return &Connection{
+func NewConnection(conn net.Conn) Connection {
+	return Connection{
 		conn: conn,
 	}
 }
