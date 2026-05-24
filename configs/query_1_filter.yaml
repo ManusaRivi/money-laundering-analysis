@@ -12,3 +12,4 @@ worker:
         field: "Amount"
         operator: "<"
         value_float: 50.0
+        value_string: ""
