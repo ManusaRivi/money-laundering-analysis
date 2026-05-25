@@ -1,7 +1,7 @@
 broker:
   type: q-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: tx_to_filter
+  input: q_q1_filter
   output: query_results
   exchange_type: direct
   prefetch: 300
@@ -19,3 +19,4 @@ worker:
         operator: "<"
         value_float: 50.0
         value_string: ""
+    query: 1

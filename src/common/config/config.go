@@ -40,6 +40,7 @@ type BrokerConfig struct {
 type WorkerConfig struct {
 	Type   string         `yaml:"type"`
 	Params map[string]any `yaml:"params"`
+	Query  int            `yaml:"query"`
 }
 
 func Load(filepath string) (*Config, error) {
@@ -175,4 +176,3 @@ func isInputExchangeType(brokerType string) bool {
 func isOutputExchangeType(brokerType string) bool {
 	return brokerType == "q-e" || brokerType == "e-e"
 }
-
