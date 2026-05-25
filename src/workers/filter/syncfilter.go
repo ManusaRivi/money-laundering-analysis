@@ -105,7 +105,7 @@ func (f *SyncFilter) handleMessage(msg broker.Message) error {
 			if err != nil {
 				return err
 			}
-			if err := f.Broker.Send(responseMsg); err != nil {
+			if err := f.Broker.Send(*responseMsg); err != nil {
 				return err
 			}
 		}
@@ -116,7 +116,7 @@ func (f *SyncFilter) handleMessage(msg broker.Message) error {
 		if err != nil {
 			return err
 		}
-		if err := f.Broker.Send(eofMsg); err != nil {
+		if err := f.Broker.Send(*eofMsg); err != nil {
 			return err
 		}
 	default:

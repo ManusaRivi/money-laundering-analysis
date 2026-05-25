@@ -137,7 +137,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					EntityID:      account.EntityID,
 					EntityName:    account.EntityName,
 				}
-				_, err := inner.MarshalBankInfoPacket(c.ClientId, bankInfo)
+				_, err := inner.MarshalBankInfoPacket(c.ClientId, "", bankInfo)
 				// TODO: Send to Join worker directly.
 				if err != nil {
 					slog.Error("Error marshalling bank info packet", "error", err)
@@ -177,12 +177,12 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					},
 					Format: transaction.PaymentFormat,
 				}
-				msg, err := inner.MarshalTransactionPacket(c.ClientId, tx)
+				msg, err := inner.MarshalTransactionPacket(c.ClientId, "", tx)
 				if err != nil {
 					slog.Error("Error marshalling transaction packet", "error", err)
 					return false
 				}
-				if err := gateway.broker.Send(msg); err != nil {
+				if err := gateway.broker.Send(*msg); err != nil {
 					slog.Error("Error sending transaction packet to broker", "error", err)
 					// NACK to Client would be sent here.
 					return false
@@ -191,12 +191,12 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			}
 		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
-			msg, err := inner.MarshalEOFPacket(c.ClientId)
+			msg, err := inner.MarshalEOFPacket(c.ClientId, "")
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
 				return false
 			}
-			if err := gateway.broker.Send(msg); err != nil {
+			if err := gateway.broker.Send(*msg); err != nil {
 				slog.Error("Error sending EOF packet to broker", "error", err)
 				// NACK to Client would be sent here.
 				return false
