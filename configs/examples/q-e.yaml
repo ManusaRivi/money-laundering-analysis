@@ -1,6 +1,6 @@
 # q-e example (queue -> exchange)
 
-rabbitmq:
+broker:
   type: q-e
   url: amqp://guest:guest@rabbitmq:5672/
   input: tx_1

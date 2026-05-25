@@ -47,16 +47,16 @@ services:
     depends_on:
       - gateway
   
-  sync_amount_filter:
+  query_1_filter:
     build:
       context: .
       dockerfile: src/cmd/node/Dockerfile
-    container_name: sync_amount_filter
+    container_name: query_1_filter
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml 
     volumes:
-      - ./configs/sync_amount_filter.yaml:/app/config.yaml
+      - ./configs/query_1_filter.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:

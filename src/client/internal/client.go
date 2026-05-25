@@ -21,7 +21,6 @@ type Client struct {
 	receiver           *Receiver
 	running            atomic.Bool
 	conn               network.Connection
-	stopped            chan struct{}
 	AccountsStream     data.AccountStream
 	TransactionsStream data.TransactionStream
 }
@@ -71,7 +70,6 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 		sender:             sender,
 		receiver:           receiver,
 		conn:               connection,
-		stopped:            make(chan struct{}),
 		AccountsStream:     *accountsStream,
 		TransactionsStream: *transactionsStream,
 	}, nil
@@ -101,7 +99,6 @@ func (client *Client) handleSignals() {
 	slog.Info("SIGTERM signal received")
 	client.running.Store(false)
 	client.conn.Close()
-	close(client.stopped)
 }
 
 // Client streams accounts dataset first, the streams transactions dataset.
@@ -129,10 +126,5 @@ func (c *Client) Start() error {
 
 	<-c.receiver.Done()
 
-	// Added stopped channel to keep the client container running to verify the output file is correctly written
-	// Should be ultimately removed and the client should exit after receiving results EOF
-	slog.Info("Finished receiving results, container will stay alive — send SIGINT/SIGTERM to exit")
-
-	<-c.stopped
 	return nil
 }

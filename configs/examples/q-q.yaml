@@ -1,7 +1,7 @@
 # q-q example (queue -> queue)
 # Names can be provided here or derived from env.
 
-rabbitmq:
+broker:
   type: q-q
   url: amqp://guest:guest@rabbitmq:5672/
   input: tx_1
