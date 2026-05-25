@@ -56,3 +56,10 @@ type Query1Result struct {
 	ToAccount   string
 	AmountPaid  float64
 }
+
+type Query2Result struct {
+	FromBank    string
+	FromAccount string
+	BankName    string
+	AmountPaid  float64
+}

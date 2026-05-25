@@ -63,7 +63,7 @@ func (r *Receiver) Listen() {
 		case external.MsgQuery1Result:
 			results, err := r.codec.DecodeQuery1ResultBatch(payload)
 			if err != nil {
-				// Should close the writer, close the connection.
+				r.closeWriter(external.MsgQuery1Result)
 				slog.Warn("Failed to decode query 1 result", "err", err)
 				continue
 			}
@@ -71,6 +71,20 @@ func (r *Receiver) Listen() {
 		case external.MsgQuery1ResultEOF:
 			slog.Info("Received Query 1 EOF")
 			if w, ok := r.writers[external.MsgQuery1Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
+		case external.MsgQuery2Result:
+			results, err := r.codec.DecodeQuery2ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery2Result)
+				slog.Warn("Failed to decode query 2 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery2Result, query2RowsToString(results))
+		case external.MsgQuery2ResultEOF:
+			slog.Info("Received Query 2 EOF")
+			if w, ok := r.writers[external.MsgQuery2Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
@@ -98,6 +112,12 @@ func (r *Receiver) shutdownWriters() {
 	}
 }
 
+func (r *Receiver) closeWriter(resultType external.MsgType) {
+	if w, ok := r.writers[resultType]; ok {
+		w.Close()
+	}
+}
+
 func (r *Receiver) writeRows(resultType external.MsgType, rows [][]string) {
 	w, ok := r.writers[resultType]
 	if !ok {
@@ -114,6 +134,19 @@ func query1RowsToString(results []external.Query1Result) [][]string {
 			res.FromAccount,
 			res.ToBank,
 			res.ToAccount,
+			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
+		})
+	}
+	return rows
+}
+
+func query2RowsToString(results []external.Query2Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{
+			res.FromBank,
+			res.FromAccount,
+			res.BankName,
 			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
 		})
 	}
