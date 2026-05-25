@@ -10,10 +10,10 @@ import (
 
 func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (Worker, error) {
 	switch cfg.Type {
-	case "SyncAmountFilter":
-		worker, err := filter.NewSyncAmountFilter(cfg.Params, communicationBroker)
+	case "SyncFilter":
+		worker, err := filter.NewSyncFilter(cfg.Params, communicationBroker)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SyncAmountFilter: %w", err)
+			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
 		}
 		return worker, nil
 
