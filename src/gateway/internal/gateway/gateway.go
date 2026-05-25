@@ -78,7 +78,11 @@ func (gateway *Gateway) Run() error {
 
 		go func() {
 			defer gateway.registry.Remove(client)
-			gateway.HandleClientRequest(client)
+			defer client.Conn.Close()
+
+			if gateway.HandleClientRequest(client) {
+				<-client.Done()
+			}
 		}()
 	}
 
@@ -100,14 +104,12 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
-func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection) {
-loop:
+func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection) bool {
 	for {
 		header, err := c.Conn.Receive(codec.HeaderSize)
 		if err != nil {
 			slog.Error("Error receiving header", "err", err)
-			c.Conn.Close()
-			return
+			return false
 		}
 
 		msgType, payloadSize := codec.DecodeHeader(header)
@@ -115,8 +117,7 @@ loop:
 		payload, err := c.Conn.Receive(int(payloadSize))
 		if err != nil {
 			slog.Error("Error receiving payload", "err", err)
-			c.Conn.Close()
-			return
+			return false
 		}
 
 		switch msgType {
@@ -124,8 +125,7 @@ loop:
 			accounts, err := gateway.codec.DecodeAccountBatch(payload)
 			if err != nil {
 				slog.Error("decoding account batch", "error", err)
-				c.Conn.Close()
-				return
+				return false
 			}
 			// Since our internal protocol handles single account messages, we're sending
 			// one message for each account in the inbound batch.
@@ -141,8 +141,7 @@ loop:
 				// TODO: Send to Join worker directly.
 				if err != nil {
 					slog.Error("Error marshalling bank info packet", "error", err)
-					c.Conn.Close()
-					return
+					return false
 				}
 				// gateway.broker.Send(msg)
 				// ACK to Client would be sent here.
@@ -155,8 +154,7 @@ loop:
 			transactions, err := gateway.codec.DecodeTransactionBatch(payload)
 			if err != nil {
 				slog.Error("decoding transaction batch", "error", err)
-				c.Conn.Close()
-				return
+				return false
 			}
 			for _, transaction := range transactions {
 				tx := domain.Transaction{
@@ -182,13 +180,12 @@ loop:
 				msg, err := inner.MarshalTransactionPacket(c.ClientId, tx)
 				if err != nil {
 					slog.Error("Error marshalling transaction packet", "error", err)
-					c.Conn.Close()
-					return
+					return false
 				}
 				if err := gateway.broker.Send(msg); err != nil {
+					slog.Error("Error sending transaction packet to broker", "error", err)
 					// NACK to Client would be sent here.
-					c.Conn.Close()
-					return
+					return false
 				}
 				// ACK to Client would be sent here.
 			}
@@ -197,18 +194,18 @@ loop:
 			msg, err := inner.MarshalEOFPacket(c.ClientId)
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
-				c.Conn.Close()
-				return
+				return false
 			}
 			if err := gateway.broker.Send(msg); err != nil {
+				slog.Error("Error sending EOF packet to broker", "error", err)
 				// NACK to Client would be sent here.
-				c.Conn.Close()
-				return
+				return false
 			}
 			// ACK to Client would be sent here.
-			break loop
+			return true
 		default:
 			slog.Warn("Unknown message type received", "msgType", msgType)
+			return false
 		}
 	}
 }

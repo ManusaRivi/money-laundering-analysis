@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -20,11 +21,13 @@ import (
 // dataset EOFs arrive, then sends a result EOF back. Middleware routing will
 // hook in here later.
 type ClientConnection struct {
-	ClientId uuid.UUID
-	Conn     network.Connection
-	Handler  *messagehandler.MessageHandler
-	codec    codec.Codec
-	EOFSent  map[external.MsgType]bool
+	ClientId      uuid.UUID
+	Conn          network.Connection
+	Handler       *messagehandler.MessageHandler
+	codec         codec.Codec
+	EOFSent       map[external.MsgType]bool
+	done          chan struct{}
+	closeDoneOnce sync.Once
 }
 
 func NewClientConnection(clientId uuid.UUID, conn net.Conn, codec codec.Codec) *ClientConnection {
@@ -41,7 +44,12 @@ func NewClientConnection(clientId uuid.UUID, conn net.Conn, codec codec.Codec) *
 		Handler:  &handler,
 		codec:    codec,
 		EOFSent:  EOFSent,
+		done:     make(chan struct{}),
 	}
+}
+
+func (c *ClientConnection) Done() <-chan struct{} {
+	return c.done
 }
 
 // Dispatches msg type and sends appropriate query result or EOF to client.
@@ -91,12 +99,31 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 
 // Private methods
 
+func (c *ClientConnection) allEOFSent() bool {
+	for _, sent := range c.EOFSent {
+		if !sent {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *ClientConnection) flagAndSendQueryEOF(msgType external.MsgType) error {
 	if msgType != external.MsgQuery1ResultEOF && msgType != external.MsgQuery2ResultEOF && msgType != external.MsgQuery3ResultEOF && msgType != external.MsgQuery4ResultEOF && msgType != external.MsgQuery5ResultEOF {
 		return fmt.Errorf("invalid EOF message type: %v", msgType)
 	}
 	c.EOFSent[msgType] = true
-	return c.sendEnvelope(msgType, nil)
+	err := c.sendEnvelope(msgType, nil)
+	if err != nil {
+		return fmt.Errorf("sending EOF message of type %v: %w", msgType, err)
+	}
+	if c.allEOFSent() {
+		slog.Debug("All EOFs sent, closing client connection")
+		c.closeDoneOnce.Do(func() {
+			close(c.done)
+		})
+	}
+	return nil
 }
 
 func (c *ClientConnection) sendEnvelope(msgType external.MsgType, payload []byte) error {
