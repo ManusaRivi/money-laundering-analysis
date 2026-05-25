@@ -57,7 +57,7 @@ services:
       - CONFIG_PATH=/app/config.yaml
       - WORKER_PREFIX=query_1_filter
     volumes:
-      - ./configs/query_1_filter.yaml:/app/config.yaml
+      - ./configs/q1/q1_filter.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -73,7 +73,7 @@ services:
       - CONFIG_PATH=/app/config.yaml
       - WORKER_PREFIX=query_1_cleaner
     volumes:
-      - ./configs/query_1_cleaner.yaml:/app/config.yaml
+      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
