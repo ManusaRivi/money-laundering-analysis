@@ -20,42 +20,29 @@ import (
 )
 
 type Gateway struct {
-	config         *config.GatewayConfig
-	registry       *clientregistry.ClientRegistry
-	inputQueue     broker.Broker
-	outputExchange broker.Broker
-	listener       net.Listener
-	running        atomic.Bool
-	codec          codec.Codec
+	config   *config.GatewayConfig
+	registry *clientregistry.ClientRegistry
+	broker   broker.Broker
+	listener net.Listener
+	running  atomic.Bool
+	codec    codec.Codec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
-	connSettings := broker.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
-
-	inputQueue, err := broker.CreateQueueBroker(config.OutputQueueName, connSettings)
+	broker, err := broker.NewBroker(config.BrokerConfig)
 	if err != nil {
-		slog.Error("Error creating input queue broker", "err", err)
-		return nil, err
-	}
-
-	outputExchange, err := broker.CreateExchangeBroker(config.InputQueueName, []string{}, connSettings)
-	if err != nil {
-		inputQueue.Close()
-		slog.Error("Error creating output exchange broker", "err", err)
 		return nil, err
 	}
 
 	listener, err := net.Listen("tcp", config.ServerHost+":"+config.ServerPort)
 	if err != nil {
-		inputQueue.Close()
-		outputExchange.Close()
 		slog.Error("Error creating listener", "err", err)
 		return nil, err
 	}
 
 	registry := clientregistry.NewClientRegistry()
 
-	gateway := &Gateway{registry: &registry, outputExchange: outputExchange, inputQueue: inputQueue, listener: listener, codec: codec.New()}
+	gateway := &Gateway{registry: &registry, broker: broker, listener: listener, codec: codec.New()}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -63,10 +50,9 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 func (gateway *Gateway) Run() error {
 	defer func() {
 		gateway.listener.Close()
-		gateway.inputQueue.StopConsuming()
-		gateway.inputQueue.Close()
+		gateway.broker.StopConsuming()
 	}()
-	go gateway.inputQueue.StartConsuming(func(msg broker.Message, ack, nack func()) {
+	go gateway.broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
 	})
 
@@ -96,7 +82,7 @@ func (gateway *Gateway) Run() error {
 		}()
 	}
 
-	gateway.outputExchange.StopConsuming()
+	gateway.broker.StopConsuming()
 	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
 		for _, client := range clients {
 			client.Conn.Close()
@@ -120,6 +106,7 @@ loop:
 		header, err := c.Conn.Receive(codec.HeaderSize)
 		if err != nil {
 			slog.Error("Error receiving header", "err", err)
+			c.Conn.Close()
 			return
 		}
 
@@ -128,6 +115,7 @@ loop:
 		payload, err := c.Conn.Receive(int(payloadSize))
 		if err != nil {
 			slog.Error("Error receiving payload", "err", err)
+			c.Conn.Close()
 			return
 		}
 
@@ -136,6 +124,7 @@ loop:
 			accounts, err := gateway.codec.DecodeAccountBatch(payload)
 			if err != nil {
 				slog.Error("decoding account batch", "error", err)
+				c.Conn.Close()
 				return
 			}
 			// Since our internal protocol handles single account messages, we're sending
@@ -148,12 +137,14 @@ loop:
 					EntityID:      account.EntityID,
 					EntityName:    account.EntityName,
 				}
-				msg, err := inner.MarshalBankInfoPacket(c.ClientId, bankInfo)
+				_, err := inner.MarshalBankInfoPacket(c.ClientId, bankInfo)
+				// TODO: Send to Join worker directly.
 				if err != nil {
 					slog.Error("Error marshalling bank info packet", "error", err)
+					c.Conn.Close()
 					return
 				}
-				gateway.outputExchange.Send(msg)
+				// gateway.broker.Send(msg)
 				// ACK to Client would be sent here.
 			}
 		case external.MsgAccountsEOF:
@@ -164,6 +155,7 @@ loop:
 			transactions, err := gateway.codec.DecodeTransactionBatch(payload)
 			if err != nil {
 				slog.Error("decoding transaction batch", "error", err)
+				c.Conn.Close()
 				return
 			}
 			for _, transaction := range transactions {
@@ -190,9 +182,14 @@ loop:
 				msg, err := inner.MarshalTransactionPacket(c.ClientId, tx)
 				if err != nil {
 					slog.Error("Error marshalling transaction packet", "error", err)
+					c.Conn.Close()
 					return
 				}
-				gateway.outputExchange.Send(msg)
+				if err := gateway.broker.Send(msg); err != nil {
+					// NACK to Client would be sent here.
+					c.Conn.Close()
+					return
+				}
 				// ACK to Client would be sent here.
 			}
 		case external.MsgTransactionsEOF:
@@ -200,9 +197,14 @@ loop:
 			msg, err := inner.MarshalEOFPacket(c.ClientId)
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
+				c.Conn.Close()
 				return
 			}
-			gateway.outputExchange.Send(msg)
+			if err := gateway.broker.Send(msg); err != nil {
+				// NACK to Client would be sent here.
+				c.Conn.Close()
+				return
+			}
 			// ACK to Client would be sent here.
 			break loop
 		default:
