@@ -12,9 +12,16 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// exchangeToExchangeBroker consumes from an anonymous queue bound to an input
+// exchange (via cfg.InputKeys) and publishes to an output exchange with one
+// or more routing keys. It owns a single AMQP connection but separates the
+// consumer and publisher onto two dedicated channels so that publisher flow
+// control cannot stall consumer acks, and a channel-level error on one side
+// does not tear down the other.
 type exchangeToExchangeBroker struct {
 	conn           *amqp.Connection
-	channel        *amqp.Channel
+	produceChannel *amqp.Channel
+	consumeChannel *amqp.Channel
 	inputQueue     amqp.Queue
 	outputExchange string
 	outputKeys     []string
@@ -45,16 +52,23 @@ func newExchangeToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
 }
 
 func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Broker, error) {
-	conn, channel, err := connectRabbit(rabbitURL)
+	conn, consumeChannel, err := connectRabbit(rabbitURL)
 	if err != nil {
 		return nil, err
+	}
+
+	produceChannel, err := conn.Channel()
+	if err != nil {
+		consumeChannel.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
 	if cfg.Prefetch == 0 {
 		cfg.Prefetch = 30
 	}
 
-	inputQueue, err := channel.QueueDeclare(
+	inputQueue, err := consumeChannel.QueueDeclare(
 		"",
 		false,
 		false,
@@ -63,26 +77,29 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		nil,
 	)
 	if err != nil {
-		channel.Close()
+		produceChannel.Close()
+		consumeChannel.Close()
 		conn.Close()
 		return nil, fmt.Errorf("failed to declare input queue: %w", err)
 	}
 
-	if err := bindInputQueue(channel, cfg, inputQueue.Name); err != nil {
-		channel.Close()
+	if err := bindInputQueue(consumeChannel, cfg, inputQueue.Name); err != nil {
+		produceChannel.Close()
+		consumeChannel.Close()
 		conn.Close()
 		return nil, err
 	}
 
 	if cfg.Prefetch > 0 {
-		if err := channel.Qos(cfg.Prefetch, 0, false); err != nil {
-			channel.Close()
+		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+			produceChannel.Close()
+			consumeChannel.Close()
 			conn.Close()
 			return nil, fmt.Errorf("failed to set qos: %w", err)
 		}
 	}
 
-	if err := channel.ExchangeDeclare(
+	if err := consumeChannel.ExchangeDeclare(
 		cfg.Output,
 		cfg.ExchangeType,
 		cfg.Durable,
@@ -91,14 +108,16 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		cfg.NoWait,
 		nil,
 	); err != nil {
-		channel.Close()
+		produceChannel.Close()
+		consumeChannel.Close()
 		conn.Close()
 		return nil, fmt.Errorf("failed to declare output exchange: %w", err)
 	}
 
 	return &exchangeToExchangeBroker{
 		conn:           conn,
-		channel:        channel,
+		produceChannel: produceChannel,
+		consumeChannel: consumeChannel,
 		inputQueue:     inputQueue,
 		outputExchange: cfg.Output,
 		outputKeys:     cfg.OutputKeys,
@@ -122,7 +141,7 @@ func (qb *exchangeToExchangeBroker) StartConsuming(callbackFunc func(msg Message
 	queueName := qb.inputQueue.Name
 	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	msgs, err := qb.channel.Consume(
+	msgs, err := qb.consumeChannel.Consume(
 		queueName,
 		tag,
 		false,
@@ -166,7 +185,7 @@ func (qb *exchangeToExchangeBroker) StopConsuming() error {
 	consumerTag := qb.consumerTag
 	qb.mu.Unlock()
 
-	if err := qb.channel.Cancel(consumerTag, false); err != nil {
+	if err := qb.consumeChannel.Cancel(consumerTag, false); err != nil {
 		return ErrBrokerDisconnected
 	}
 
@@ -189,7 +208,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	defer cancel()
 
 	for _, key := range qb.outputKeys {
-		if err := qb.channel.PublishWithContext(
+		if err := qb.produceChannel.PublishWithContext(
 			ctx,
 			qb.outputExchange,
 			key,
@@ -211,7 +230,8 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 
 func (qb *exchangeToExchangeBroker) Close() error {
 	errStop := qb.StopConsuming()
-	errChannel := qb.channel.Close()
+	errConsumeChannel := qb.consumeChannel.Close()
+	errProduceChannel := qb.produceChannel.Close()
 	errConn := qb.conn.Close()
 
 	qb.mu.Lock()
@@ -219,7 +239,7 @@ func (qb *exchangeToExchangeBroker) Close() error {
 	qb.consumerTag = ""
 	qb.mu.Unlock()
 
-	if errStop != nil || errChannel != nil || errConn != nil {
+	if errStop != nil || errConsumeChannel != nil || errProduceChannel != nil || errConn != nil {
 		return ErrBrokerClose
 	}
 	return nil
