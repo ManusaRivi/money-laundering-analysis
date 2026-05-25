@@ -7,14 +7,17 @@ import (
 )
 
 func filterTransactionByAmount(tx domain.Transaction, operator string, value float64) bool {
-	amount := tx.Paid
+	money := tx.Paid
+	if money.Currency != "US Dollar" {
+		return false
+	}
 	switch operator {
 	case ">":
-		return amount.Amount > value
+		return money.Amount > value
 	case "<":
-		return amount.Amount < value
+		return money.Amount < value
 	case "==":
-		return amount.Amount == value
+		return money.Amount == value
 	default:
 		slog.Error("Invalid operator for amount filter", "operator", operator)
 		return false
