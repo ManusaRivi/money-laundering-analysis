@@ -1,6 +1,6 @@
 # e-e example (exchange -> exchange)
 
-rabbitmq:
+broker:
   type: e-e
   url: amqp://guest:guest@rabbitmq:5672/
   input: agg
