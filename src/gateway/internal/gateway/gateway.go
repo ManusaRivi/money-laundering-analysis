@@ -20,18 +20,27 @@ import (
 )
 
 type Gateway struct {
-	config   *config.GatewayConfig
-	registry *clientregistry.ClientRegistry
-	broker   broker.Broker
-	listener net.Listener
-	running  atomic.Bool
-	codec    codec.Codec
+	config         *config.GatewayConfig
+	registry       *clientregistry.ClientRegistry
+	broker         broker.Broker
+	accountsBroker broker.Broker
+	listener       net.Listener
+	running        atomic.Bool
+	codec          codec.Codec
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
-	broker, err := broker.NewBroker(config.BrokerConfig)
+	mainBroker, err := broker.NewBroker(config.BrokerConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	var accountsBroker broker.Broker
+	if config.AccountsBrokerConfig != nil && config.AccountsBrokerConfig.Type != "" {
+		accountsBroker, err = broker.NewBroker(*config.AccountsBrokerConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	listener, err := net.Listen("tcp", config.ServerHost+":"+config.ServerPort)
@@ -42,7 +51,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	registry := clientregistry.NewClientRegistry()
 
-	gateway := &Gateway{registry: &registry, broker: broker, listener: listener, codec: codec.New()}
+	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New()}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -137,19 +146,34 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					EntityID:      account.EntityID,
 					EntityName:    account.EntityName,
 				}
-				_, err := inner.MarshalBankInfoPacket(c.ClientId, "", bankInfo)
-				// TODO: Send to Join worker directly.
+				msg, err := inner.MarshalBankInfoPacket(c.ClientId, "", bankInfo)
 				if err != nil {
 					slog.Error("Error marshalling bank info packet", "error", err)
 					return false
 				}
-				// gateway.broker.Send(msg)
-				// ACK to Client would be sent here.
+				if gateway.accountsBroker == nil {
+					slog.Error("No accounts broker configured; cannot forward bank info")
+					return false
+				}
+				if err := gateway.accountsBroker.Send(*msg); err != nil {
+					slog.Error("Error sending bank info to accounts broker", "error", err)
+					return false
+				}
 			}
 		case external.MsgAccountsEOF:
-			// This case will be potentially deprecated.
 			slog.Debug("Received accounts EOF")
 			c.Handler.HandleAccountsEOF()
+			if gateway.accountsBroker != nil {
+				eofMsg, err := inner.MarshalEOFPacket(c.ClientId, "")
+				if err != nil {
+					slog.Error("Error marshalling accounts EOF packet", "error", err)
+					return false
+				}
+				if err := gateway.accountsBroker.Send(*eofMsg); err != nil {
+					slog.Error("Error sending accounts EOF to broker", "error", err)
+					return false
+				}
+			}
 		case external.MsgTransactionsBatch:
 			transactions, err := gateway.codec.DecodeTransactionBatch(payload)
 			if err != nil {

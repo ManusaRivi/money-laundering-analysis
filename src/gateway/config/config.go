@@ -1,14 +1,17 @@
 package config
 
 import (
+	"os"
+
 	commonConfig "github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/spf13/viper"
 )
 
 type GatewayConfig struct {
-	BrokerConfig commonConfig.BrokerConfig
-	ServerHost   string
-	ServerPort   string
+	BrokerConfig         commonConfig.BrokerConfig
+	AccountsBrokerConfig *commonConfig.BrokerConfig
+	ServerHost           string
+	ServerPort           string
 }
 
 const CONFIG_PATH = "../config.yaml"
@@ -37,5 +40,14 @@ func LoadConfig() (*GatewayConfig, error) {
 		ServerHost: v.GetString("server_host"),
 		ServerPort: v.GetString("server_port"),
 	}
+
+	if accountsConfigPath := os.Getenv("ACCOUNTS_CONFIG_PATH"); accountsConfigPath != "" {
+		accountsCfg, err := commonConfig.LoadAccountConfig(accountsConfigPath)
+		if err != nil {
+			return nil, err
+		}
+		config.AccountsBrokerConfig = accountsCfg
+	}
+
 	return config, nil
 }

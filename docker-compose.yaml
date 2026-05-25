@@ -7,6 +7,9 @@ services:
     container_name: gateway
     environment:
       - LOG_LEVEL=debug
+      - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
+    volumes:
+      - ./configs/account_queue_config.yaml:/app/accounts_queue_config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -32,16 +35,31 @@ services:
       - 5672:5672
       - 15672:15672
 
-  client:
+  client_1:
     build:
       context: .
       dockerfile: src/client/Dockerfile
-    container_name: client
+    container_name: client_1
     environment:
       - LOG_LEVEL=info
     volumes:
       - ./.data:/app/.data
-      - ./.output:/app/.output
+      - ./.output/client1:/app/.output
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
+  
+  client_2:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_2
+    environment:
+      - LOG_LEVEL=info
+    volumes:
+      - ./.data:/app/.data
+      - ./.output/client2:/app/.output
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -74,6 +92,25 @@ services:
       - WORKER_PREFIX=query_1_cleaner
     volumes:
       - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  query_2_join:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_2_join
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
+      - WORKER_PREFIX=query_2_join
+    volumes:
+      - ./configs/q2/q2_join.yaml:/app/config.yaml
+      - ./configs/account_queue_config.yaml:/app/accounts_queue_config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
