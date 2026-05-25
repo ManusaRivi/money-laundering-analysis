@@ -193,7 +193,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			}
 		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
-			msg, err := inner.MarshalEOFPacket(c.ClientId, "")
+			msg, err := inner.MarshalEOFPacket(c.ClientId, broker.ControlEOFKey)
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
 				return false

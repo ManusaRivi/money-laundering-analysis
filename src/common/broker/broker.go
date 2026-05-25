@@ -119,7 +119,9 @@ func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, queueName st
 		return fmt.Errorf("failed to declare input exchange: %w", err)
 	}
 
-	for _, key := range cfg.InputKeys {
+	inputKeysWithControlEOF := append(cfg.InputKeys, ControlEOFKey)
+
+	for _, key := range inputKeysWithControlEOF {
 		if err := channel.QueueBind(
 			queueName,
 			key,
