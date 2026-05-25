@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
@@ -47,12 +48,21 @@ func NewClientConnection(clientId uuid.UUID, conn net.Conn, codec codec.Codec) *
 func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	switch pkt.Type {
 	case inner.TypeQuery1Result:
-		result := &external.Query1Result{}
+		var result domain.Query1Result
 		if err := pkt.UnmarshalData(&result); err != nil {
 			return fmt.Errorf("unmarshalling query 1 result: %w", err)
 		}
 
-		if err := c.sendQuery1Result(result); err != nil {
+		externalResult := external.Query1Result{
+			FromBank:    result.FromBank,
+			FromAccount: result.FromAccount,
+			ToBank:      result.ToBank,
+			ToAccount:   result.ToAccount,
+			AmountPaid:  result.AmountPaid,
+		}
+		slog.Debug("Received Query Result", "amount_paid", externalResult.AmountPaid)
+
+		if err := c.sendQuery1Result(&externalResult); err != nil {
 			return fmt.Errorf("sending query 1 result: %w", err)
 		}
 	case inner.TypeQuery1EOF:
