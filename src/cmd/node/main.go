@@ -15,9 +15,16 @@ func main() {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		slog.Error("Failed to load config: %v", "error", err)
+		return
 	}
 
-	if err := core.RunManager(cfg); err != nil {
+	manager, err := core.NewManager(cfg)
+	if err != nil {
+		slog.Error("Failed to create manager: %v", "error", err)
+		return
+	}
+
+	if err := manager.Run(); err != nil {
 		slog.Error("Error running manager: %v", "error", err)
 	}
 }
