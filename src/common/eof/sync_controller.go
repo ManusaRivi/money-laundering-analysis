@@ -239,6 +239,9 @@ func (c *SyncEOFController) processFlush(msg ControlMessage) {
 		c.onFlush(msg.ClientID)
 	}
 	c.sendFlushAck(msg.ClientID, msg.RequesterID)
+	if msg.RequesterID != c.nodeID {
+		c.cleanupClientState(msg.ClientID)
+	}
 }
 
 func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
@@ -259,6 +262,7 @@ func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
 		if c.onLeaderFlush != nil {
 			c.onLeaderFlush(msg.ClientID, finalSent)
 		}
+		c.cleanupClientState(msg.ClientID)
 	}
 }
 
@@ -279,6 +283,20 @@ func (c *SyncEOFController) runRetryExceededCallback(clientID string) {
 	if c.onRetryExceeded != nil {
 		c.onRetryExceeded(clientID)
 	}
+	c.cleanupClientState(clientID)
+}
+
+func (c *SyncEOFController) cleanupClientState(clientID string) {
+	c.mu.Lock()
+	delete(c.msgRcvCount, clientID)
+	delete(c.msgSntCount, clientID)
+	delete(c.expectedTotal, clientID)
+	delete(c.retryCounts, clientID)
+	delete(c.rcvResponses, clientID)
+	delete(c.sntResponses, clientID)
+	delete(c.flushResponses, clientID)
+	delete(c.flushExpectedSent, clientID)
+	c.mu.Unlock()
 }
 
 func (c *SyncEOFController) sendFlushAck(clientID string, requesterID string) {
