@@ -24,7 +24,6 @@ type exchangeToExchangeBroker struct {
 	consumeChannel *amqp.Channel
 	inputQueue     amqp.Queue
 	outputExchange string
-	outputKeys     []string
 	state          consumerState
 	consumerTag    string
 	mu             sync.Mutex
@@ -44,10 +43,6 @@ func newExchangeToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
 	if len(cfg.InputKeys) == 0 {
 		return nil, errors.New("input_keys is required for e-e broker")
 	}
-	if len(cfg.OutputKeys) == 0 {
-		return nil, errors.New("output_keys is required for e-e broker")
-	}
-
 	return buildExchangeToExchangeBroker(cfg, cfg.RabbitURL)
 }
 
@@ -120,7 +115,6 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		consumeChannel: consumeChannel,
 		inputQueue:     inputQueue,
 		outputExchange: cfg.Output,
-		outputKeys:     cfg.OutputKeys,
 		state:          idle,
 		config:         cfg,
 	}, nil
@@ -204,72 +198,28 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if len(qb.outputKeys) == 0 && msg.RoutingKey == "" {
+	if msg.RoutingKey == "" {
 		return ErrBrokerMessage
 	}
-
-	keyToUse := msg.RoutingKey
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if keyToUse != "" {
-		if err := qb.channel.PublishWithContext(
-			ctx,
-			qb.outputExchange,
-			keyToUse,
-			false,
-			false,
-			amqp.Publishing{
-				ContentType: "application/json",
-				Body:        msg.Body,
-			},
-		); err != nil {
-			if errors.Is(err, amqp.ErrClosed) {
-				return ErrBrokerDisconnected
-			}
-			return ErrBrokerMessage
+	if err := qb.produceChannel.PublishWithContext(
+		ctx,
+		qb.outputExchange,
+		msg.RoutingKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        msg.Body,
+		},
+	); err != nil {
+		if errors.Is(err, amqp.ErrClosed) {
+			return ErrBrokerDisconnected
 		}
-		return nil
-	}
-
-	if len(qb.outputKeys) == 1 {
-		if err := qb.channel.PublishWithContext(
-			ctx,
-			qb.outputExchange,
-			qb.outputKeys[0],
-			false,
-			false,
-			amqp.Publishing{
-				ContentType: "application/json",
-				Body:        msg.Body,
-			},
-		); err != nil {
-			if errors.Is(err, amqp.ErrClosed) {
-				return ErrBrokerDisconnected
-			}
-			return ErrBrokerMessage
-		}
-		return nil
-	}
-
-	for _, key := range qb.outputKeys {
-		if err := qb.produceChannel.PublishWithContext(
-			ctx,
-			qb.outputExchange,
-			key,
-			false,
-			false,
-			amqp.Publishing{
-				ContentType: "application/json",
-				Body:        msg.Body,
-			},
-		); err != nil {
-			if errors.Is(err, amqp.ErrClosed) {
-				return ErrBrokerDisconnected
-			}
-			return ErrBrokerMessage
-		}
+		return ErrBrokerMessage
 	}
 	return nil
 }

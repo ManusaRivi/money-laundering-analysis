@@ -6,12 +6,10 @@ broker:
   input: agg
   output: join
   exchange_type: direct
-  # Optional overrides; otherwise built from WORKER_PREFIX/ID and NEXT_WORKER_PREFIX/NEXT_WORKER_AMOUNT
+  # Optional override; otherwise built from WORKER_PREFIX/ID
   # input_keys:
   #   - agg_0
-  # output_keys:
-  #   - join_0
-  #   - join_1
+  # El routing key de salida lo decide el worker (RoutingKey en el broker.Message)
   prefetch: 30
   durable: true
   auto_delete: false
@@ -27,8 +25,7 @@ worker:
     operator: lt
     value_float: 50
 
-# Required envs if keys are omitted
+# Required envs if input is omitted
 # WORKER_PREFIX=agg
 # ID=0
 # NEXT_WORKER_PREFIX=join
-# NEXT_WORKER_AMOUNT=2
