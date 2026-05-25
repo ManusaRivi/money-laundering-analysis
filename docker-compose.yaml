@@ -38,7 +38,7 @@ services:
       dockerfile: src/client/Dockerfile
     container_name: client
     environment:
-      - LOG_LEVEL=error
+      - LOG_LEVEL=info
     volumes:
       - ./.data:/app/.data
       - ./.output:/app/.output
