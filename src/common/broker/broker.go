@@ -16,7 +16,8 @@ var (
 )
 
 type Message struct {
-	Body []byte
+	RoutingKey string // Para ruteo dinámico (opcional)
+	Body       []byte
 }
 
 type ConnSettings struct {
@@ -26,27 +27,26 @@ type ConnSettings struct {
 
 type Broker interface {
 
-	//StartConsuming begins consuming from the configured input. For q-* types it
-	//consumes the named queue. For e-* types it consumes from an anonymous queue
-	//bound to the input exchange using input keys.
-	//callbackFunc receives the message and ack/nack callbacks.
-	//If the broker disconnects, returns ErrMessageBrokerDisconnected.
-	//If an internal error occurs, returns ErrMessageBrokerMessage.
+	//StartConsuming comienza a consumir desde el input configurado. Para tipos q-*
+	//consume de la cola con nombre. Para tipos e-* consume de una cola anónima
+	//bindeada al exchange de entrada usando input_keys.
+	//callbackFunc recibe el mensaje y callbacks de ack/nack.
+	//Si el broker se desconecta, devuelve ErrBrokerDisconnected.
+	//Si ocurre un error interno, devuelve ErrBrokerMessage.
 	StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error
 
-	//StopConsuming stops consumption if active. If not consuming, it's a no-op.
-	//If the broker disconnects, returns ErrMessageBrokerDisconnected.
+	//StopConsuming detiene el consumo si está activo. Si no estaba consumiendo,
+	//no tiene efecto. Si el broker se desconecta, devuelve ErrBrokerDisconnected.
 	StopConsuming() error
 
-	//Send publishes a message to the configured output.
-	//For *-q types it publishes to a queue. For *-e types it publishes to an exchange
-	//using output keys.
-	//If the broker disconnects, returns ErrMessageBrokerDisconnected.
-	//If an internal error occurs, returns ErrMessageBrokerMessage.
+	//Send publica un mensaje al output configurado. Para tipos *-q publica a cola.
+	//Para tipos *-e publica a exchange usando routing key dinámica o output_keys.
+	//Si el broker se desconecta, devuelve ErrBrokerDisconnected.
+	//Si ocurre un error interno, devuelve ErrBrokerMessage.
 	Send(msg Message) error
 
-	//Close closes the broker connection and releases resources.
-	//If an internal error occurs, returns ErrMessageBrokerClose.
+	//Close cierra la conexión del broker y libera recursos.
+	//Si ocurre un error interno, devuelve ErrBrokerClose.
 	Close() error
 }
 
@@ -98,7 +98,6 @@ func connectRabbit(rawURL string) (*amqp.Connection, *amqp.Channel, error) {
 
 	return conn, channel, nil
 }
-
 
 func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, queueName string) error {
 	if cfg.Input == "" {

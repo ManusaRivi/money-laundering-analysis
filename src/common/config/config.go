@@ -19,7 +19,6 @@ type BrokerConfig struct {
 	Input        string   `yaml:"input"`
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
-	OutputKeys   []string `yaml:"output_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
 	Prefetch     int      `yaml:"prefetch"`
 	Durable      bool     `yaml:"durable"`
@@ -41,6 +40,12 @@ type WorkerConfig struct {
 	Type   string         `yaml:"type"`
 	Params map[string]any `yaml:"params"`
 	Query  int            `yaml:"query"`
+
+	WorkerID         int    `yaml:"-"`
+	WorkerPrefix     string `yaml:"-"`
+	WorkerAmount     int    `yaml:"-"`
+	NextWorkerAmount int    `yaml:"-"`
+	NextWorkerPrefix string `yaml:"-"`
 }
 
 func Load(filepath string) (*Config, error) {
@@ -54,7 +59,7 @@ func Load(filepath string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := applyEnv(&cfg.Broker); err != nil {
+	if err := applyEnv(&cfg); err != nil {
 		return nil, err
 	}
 	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
@@ -64,13 +69,16 @@ func Load(filepath string) (*Config, error) {
 	return &cfg, nil
 }
 
-func applyEnv(cfg *BrokerConfig) error {
+func applyEnv(cfg *Config) error {
+	brokerConfig := &cfg.Broker
+	workerConfig := &cfg.Worker
 	if value := os.Getenv("ID"); value != "" {
 		id, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("invalid ID: %w", err)
 		}
-		cfg.WorkerID = id
+		brokerConfig.WorkerID = id
+		workerConfig.WorkerID = id
 	}
 
 	if value := os.Getenv("WORKER_AMOUNT"); value != "" {
@@ -78,7 +86,8 @@ func applyEnv(cfg *BrokerConfig) error {
 		if err != nil {
 			return fmt.Errorf("invalid WORKER_AMOUNT: %w", err)
 		}
-		cfg.WorkerAmount = amount
+		brokerConfig.WorkerAmount = amount
+		workerConfig.WorkerAmount = amount
 	}
 
 	if value := os.Getenv("PREV_WORKER_AMOUNT"); value != "" {
@@ -86,7 +95,7 @@ func applyEnv(cfg *BrokerConfig) error {
 		if err != nil {
 			return fmt.Errorf("invalid PREV_WORKER_AMOUNT: %w", err)
 		}
-		cfg.PrevWorkerAmount = amount
+		brokerConfig.PrevWorkerAmount = amount
 	}
 
 	if value := os.Getenv("NEXT_WORKER_AMOUNT"); value != "" {
@@ -94,12 +103,19 @@ func applyEnv(cfg *BrokerConfig) error {
 		if err != nil {
 			return fmt.Errorf("invalid NEXT_WORKER_AMOUNT: %w", err)
 		}
-		cfg.NextWorkerAmount = amount
+		brokerConfig.NextWorkerAmount = amount
+		workerConfig.NextWorkerAmount = amount
 	}
 
-	cfg.WorkerPrefix = os.Getenv("WORKER_PREFIX")
-	cfg.PrevWorkerPrefix = os.Getenv("PREV_WORKER_PREFIX")
-	cfg.NextWorkerPrefix = os.Getenv("NEXT_WORKER_PREFIX")
+	prefix := os.Getenv("WORKER_PREFIX")
+	brokerConfig.WorkerPrefix = prefix
+	workerConfig.WorkerPrefix = prefix
+
+	brokerConfig.PrevWorkerPrefix = os.Getenv("PREV_WORKER_PREFIX")
+
+	prefix = os.Getenv("NEXT_WORKER_PREFIX")
+	brokerConfig.NextWorkerPrefix = prefix
+	workerConfig.NextWorkerPrefix = prefix
 
 	return nil
 }
@@ -142,15 +158,6 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 			}
 			cfg.Output = cfg.NextWorkerPrefix
 		}
-		if len(cfg.OutputKeys) == 0 {
-			if cfg.NextWorkerPrefix == "" {
-				return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output keys")
-			}
-			if cfg.NextWorkerAmount <= 0 {
-				return fmt.Errorf("NEXT_WORKER_AMOUNT environment variable is required for output keys")
-			}
-			cfg.OutputKeys = buildRoutingKeys(cfg.NextWorkerPrefix, cfg.NextWorkerAmount)
-		}
 	} else if cfg.Output == "" {
 		if cfg.NextWorkerPrefix == "" {
 			return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
@@ -159,14 +166,6 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 	}
 
 	return nil
-}
-
-func buildRoutingKeys(prefix string, amount int) []string {
-	keys := make([]string, amount)
-	for i := 0; i < amount; i++ {
-		keys[i] = fmt.Sprintf("%s_%d", prefix, i)
-	}
-	return keys
 }
 
 func isInputExchangeType(brokerType string) bool {

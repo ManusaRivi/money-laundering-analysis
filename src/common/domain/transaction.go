@@ -8,6 +8,10 @@ type Transaction struct {
 	Format    string   `json:"format,omitempty"`
 }
 
+func (t *Transaction) IsUSDTransaction() bool {
+	return t.Paid.Currency == "US Dollar"
+}
+
 func (t *Transaction) CutColumn(column string) {
 	switch column {
 	case "timestamp":

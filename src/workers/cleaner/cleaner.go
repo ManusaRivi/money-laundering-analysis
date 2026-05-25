@@ -62,23 +62,23 @@ func (c *Cleaner) handleMessage(msg broker.Message) error {
 			tx.CutColumn(f)
 		}
 
-		msg, err := inner.MarshalTransactionPacket(pkt.ClientID, tx)
+		msg, err := inner.MarshalTransactionPacket(pkt.ClientID, "", tx)
 
 		if err != nil {
 			slog.Error("Error marshalling cleaned packet", "error", err)
 			return err
 		}
 
-		return c.Broker.Send(msg)
+		return c.Broker.Send(*msg)
 	case inner.TypeEOF:
 		slog.Debug("Received EOF packet, forwarding to next worker...")
 		// Propagar en varios cleaners?
-		eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID)
+		eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, "")
 		if err != nil {
 			slog.Error("Error marshalling EOF packet", "error", err)
 			return err
 		}
-		if err := c.Broker.Send(eofMsg); err != nil {
+		if err := c.Broker.Send(*eofMsg); err != nil {
 			slog.Error("Error sending EOF packet to broker", "error", err)
 			return err
 		}
