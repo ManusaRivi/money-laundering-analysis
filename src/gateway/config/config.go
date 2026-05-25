@@ -1,14 +1,14 @@
 package config
 
-import "github.com/spf13/viper"
+import (
+	commonConfig "github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	"github.com/spf13/viper"
+)
 
 type GatewayConfig struct {
-	InputQueueName  string
-	OutputQueueName string
-	ServerHost      string
-	ServerPort      string
-	MomHost         string
-	MomPort         int
+	BrokerConfig commonConfig.BrokerConfig
+	ServerHost   string
+	ServerPort   string
 }
 
 const CONFIG_PATH = "../config.yaml"
@@ -21,12 +21,21 @@ func LoadConfig() (*GatewayConfig, error) {
 		return nil, err
 	}
 	config := &GatewayConfig{
-		InputQueueName:  v.GetString("input_queue_name"),
-		OutputQueueName: v.GetString("output_queue_name"),
-		ServerHost:      v.GetString("server_host"),
-		ServerPort:      v.GetString("server_port"),
-		MomHost:         v.GetString("mom_host"),
-		MomPort:         v.GetInt("mom_port"),
+		BrokerConfig: commonConfig.BrokerConfig{
+			Type:         v.GetString("type"),
+			RabbitURL:    v.GetString("url"),
+			Input:        v.GetString("input"),
+			Output:       v.GetString("output"),
+			ExchangeType: v.GetString("exchange_type"),
+			Prefetch:     v.GetInt("prefetch"),
+			Durable:      v.GetBool("durable"),
+			AutoDelete:   v.GetBool("auto_delete"),
+			Exclusive:    v.GetBool("exclusive"),
+			NoWait:       v.GetBool("no_wait"),
+			Internal:     v.GetBool("internal"),
+		},
+		ServerHost: v.GetString("server_host"),
+		ServerPort: v.GetString("server_port"),
 	}
 	return config, nil
 }

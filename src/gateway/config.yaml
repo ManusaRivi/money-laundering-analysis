@@ -1,6 +1,14 @@
-input_queue_name: "input_queue"
-output_queue_name: "output_queue"
+type: "q-q"
+url: amqp://guest:guest@rabbitmq:5672/
+input: query_results
+output: tx_to_filter
+exchange_type: direct
+prefetch: 300
+durable: true
+auto_delete: false
+exclusive: false
+no_wait: false
+internal: false
+
 server_host: "0.0.0.0"
 server_port: 8080
-mom_host: "rabbitmq"
-mom_port: 5672

@@ -12,15 +12,23 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const MaxQueueLength = 1000
+
+// queueToQueueBroker consumes from one queue and publishes to another. It owns
+// a single AMQP connection but separates the consumer and publisher onto two
+// dedicated channels so that publisher flow control (e.g. RabbitMQ memory
+// alarm) cannot stall consumer acks, and a channel-level error on one side
+// does not tear down the other.
 type queueToQueueBroker struct {
-	conn        *amqp.Connection
-	channel     *amqp.Channel
-	inputQueue  amqp.Queue
-	outputQueue string
-	state       consumerState
-	consumerTag string
-	mu          sync.Mutex
-	config      config.BrokerConfig
+	conn           *amqp.Connection
+	produceChannel *amqp.Channel
+	consumeChannel *amqp.Channel
+	inputQueue     amqp.Queue
+	outputQueue    string
+	state          consumerState
+	consumerTag    string
+	mu             sync.Mutex
+	config         config.BrokerConfig
 }
 
 func newQueueToQueueBroker(cfg config.BrokerConfig) (Broker, error) {
@@ -38,9 +46,16 @@ func newQueueToQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 }
 
 func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabbitURL string, cfg config.BrokerConfig) (Broker, error) {
-	conn, channel, err := connectRabbit(rabbitURL)
+	conn, consumeChannel, err := connectRabbit(rabbitURL)
 	if err != nil {
 		return nil, err
+	}
+
+	produceChannel, err := conn.Channel()
+	if err != nil {
+		consumeChannel.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
 	if cfg.Prefetch == 0 {
@@ -48,11 +63,8 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 	}
 
 	queueArgs := amqp.Table{}
-	if cfg.Durable {
-		queueArgs[amqp.QueueTypeArg] = amqp.QueueTypeQuorum
-	}
 
-	inputQueue, err := channel.QueueDeclare(
+	inputQueue, err := consumeChannel.QueueDeclare(
 		inputQueueName,
 		cfg.Durable,
 		cfg.AutoDelete,
@@ -61,21 +73,23 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		queueArgs,
 	)
 	if err != nil {
-		channel.Close()
+		produceChannel.Close()
+		consumeChannel.Close()
 		conn.Close()
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
 	if cfg.Prefetch > 0 {
-		if err := channel.Qos(cfg.Prefetch, 0, false); err != nil {
-			channel.Close()
+		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+			produceChannel.Close()
+			consumeChannel.Close()
 			conn.Close()
 			return nil, fmt.Errorf("failed to set qos: %w", err)
 		}
 	}
 
 	if outputQueueName != "" && outputQueueName != inputQueueName {
-		_, err := channel.QueueDeclare(
+		_, err := consumeChannel.QueueDeclare(
 			outputQueueName,
 			cfg.Durable,
 			cfg.AutoDelete,
@@ -84,19 +98,21 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 			queueArgs,
 		)
 		if err != nil {
-			channel.Close()
+			produceChannel.Close()
+			consumeChannel.Close()
 			conn.Close()
 			return nil, fmt.Errorf("failed to declare output queue: %w", err)
 		}
 	}
 
 	return &queueToQueueBroker{
-		conn:        conn,
-		channel:     channel,
-		inputQueue:  inputQueue,
-		outputQueue: outputQueueName,
-		state:       idle,
-		config:      cfg,
+		conn:           conn,
+		produceChannel: produceChannel,
+		consumeChannel: consumeChannel,
+		inputQueue:     inputQueue,
+		outputQueue:    outputQueueName,
+		state:          idle,
+		config:         cfg,
 	}, nil
 }
 
@@ -116,7 +132,7 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 		qb.config.Prefetch = 30
 	}
 	if qb.config.Prefetch > 0 {
-		if err := qb.channel.Qos(qb.config.Prefetch, 0, false); err != nil {
+		if err := qb.consumeChannel.Qos(qb.config.Prefetch, 0, false); err != nil {
 			if errors.Is(err, amqp.ErrClosed) {
 				return ErrBrokerDisconnected
 			}
@@ -127,7 +143,7 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	queueName := qb.inputQueue.Name
 	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	msgs, err := qb.channel.Consume(
+	msgs, err := qb.consumeChannel.Consume(
 		queueName,
 		tag,
 		false,
@@ -171,7 +187,7 @@ func (qb *queueToQueueBroker) StopConsuming() error {
 	consumerTag := qb.consumerTag
 	qb.mu.Unlock()
 
-	if err := qb.channel.Cancel(consumerTag, false); err != nil {
+	if err := qb.consumeChannel.Cancel(consumerTag, false); err != nil {
 		return ErrBrokerDisconnected
 	}
 
@@ -197,7 +213,7 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := qb.channel.PublishWithContext(
+	if err := qb.produceChannel.PublishWithContext(
 		ctx,
 		"",
 		queueName,
@@ -218,7 +234,8 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 
 func (qb *queueToQueueBroker) Close() error {
 	errStop := qb.StopConsuming()
-	errChannel := qb.channel.Close()
+	errConsumeChannel := qb.consumeChannel.Close()
+	errProduceChannel := qb.produceChannel.Close()
 	errConn := qb.conn.Close()
 
 	qb.mu.Lock()
@@ -226,7 +243,7 @@ func (qb *queueToQueueBroker) Close() error {
 	qb.consumerTag = ""
 	qb.mu.Unlock()
 
-	if errStop != nil || errChannel != nil || errConn != nil {
+	if errStop != nil || errConsumeChannel != nil || errProduceChannel != nil || errConn != nil {
 		return ErrBrokerClose
 	}
 	return nil
