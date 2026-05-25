@@ -16,14 +16,9 @@ broker:
   internal: false
 
 worker:
-  type: Cleaner
+  type: "Cleaner"
   params:
     field:
       - "timestamp"
       - "format"
   query: 1
-
-# Required envs if output_keys are omitted
-# NEXT_WORKER_PREFIX=agg
-# NEXT_WORKER_AMOUNT=2
-# WORKER_PREFIX=tx_1

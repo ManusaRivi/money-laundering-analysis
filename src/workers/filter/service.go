@@ -12,9 +12,6 @@ func filterTransactionByAmount(tx domain.Transaction, operator string, value flo
 		slog.Error("Transaction has no amount", "transaction", tx)
 		return false
 	}
-	if money.Currency != "US Dollar" {
-		return false
-	}
 	switch operator {
 	case ">":
 		return money.Amount > value

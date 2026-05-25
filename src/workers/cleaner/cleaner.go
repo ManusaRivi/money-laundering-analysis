@@ -42,6 +42,8 @@ func (c *Cleaner) Run() error {
 	})
 }
 
+func (c *Cleaner) Stop() {}
+
 func (c *Cleaner) handleMessage(msg broker.Message) error {
 	pkt, err := inner.UnmarshalPacket(msg)
 
