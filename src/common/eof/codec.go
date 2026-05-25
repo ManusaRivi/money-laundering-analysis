@@ -15,6 +15,7 @@ const (
 	MsgTypeAmountRequest  = "AMOUNT_REQUEST"
 	MsgTypeAmountResponse = "AMOUNT_RESPONSE"
 	MsgTypeFlush          = "FLUSH"
+	MsgTypeFlushAck       = "FLUSH_ACK"
 	MsgTypeRetryExceeded  = "RETRY_EXCEEDED"
 )
 

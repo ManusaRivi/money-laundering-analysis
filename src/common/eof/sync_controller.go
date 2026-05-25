@@ -22,6 +22,8 @@ type SyncEOFController struct {
 
 	rcvResponses map[string]map[string]int // clientID -> senderID -> amount rcv reportado
 	sntResponses map[string]map[string]int // clientID -> senderID -> amount snt reportado
+	flushResponses map[string]map[string]bool // clientID -> senderID -> flush ack
+	flushExpectedSent map[string]int // clientID -> total sent for EOF
 
 	// Callback a ejecutar cuando todos los workers terminan.
 	// Se llama pasando el clientID
@@ -67,6 +69,8 @@ func NewSyncEOFController(
 		retryCounts:   make(map[string]int),
 		rcvResponses:  make(map[string]map[string]int),
 		sntResponses:  make(map[string]map[string]int),
+		flushResponses: make(map[string]map[string]bool),
+		flushExpectedSent: make(map[string]int),
 		onFlush:       onFlush,
 		onLeaderFlush: onLeaderFlush,
 		onRetryExceeded: onRetryExceeded,
@@ -119,6 +123,7 @@ func (c *SyncEOFController) broadcastFlush(clientID string, totalSnt int) {
 	msg := ControlMessage{
 		Type:      MsgTypeFlush,
 		ClientID:  clientID,
+		RequesterID: c.nodeID,
 	}
 	c.sendControlMessage(msg)
 }
@@ -138,6 +143,8 @@ func (c *SyncEOFController) handleControlMessage(msg broker.Message, ack func(),
 		c.processAmountResponse(*ctrlMsg)
 	case MsgTypeFlush:
 		c.processFlush(*ctrlMsg)
+	case MsgTypeFlushAck:
+		c.processFlushAck(*ctrlMsg)
 	case MsgTypeRetryExceeded:
 		c.processRetryExceeded(*ctrlMsg)
 	default:
@@ -217,14 +224,9 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID string) {
 
 	if totalRcvReported == expectedRcv {
 		log.Printf("[SyncEOFController] EOF Sincronizado para %s! Match total: %d. Total sent to next stage: %d. Emitiendo FLUSH.\n", clientID, expectedRcv, totalSntReported)
-		if c.onLeaderFlush != nil {
-			c.onLeaderFlush(clientID, totalSntReported)
-		}
+		c.flushResponses[clientID] = make(map[string]bool)
+		c.flushExpectedSent[clientID] = totalSntReported
 		c.broadcastFlush(clientID, totalSntReported)
-
-		if c.onFlush != nil {
-			c.onFlush(clientID)
-		}
 	} else {
 		log.Printf("[SyncEOFController] EOF para %s no matchea. Esperado: %d, Reportado: %d. Retrying...\n", clientID, expectedRcv, totalRcvReported)
 		c.retryAmountRequest(clientID)
@@ -235,6 +237,28 @@ func (c *SyncEOFController) processFlush(msg ControlMessage) {
 	log.Printf("[SyncEOFController] Recibido FLUSH para %s. Next stage amount: %d\n", msg.ClientID, msg.SentCount)
 	if c.onFlush != nil {
 		c.onFlush(msg.ClientID)
+	}
+	c.sendFlushAck(msg.ClientID, msg.RequesterID)
+}
+
+func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
+	if msg.RequesterID != c.nodeID {
+		return
+	}
+
+	c.mu.Lock()
+	if c.flushResponses[msg.ClientID] == nil {
+		c.flushResponses[msg.ClientID] = make(map[string]bool)
+	}
+	c.flushResponses[msg.ClientID][msg.SenderID] = true
+	responsesCount := len(c.flushResponses[msg.ClientID])
+	finalSent := c.flushExpectedSent[msg.ClientID]
+	c.mu.Unlock()
+
+	if responsesCount == c.totalNodes {
+		if c.onLeaderFlush != nil {
+			c.onLeaderFlush(msg.ClientID, finalSent)
+		}
 	}
 }
 
@@ -255,6 +279,16 @@ func (c *SyncEOFController) runRetryExceededCallback(clientID string) {
 	if c.onRetryExceeded != nil {
 		c.onRetryExceeded(clientID)
 	}
+}
+
+func (c *SyncEOFController) sendFlushAck(clientID string, requesterID string) {
+	msg := ControlMessage{
+		Type:        MsgTypeFlushAck,
+		ClientID:    clientID,
+		RequesterID: requesterID,
+		SenderID:    c.nodeID,
+	}
+	c.sendControlMessage(msg)
 }
 
 func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
