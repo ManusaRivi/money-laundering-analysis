@@ -159,21 +159,17 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			for _, transaction := range transactions {
 				tx := domain.Transaction{
 					Timestamp: transaction.Timestamp,
-					Origin: domain.Account{
+					Origin: &domain.Account{
 						BankID: transaction.FromBank,
 						ID:     transaction.FromAccount,
 					},
-					Dest: domain.Account{
+					Dest: &domain.Account{
 						BankID: transaction.ToBank,
 						ID:     transaction.ToAccount,
 					},
-					Paid: domain.Money{
+					Paid: &domain.Money{
 						Amount:   transaction.AmountPaid,
 						Currency: transaction.PaymentCurrency,
-					},
-					Received: domain.Money{
-						Amount:   transaction.AmountReceived,
-						Currency: transaction.ReceivingCurrency,
 					},
 					Format: transaction.PaymentFormat,
 				}
