@@ -53,6 +53,8 @@ type Broker interface {
 func NewBroker(cfg config.BrokerConfig) (Broker, error) {
 	cfg = parseBrokerDefaults(cfg)
 	switch cfg.Type {
+	case TypeQueue:
+		return newQueueBroker(cfg)
 	case TypeQueueToQueue:
 		return newQueueToQueueBroker(cfg)
 	case TypeQueueToExchange:

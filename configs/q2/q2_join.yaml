@@ -1,0 +1,19 @@
+# Q2 Join: consumes max-amount transactions from the sum aggregator (q-q)
+# and consumes bank account info pushed directly by the gateway on a separate
+# point-to-point queue.
+
+broker:
+  type: q-q
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q2_join
+  output: query_results
+  exchange_type: direct
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "Join"

@@ -48,6 +48,26 @@ type WorkerConfig struct {
 	NextWorkerPrefix string `yaml:"-"`
 }
 
+func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg struct {
+		AccountsBroker BrokerConfig `yaml:"accounts_broker"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	if err := applyBrokerDefaults(&cfg.AccountsBroker); err != nil {
+		return nil, err
+	}
+
+	return &cfg.AccountsBroker, nil
+}
+
 func Load(filepath string) (*Config, error) {
 	data, err := os.ReadFile(filepath)
 	if err != nil {
@@ -126,6 +146,15 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 	}
 	if cfg.Prefetch == 0 {
 		cfg.Prefetch = 30
+	}
+
+	// A "queue" broker is a single point-to-point queue. Only one of
+	// input/output needs to be set — whichever is set names the queue.
+	if cfg.Type == "queue" {
+		if cfg.Input == "" && cfg.Output == "" {
+			return fmt.Errorf("queue broker requires either input or output")
+		}
+		return nil
 	}
 
 	if isInputExchangeType(cfg.Type) {

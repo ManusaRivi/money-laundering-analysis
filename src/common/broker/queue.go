@@ -1,0 +1,204 @@
+package broker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+// queueBroker connects to a single queue and supports both publishing and
+// consuming on it. It is intended for direct point-to-point flows between two
+// components (e.g. gateway -> join) where there is no routing or fanout.
+//
+// The queue name is taken from cfg.Input (preferred) or cfg.Output. Producers
+// and consumers share the same broker shape so either side can be configured
+// the same way; the side that does not call Send/StartConsuming simply
+// declares the queue and is otherwise idle.
+type queueBroker struct {
+	conn           *amqp.Connection
+	produceChannel *amqp.Channel
+	consumeChannel *amqp.Channel
+	queue          amqp.Queue
+	state          consumerState
+	consumerTag    string
+	mu             sync.Mutex
+	config         config.BrokerConfig
+}
+
+func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
+	queueName := cfg.Input
+	if queueName == "" {
+		queueName = cfg.Output
+	}
+	if queueName == "" {
+		return nil, errors.New("input or output is required for queue broker")
+	}
+	if cfg.RabbitURL == "" {
+		return nil, errors.New("url is required for queue broker")
+	}
+
+	conn, consumeChannel, err := connectRabbit(cfg.RabbitURL)
+	if err != nil {
+		return nil, err
+	}
+
+	produceChannel, err := conn.Channel()
+	if err != nil {
+		consumeChannel.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to open producer channel: %w", err)
+	}
+
+	queue, err := consumeChannel.QueueDeclare(
+		queueName,
+		cfg.Durable,
+		cfg.AutoDelete,
+		cfg.Exclusive,
+		cfg.NoWait,
+		amqp.Table{},
+	)
+	if err != nil {
+		produceChannel.Close()
+		consumeChannel.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to declare queue: %w", err)
+	}
+
+	if cfg.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+			produceChannel.Close()
+			consumeChannel.Close()
+			conn.Close()
+			return nil, fmt.Errorf("failed to set qos: %w", err)
+		}
+	}
+
+	return &queueBroker{
+		conn:           conn,
+		produceChannel: produceChannel,
+		consumeChannel: consumeChannel,
+		queue:          queue,
+		state:          idle,
+		config:         cfg,
+	}, nil
+}
+
+func (qb *queueBroker) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
+	qb.mu.Lock()
+	if qb.state == closed {
+		qb.mu.Unlock()
+		return ErrBrokerMessage
+	}
+	if qb.state == consuming {
+		qb.mu.Unlock()
+		return nil
+	}
+	qb.mu.Unlock()
+
+	tag := qb.queue.Name + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	msgs, err := qb.consumeChannel.Consume(
+		qb.queue.Name,
+		tag,
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		if errors.Is(err, amqp.ErrClosed) {
+			return ErrBrokerDisconnected
+		}
+		return ErrBrokerMessage
+	}
+
+	qb.mu.Lock()
+	qb.consumerTag = tag
+	qb.state = consuming
+	qb.mu.Unlock()
+
+	for d := range msgs {
+		callbackFunc(Message{Body: d.Body}, func() { d.Ack(false) }, func() { d.Nack(false, true) })
+	}
+
+	qb.mu.Lock()
+	defer qb.mu.Unlock()
+	if qb.state == consuming {
+		qb.state = closed
+		return ErrBrokerDisconnected
+	}
+	return nil
+}
+
+func (qb *queueBroker) StopConsuming() error {
+	qb.mu.Lock()
+	if qb.state != consuming {
+		qb.mu.Unlock()
+		return nil
+	}
+	consumerTag := qb.consumerTag
+	qb.mu.Unlock()
+
+	if err := qb.consumeChannel.Cancel(consumerTag, false); err != nil {
+		return ErrBrokerDisconnected
+	}
+
+	qb.mu.Lock()
+	qb.state = idle
+	qb.consumerTag = ""
+	qb.mu.Unlock()
+	return nil
+}
+
+func (qb *queueBroker) Send(msg Message) error {
+	qb.mu.Lock()
+	if qb.state == closed {
+		qb.mu.Unlock()
+		return ErrBrokerMessage
+	}
+	qb.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := qb.produceChannel.PublishWithContext(
+		ctx,
+		"",
+		qb.queue.Name,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        msg.Body,
+		},
+	); err != nil {
+		if errors.Is(err, amqp.ErrClosed) {
+			return ErrBrokerDisconnected
+		}
+		return ErrBrokerMessage
+	}
+	return nil
+}
+
+func (qb *queueBroker) Close() error {
+	errStop := qb.StopConsuming()
+	errConsume := qb.consumeChannel.Close()
+	errProduce := qb.produceChannel.Close()
+	errConn := qb.conn.Close()
+
+	qb.mu.Lock()
+	qb.state = closed
+	qb.consumerTag = ""
+	qb.mu.Unlock()
+
+	if errStop != nil || errConsume != nil || errProduce != nil || errConn != nil {
+		return ErrBrokerClose
+	}
+	return nil
+}
