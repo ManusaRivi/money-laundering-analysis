@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -199,6 +200,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	qb.mu.Unlock()
 
 	if msg.RoutingKey == "" {
+		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
 

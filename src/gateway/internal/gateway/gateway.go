@@ -159,25 +159,27 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			for _, transaction := range transactions {
 				tx := domain.Transaction{
 					Timestamp: transaction.Timestamp,
-					Origin: domain.Account{
+					Origin: &domain.Account{
 						BankID: transaction.FromBank,
 						ID:     transaction.FromAccount,
 					},
-					Dest: domain.Account{
+					Dest: &domain.Account{
 						BankID: transaction.ToBank,
 						ID:     transaction.ToAccount,
 					},
-					Paid: domain.Money{
+					Paid: &domain.Money{
 						Amount:   transaction.AmountPaid,
 						Currency: transaction.PaymentCurrency,
 					},
-					Received: domain.Money{
-						Amount:   transaction.AmountReceived,
-						Currency: transaction.ReceivingCurrency,
-					},
 					Format: transaction.PaymentFormat,
 				}
-				msg, err := inner.MarshalTransactionPacket(c.ClientId, "", tx)
+				routingTopic := ""
+				if tx.IsUSDTransaction() {
+					routingTopic = broker.DollarTransaction
+				} else {
+					routingTopic = broker.NonDollarTransaction
+				}
+				msg, err := inner.MarshalTransactionPacket(c.ClientId, routingTopic, tx)
 				if err != nil {
 					slog.Error("Error marshalling transaction packet", "error", err)
 					return false
@@ -191,7 +193,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			}
 		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
-			msg, err := inner.MarshalEOFPacket(c.ClientId, "")
+			msg, err := inner.MarshalEOFPacket(c.ClientId, broker.ControlEOFKey)
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
 				return false

@@ -86,7 +86,6 @@ func (f *SyncFilter) handleMessage(msg broker.Message) error {
 
 	switch pkt.Type {
 	case inner.TypeTransaction:
-		// slog.Debug("Handling Transaction Packet...")
 		var data domain.Transaction
 		if err := pkt.UnmarshalData(&data); err != nil {
 			return err
@@ -99,8 +98,6 @@ func (f *SyncFilter) handleMessage(msg broker.Message) error {
 				ToAccount:   data.Dest.ID,
 				AmountPaid:  data.Paid.Amount,
 			}
-			slog.Debug("Transaction passed filter, sending result to Broker...")
-			slog.Debug("Query Result", "amount_paid", queryResult.AmountPaid)
 			responseMsg, err := inner.MarshalQuery1ResultPacket(pkt.ClientID, queryResult)
 			if err != nil {
 				return err

@@ -8,7 +8,8 @@ import (
 
 func filterTransactionByAmount(tx domain.Transaction, operator string, value float64) bool {
 	money := tx.Paid
-	if money.Currency != "US Dollar" {
+	if money == nil {
+		slog.Error("Transaction has no amount", "transaction", tx)
 		return false
 	}
 	switch operator {
@@ -25,6 +26,10 @@ func filterTransactionByAmount(tx domain.Transaction, operator string, value flo
 }
 
 func filterTransactionByFormat(tx domain.Transaction, operator string, value string) bool {
+	if tx.Format == "" {
+		slog.Error("Transaction has no format", "transaction", tx)
+		return false
+	}
 	switch operator {
 	case "==":
 		return tx.Format == value

@@ -38,7 +38,7 @@ services:
       dockerfile: src/client/Dockerfile
     container_name: client
     environment:
-      - LOG_LEVEL=error
+      - LOG_LEVEL=info
     volumes:
       - ./.data:/app/.data
       - ./.output:/app/.output
@@ -54,9 +54,26 @@ services:
     container_name: query_1_filter
     environment:
       - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml 
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_1_filter
     volumes:
       - ./configs/query_1_filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query_1_cleaner:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_1_cleaner
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_1_cleaner
+    volumes:
+      - ./configs/query_1_cleaner.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:

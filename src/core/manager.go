@@ -8,15 +8,16 @@ import (
 )
 
 // Worker is the interface that all workers must implement.
+// TODO: Implement Stop across workers
 type Worker interface {
 	Run() error
 	Stop()
 }
 
 type Manager struct {
-	Worker	Worker
-	cnfg	*config.Config
-	broker	broker.Broker
+	Worker Worker
+	cnfg   *config.Config
+	broker broker.Broker
 }
 
 func NewManager(cfg *config.Config) (*Manager, error) {

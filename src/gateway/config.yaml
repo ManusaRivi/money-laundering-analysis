@@ -1,8 +1,8 @@
-type: "q-q"
+type: "q-e"
 url: amqp://guest:guest@rabbitmq:5672/
 input: query_results
-output: tx_to_filter
-exchange_type: direct
+output: e_entry
+exchange_type: topic
 prefetch: 300
 durable: true
 auto_delete: false
