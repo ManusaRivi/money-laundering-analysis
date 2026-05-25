@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -193,11 +194,11 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if msg.RoutingKey == "" {
+		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
 
