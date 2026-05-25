@@ -15,7 +15,7 @@ var (
 	ErrInvalidPacket = errors.New("Invalid packet")
 )
 
-func MarshalTransactionPacket(clientID uuid.UUID, tx domain.Transaction) (*broker.Message, error) {
+func MarshalTransactionPacket(clientID uuid.UUID, routingKey string, tx domain.Transaction) (*broker.Message, error) {
 	data, err := json.Marshal(tx)
 	if err != nil {
 		return nil, err
@@ -31,10 +31,10 @@ func MarshalTransactionPacket(clientID uuid.UUID, tx domain.Transaction) (*broke
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
-func MarshalEOFPacket(clientID uuid.UUID) (*broker.Message, error) {
+func MarshalEOFPacket(clientID uuid.UUID, routingKey string) (*broker.Message, error) {
 	msg := Packet{
 		ClientID: clientID,
 		Type:     TypeEOF,
@@ -45,10 +45,10 @@ func MarshalEOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
-func MarshalBankInfoPacket(clientID uuid.UUID, bankInfo domain.BankInfo) (*broker.Message, error) {
+func MarshalBankInfoPacket(clientID uuid.UUID, routingKey string, bankInfo domain.BankInfo) (*broker.Message, error) {
 	data, err := json.Marshal(bankInfo)
 	if err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ func MarshalBankInfoPacket(clientID uuid.UUID, bankInfo domain.BankInfo) (*broke
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
 func UnmarshalPacket(msg broker.Message) (*Packet, error) {

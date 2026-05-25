@@ -184,12 +184,54 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if len(qb.routingKeys) == 0 {
+	if len(qb.routingKeys) == 0 && msg.RoutingKey == "" {
 		return ErrBrokerMessage
 	}
 
+	keyToUse := msg.RoutingKey
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if keyToUse != "" {
+		if err := qb.channel.PublishWithContext(
+			ctx,
+			qb.outputExchange,
+			keyToUse,
+			false,
+			false,
+			amqp.Publishing{
+				ContentType: "application/json",
+				Body:        msg.Body,
+			},
+		); err != nil {
+			if errors.Is(err, amqp.ErrClosed) {
+				return ErrBrokerDisconnected
+			}
+			return ErrBrokerMessage
+		}
+		return nil
+	}
+
+	if len(qb.routingKeys) == 1 {
+		if err := qb.channel.PublishWithContext(
+			ctx,
+			qb.outputExchange,
+			qb.routingKeys[0],
+			false,
+			false,
+			amqp.Publishing{
+				ContentType: "application/json",
+				Body:        msg.Body,
+			},
+		); err != nil {
+			if errors.Is(err, amqp.ErrClosed) {
+				return ErrBrokerDisconnected
+			}
+			return ErrBrokerMessage
+		}
+		return nil
+	}
 
 	for _, key := range qb.routingKeys {
 		if err := qb.channel.PublishWithContext(
