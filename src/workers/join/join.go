@@ -106,7 +106,6 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 		cached := j.txCachePerCl[pkt.ClientID][info.ID]
 		j.mu.Unlock()
 
-		slog.Debug("Emitting cached results", "clientID", pkt.ClientID, "bankID", info.ID, "count", len(cached))
 		for i, tx := range cached {
 			if err := j.emitResult(pkt.ClientID, tx, info.Name); err != nil {
 				// Keep the failed tx (and any after it) in the cache so a
@@ -119,7 +118,6 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 			}
 		}
 
-		slog.Debug("Flushing cached results", "clientID", pkt.ClientID, "bankID", info.ID)
 		j.mu.Lock()
 		if perBank, ok := j.txCachePerCl[pkt.ClientID]; ok {
 			delete(perBank, info.ID)

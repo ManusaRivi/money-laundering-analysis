@@ -144,7 +144,6 @@ func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
 	// Aquí se implementaría la lógica para manejar mensajes de tipo transacción.
 	// Por ejemplo, podríamos extraer el valor del campo especificado en r.fieldToRouteBy
 	// y usarlo para determinar a qué worker enviar el mensaje.
-	slog.Debug("Handling transaction message", "packet", pkt)
 	var tx domain.Transaction
 	err := pkt.UnmarshalData(&tx)
 	if err != nil {
@@ -153,6 +152,8 @@ func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
 	}
 
 	routingKey := r.shardByField(tx)
+
+	slog.Debug("Routing transaction", "bankID", tx.Origin.BankID, "routingKey", routingKey)
 
 	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyType(routingKey), tx)
 

@@ -49,59 +49,6 @@ services:
       - money-laundering-analysis-net
     depends_on:
       - gateway
-  
-  query_1_filter:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_filter
-    environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_1_filter
-    volumes:
-      - ./configs/q1/q1_filter.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  query_1_cleaner_0:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_cleaner_0
-    environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_1_cleaner
-      - ID=0
-      - WORKER_AMOUNT=2
-    volumes:
-      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  query_1_cleaner_1:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_cleaner_1
-    environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_1_cleaner
-      - ID=1
-      - WORKER_AMOUNT=2
-    volumes:
-      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
 
   query_2_cleaner_0:
     build:
@@ -121,7 +68,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  
+
   query_2_router_0:
     build:
       context: .
@@ -134,7 +81,7 @@ services:
       - ID=0
       - WORKER_AMOUNT=1
       - NEXT_WORKER_AMOUNT=2
-      - NEXT_WORKER_PREFIX=query_2_sum
+      - NEXT_WORKER_PREFIX=query_2_max
     volumes:
       - ./configs/q2/q2_router.yaml:/app/config.yaml
     networks:
@@ -142,7 +89,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  
+
   query_2_aggregator_0:
     build:
       context: .
@@ -151,7 +98,7 @@ services:
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_2_sum
+      - WORKER_PREFIX=query_2_max
       - ID=0
       - WORKER_AMOUNT=2
     volumes:
@@ -161,7 +108,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  
+
   query_2_aggregator_1:
     build:
       context: .
@@ -170,7 +117,7 @@ services:
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_2_sum
+      - WORKER_PREFIX=query_2_max
       - ID=1
       - WORKER_AMOUNT=2
     volumes:

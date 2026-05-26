@@ -21,7 +21,7 @@ worker:
   params:
     field:
       - "timestamp"
-      - "origin"
+      - "dest"
       - "format"
   query: 2
   sync_eof:
