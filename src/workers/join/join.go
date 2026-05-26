@@ -125,6 +125,15 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 			delete(perBank, info.ID)
 		}
 		j.mu.Unlock()
+	case inner.TypeAccountsEOF:
+		slog.Debug("Received accounts EOF for client", "clientID", pkt.ClientID)
+		// No more bank info will be received for this client, so we can clear
+		// any cached transactions that haven't been joined yet, as they won't
+		// be able to produce results.
+		j.mu.Lock()
+		delete(j.txCachePerCl, pkt.ClientID)
+		j.mu.Unlock()
+		slog.Debug("Cleared transaction cache for client", "clientID", pkt.ClientID)
 	default:
 		return fmt.Errorf("unexpected accounts packet type: %v", pkt.Type)
 	}

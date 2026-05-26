@@ -66,6 +66,20 @@ func MarshalBankInfoPacket(clientID uuid.UUID, routingKey string, bankInfo domai
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
+func MarshalBankInfoEOFPacket(clientID uuid.UUID, routingKey string) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeAccountsEOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
 func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (*broker.Message, error) {
 	data, err := json.Marshal(result)
 	if err != nil {

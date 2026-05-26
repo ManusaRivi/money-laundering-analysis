@@ -164,7 +164,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			slog.Debug("Received accounts EOF")
 			c.Handler.HandleAccountsEOF()
 			if gateway.accountsBroker != nil {
-				eofMsg, err := inner.MarshalEOFPacket(c.ClientId, "")
+				eofMsg, err := inner.MarshalBankInfoEOFPacket(c.ClientId, "")
 				if err != nil {
 					slog.Error("Error marshalling accounts EOF packet", "error", err)
 					return false

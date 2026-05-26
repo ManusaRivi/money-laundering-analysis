@@ -13,6 +13,7 @@ const (
 	// TypeTransactionBatch
 	TypeBankInfo
 	TypeEOF
+	TypeAccountsEOF
 
 	TypeQuery1Result
 	TypeQuery1EOF
@@ -64,6 +65,8 @@ func (t *PacketType) String() string {
 		return "query5_eof"
 	case TypeEOF:
 		return "eof"
+	case TypeAccountsEOF:
+		return "accounts_eof"
 	default:
 		return "unknown"
 	}
