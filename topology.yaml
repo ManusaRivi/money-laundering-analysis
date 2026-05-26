@@ -1,0 +1,13 @@
+clients: 1
+pipelines:
+  # entry:
+  #   - name: filter
+  #     amount: 4
+  query1:
+    - name: cleaner
+      amount: 2
+    - name: filter
+      amount: 2
+  # query2:
+  #   - name: cleaner
+  #     amount: 3
