@@ -40,11 +40,11 @@ func (qw *QueryWriter) WriteRows(rows [][]string) {
 
 func GetQueryResultData() map[external.MsgType]QueryResultData {
 	return map[external.MsgType]QueryResultData{
-		external.MsgQuery1Result: {
+		/* external.MsgQuery1Result: {
 			filename: "query1.csv",
 			header:   []string{"from_bank", "from_account", "to_bank", "to_account", "total_amount"},
 			eofType:  external.MsgQuery1ResultEOF,
-		},
+		}, */
 		external.MsgQuery2Result: {
 			filename: "query2.csv",
 			header:   []string{"from_bank", "from_account", "bank_name", "amount_paid"},
