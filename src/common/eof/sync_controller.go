@@ -11,15 +11,15 @@ import (
 )
 
 type client struct {
-	clientID uuid.UUID
-	msgRcvCount int // cantidad de mensajes que recibio este nodo
-	msgSntCount int // cantidad de mensajes que envio este nodo al siguiente stage
+	clientID      uuid.UUID
+	msgRcvCount   int // cantidad de mensajes que recibio este nodo
+	msgSntCount   int // cantidad de mensajes que envio este nodo al siguiente stage
 	expectedTotal int // total_messages que espera recibir el cluster para flushear
-	retryCount int // cantidad de reintentos de amount request
+	retryCount    int // cantidad de reintentos de amount request
 
-	rcvResponses map[int]int // senderID -> amount rcv reportado
-	sntResponses map[int]int // senderID -> amount snt reportado
-	flushResponses map[int]bool // senderID -> flush ack
+	rcvResponses      map[int]int  // senderID -> amount rcv reportado
+	sntResponses      map[int]int  // senderID -> amount snt reportado
+	flushResponses    map[int]bool // senderID -> flush ack
 	flushExpectedSent int
 }
 
@@ -29,8 +29,8 @@ type SyncEOFController struct {
 	nodeID     int
 	totalNodes int // La cantidad total de workers del mismo tipo
 
-	mu            sync.Mutex
-	clients	   map[uuid.UUID]*client
+	mu      sync.Mutex
+	clients map[uuid.UUID]*client
 
 	// Callback a ejecutar cuando todos los workers terminan.
 	// Se llama pasando el clientID
@@ -49,9 +49,9 @@ type SyncEOFController struct {
 
 func NewClient(clientID uuid.UUID) *client {
 	return &client{
-		clientID: clientID,
-		rcvResponses: make(map[int]int),
-		sntResponses: make(map[int]int),
+		clientID:       clientID,
+		rcvResponses:   make(map[int]int),
+		sntResponses:   make(map[int]int),
 		flushResponses: make(map[int]bool),
 	}
 }
@@ -62,7 +62,7 @@ func NewSyncEOFController(
 	onFlush func(clientID uuid.UUID) error,
 	onLeaderFlush func(clientID uuid.UUID, finalSent int) error,
 	onRetryExceeded func(clientID uuid.UUID) error,
-	) (*SyncEOFController, error) {	
+) (*SyncEOFController, error) {
 	eofBroker, err := NewEOFBroker(cfg.RabbitURL, cfg.BroadcastExchange, cfg.WorkerID, cfg.EOFPrefix)
 	if err != nil {
 		return nil, err
@@ -72,16 +72,16 @@ func NewSyncEOFController(
 	retryStepDelay := time.Duration(cfg.RetryStepDelay * float64(time.Microsecond))
 
 	controller := &SyncEOFController{
-		broker:        eofBroker,
-		nodeID:        cfg.WorkerID,
-		totalNodes:    cfg.WorkerAmount,
-		clients:      make(map[uuid.UUID]*client),
-		onFlush:       onFlush,
-		onLeaderFlush: onLeaderFlush,
+		broker:          eofBroker,
+		nodeID:          cfg.WorkerID,
+		totalNodes:      cfg.WorkerAmount,
+		clients:         make(map[uuid.UUID]*client),
+		onFlush:         onFlush,
+		onLeaderFlush:   onLeaderFlush,
 		onRetryExceeded: onRetryExceeded,
-		retryBaseDelay: retryBaseDelay,
-		retryStepDelay: retryStepDelay,
-		maxRetries:     cfg.MaxRetries,
+		retryBaseDelay:  retryBaseDelay,
+		retryStepDelay:  retryStepDelay,
+		maxRetries:      cfg.MaxRetries,
 	}
 
 	slog.Debug("[SyncEOFController] Initialized",
@@ -161,10 +161,10 @@ func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSnt int) {
 		"total_sent", totalSnt,
 	)
 	msg := ControlMessage{
-		Type:      MsgTypeFlush,
-		ClientID:  clientID,
+		Type:        MsgTypeFlush,
+		ClientID:    clientID,
 		RequesterID: c.nodeID,
-		SentCount: totalSnt,
+		SentCount:   totalSnt,
 	}
 	c.sendControlMessage(msg)
 }
@@ -198,7 +198,7 @@ func (c *SyncEOFController) handleControlMessage(msg broker.Message, ack func(),
 	default:
 		slog.Warn("[SyncEOFController] Tipo de mensaje de control desconocido", "type", ctrlMsg.Type)
 	}
-	
+
 	ack()
 }
 
@@ -232,7 +232,7 @@ func (c *SyncEOFController) processAmountResponse(msg ControlMessage) {
 	client := c.clients[msg.ClientID]
 	client.rcvResponses[msg.SenderID] = msg.ReceivedCount
 	client.sntResponses[msg.SenderID] = msg.SentCount
-	
+
 	responsesCount := len(client.rcvResponses)
 	c.mu.Unlock()
 
@@ -424,7 +424,7 @@ func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 		slog.Error("[SyncEOFController] Fail to marshal control message", "err", err)
 		return
 	}
-	
+
 	if err := c.broker.Send(*brokerMsg); err != nil {
 		slog.Error("[SyncEOFController] Failed to send control message", "err", err)
 		return

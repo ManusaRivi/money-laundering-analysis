@@ -3,11 +3,11 @@ package broker
 type KeyType string
 
 const (
-	KeyDollarTransaction	KeyType = "tx.usd"
-	KeyNonDollarTransaction	KeyType = "tx.non-usd"
+	KeyDollarTransaction    KeyType = "tx.usd"
+	KeyNonDollarTransaction KeyType = "tx.non-usd"
 
-	KeyControlEOF			KeyType	= "control.eof"
-	KeyNil					KeyType	= ""
+	KeyControlEOF KeyType = "control.eof"
+	KeyNil        KeyType = ""
 )
 
 func StringsToKeyType(s []string) []KeyType {

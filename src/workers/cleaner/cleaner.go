@@ -13,10 +13,10 @@ import (
 )
 
 type Cleaner struct {
-	cfg 		config.WorkerConfig
-	Broker        broker.Broker
-	syncEOFController	  *eof.SyncEOFController
-	fieldsToClean []string
+	cfg               config.WorkerConfig
+	Broker            broker.Broker
+	syncEOFController *eof.SyncEOFController
+	fieldsToClean     []string
 }
 
 func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
@@ -31,15 +31,15 @@ func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
 			}
 		}
 	}
-	
+
 	return &Cleaner{cfg: cfg, Broker: broker, fieldsToClean: fieldsToClean, syncEOFController: nil}
 }
 
 func (c *Cleaner) Run() error {
 	defer func() {
 		c.Broker.StopConsuming()
-		}()
-	
+	}()
+
 	var err error
 	c.syncEOFController, err = eof.NewSyncEOFController(
 		c.cfg.SyncEOFConfig,
@@ -51,7 +51,7 @@ func (c *Cleaner) Run() error {
 		slog.Error("Error creating SyncEOFController", "error", err)
 		return err
 	}
-	
+
 	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
@@ -63,16 +63,16 @@ func (c *Cleaner) Run() error {
 	})
 }
 
-func (c *Cleaner) onflush(clientID uuid.UUID) error{
+func (c *Cleaner) onflush(clientID uuid.UUID) error {
 	// El cleaner esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
 	return nil
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	
+
 	counts := map[broker.KeyType]int{broker.KeyNil: finalSent}
 	eofCounts := domain.EOFCounts{
-		Counts:   counts,
+		Counts: counts,
 	}
 	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	if err != nil {

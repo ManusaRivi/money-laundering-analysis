@@ -17,7 +17,7 @@ type BrokerConfig struct {
 	Type         string   `yaml:"type"`
 	RabbitURL    string   `yaml:"url"`
 	Input        string   `yaml:"input"`
-	InputQueue	 string   `yaml:"input_queue"`
+	InputQueue   string   `yaml:"input_queue"`
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
@@ -42,23 +42,23 @@ type WorkerConfig struct {
 	Params map[string]any `yaml:"params"`
 	Query  int            `yaml:"query"`
 
-	WorkerID         int    `yaml:"-"`
-	WorkerPrefix     string `yaml:"-"`
-	WorkerAmount     int    `yaml:"-"`
-	NextWorkerAmount int    `yaml:"-"`
-	NextWorkerPrefix string `yaml:"-"`
-	SyncEOFConfig	SyncEOFControllerConfig `yaml:"-"`
+	WorkerID         int                     `yaml:"-"`
+	WorkerPrefix     string                  `yaml:"-"`
+	WorkerAmount     int                     `yaml:"-"`
+	NextWorkerAmount int                     `yaml:"-"`
+	NextWorkerPrefix string                  `yaml:"-"`
+	SyncEOFConfig    SyncEOFControllerConfig `yaml:"-"`
 }
 
 type SyncEOFControllerConfig struct {
 	RetryBaseDelay float64 `yaml:"retries_base_delay"`
 	RetryStepDelay float64 `yaml:"retries_step_delay"`
-	MaxRetries int `yaml:"max_retries"`
+	MaxRetries     int     `yaml:"max_retries"`
 
-	RabbitURL 		string `yaml:"-"`
-	WorkerID     	int    `yaml:"-"`
-	EOFPrefix 		string `yaml:"-"`
-	WorkerAmount 	int    `yaml:"-"`
+	RabbitURL         string `yaml:"-"`
+	WorkerID          int    `yaml:"-"`
+	EOFPrefix         string `yaml:"-"`
+	WorkerAmount      int    `yaml:"-"`
 	BroadcastExchange string `yaml:"-"`
 }
 
