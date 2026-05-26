@@ -123,6 +123,11 @@ func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if _, exists := c.clients[clientID]; !exists {
+		c.clients[clientID] = NewClient(clientID)
+		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
+	}
+
 	c.clients[clientID].msgSntCount++
 	slog.Debug("[SyncEOFController] Message sent",
 		"client_id", clientID,
@@ -133,6 +138,10 @@ func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
 // SyncEof inicia el proceso de sincronizacion. Se llama cuando un nodo asume el rol de lider
 func (c *SyncEOFController) SyncEof(clientID uuid.UUID, expectedTotalMsg int) {
 	c.mu.Lock()
+	if _, exists := c.clients[clientID]; !exists {
+		c.clients[clientID] = NewClient(clientID)
+		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
+	}
 	client := c.clients[clientID]
 	client.expectedTotal = expectedTotalMsg
 	client.retryCount = 0
@@ -204,6 +213,10 @@ func (c *SyncEOFController) handleControlMessage(msg broker.Message, ack func(),
 
 func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 	c.mu.Lock()
+	if _, exists := c.clients[msg.ClientID]; !exists {
+		c.clients[msg.ClientID] = NewClient(msg.ClientID)
+		slog.Debug("[SyncEOFController] Added client state", "client_id", msg.ClientID)
+	}
 	client := c.clients[msg.ClientID]
 	rcvAmount := client.msgRcvCount
 	sntAmount := client.msgSntCount
