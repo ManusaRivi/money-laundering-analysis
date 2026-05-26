@@ -141,11 +141,11 @@ func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 		return err
 	}
 
-	key, ok := a.extractGroupKey(tx)
-	if !ok {
-		slog.Warn("Transaction missing group field; skipping", "group_source", a.groupSource, "group_field", a.groupField)
+	key, err := a.extractGroupKey(tx)
+	if err != nil {
+		slog.Error("Error extracting group key", "error", err)
 		a.syncEOFController.MessageReceived(pkt.ClientID)
-		return nil
+		return err
 	}
 
 	if _, exists := a.state[pkt.ClientID]; !exists {
@@ -247,7 +247,7 @@ func (a *Aggregator) fieldValue(tx domain.Transaction) float64 {
 	}
 }
 
-func (a *Aggregator) extractGroupKey(tx domain.Transaction) (string, bool) {
+func (a *Aggregator) extractGroupKey(tx domain.Transaction) (string, error) {
 	var acct *domain.Account
 	switch a.groupSource {
 	case "origin":
@@ -255,24 +255,24 @@ func (a *Aggregator) extractGroupKey(tx domain.Transaction) (string, bool) {
 	case "dest":
 		acct = tx.Dest
 	default:
-		return "", false
+		return "", fmt.Errorf("Invalid group source: %q", a.groupSource)
 	}
 	if acct == nil {
-		return "", false
+		return "", fmt.Errorf("Transaction missing %q account", a.groupSource)
 	}
 	switch a.groupField {
 	case "BankID":
 		if acct.BankID == "" {
-			return "", false
+			return "", fmt.Errorf("Account missing BankID")
 		}
-		return acct.BankID, true
+		return acct.BankID, nil
 	case "ID":
 		if acct.ID == "" {
-			return "", false
+			return "", fmt.Errorf("Account missing ID")
 		}
-		return acct.ID, true
+		return acct.ID, nil
 	default:
-		return "", false
+		return "", fmt.Errorf("Invalid group field: %q", a.groupField)
 	}
 }
 
