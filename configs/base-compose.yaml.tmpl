@@ -28,6 +28,7 @@ services:
       - LOG_LEVEL=debug
       - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
     volumes:
+      - ./configs/gateway.yaml:/app/config.yaml
       - ./configs/query2/join_account_queue.yaml:/app/accounts_queue_config.yaml
     networks:
       - money-laundering-analysis-net
