@@ -22,12 +22,12 @@ const (
 
 // ControlMessage representa la estructura del mensaje enviado para sincronizar EOF
 type ControlMessage struct {
-	Type          string `json:"type"`
+	Type          string    `json:"type"`
 	ClientID      uuid.UUID `json:"client_id"`
-	RequesterID   int `json:"requester_id"`
-	SenderID      int `json:"sender_id"`
-	ReceivedCount int    `json:"received_count"`
-	SentCount     int    `json:"sent_count"`
+	RequesterID   int       `json:"requester_id"`
+	SenderID      int       `json:"sender_id"`
+	ReceivedCount int       `json:"received_count"`
+	SentCount     int       `json:"sent_count"`
 }
 
 func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {

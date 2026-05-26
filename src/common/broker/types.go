@@ -1,6 +1,7 @@
 package broker
 
 const (
+	TypeQueue              = "queue"
 	TypeQueueToQueue       = "q-q"
 	TypeQueueToExchange    = "q-e"
 	TypeExchangeToQueue    = "e-q"

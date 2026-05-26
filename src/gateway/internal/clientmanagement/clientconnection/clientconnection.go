@@ -76,7 +76,22 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	case inner.TypeQuery1EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery1ResultEOF)
 	case inner.TypeQuery2Result:
-		// Handle query 2 result response
+		var result domain.Query2Result
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 2 result: %w", err)
+		}
+
+		externalResult := external.Query2Result{
+			FromBank:    result.FromBank,
+			FromAccount: result.FromAccount,
+			BankName:    result.BankName,
+			AmountPaid:  result.AmountPaid,
+		}
+		slog.Debug("Received Query Result", "amount_paid", externalResult.AmountPaid)
+
+		if err := c.sendQuery2Result(&externalResult); err != nil {
+			return fmt.Errorf("sending query 2 result: %w", err)
+		}
 	case inner.TypeQuery2EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery2ResultEOF)
 	case inner.TypeQuery3Result:
@@ -149,22 +164,10 @@ func (c *ClientConnection) sendQuery1Result(result *external.Query1Result) error
 	return c.sendEnvelope(external.MsgQuery1Result, payload)
 }
 
-// Soon to be deprecated method
-func (c *ClientConnection) sendQuery1Batch(transactions []external.Transaction) error {
-	results := make([]external.Query1Result, len(transactions))
-	for i, t := range transactions {
-		results[i] = external.Query1Result{
-			FromBank:    t.FromBank,
-			FromAccount: t.FromAccount,
-			ToBank:      t.ToBank,
-			ToAccount:   t.ToAccount,
-			AmountPaid:  t.AmountPaid,
-		}
-	}
-
-	payload, err := c.codec.EncodeQuery1ResultBatch(results)
+func (c *ClientConnection) sendQuery2Result(result *external.Query2Result) error {
+	payload, err := c.codec.EncodeQuery2ResultBatch([]external.Query2Result{(*result)})
 	if err != nil {
-		return fmt.Errorf("encoding query 1 batch: %w", err)
+		return fmt.Errorf("encoding query 2 result: %w", err)
 	}
-	return c.sendEnvelope(external.MsgQuery1Result, payload)
+	return c.sendEnvelope(external.MsgQuery2Result, payload)
 }

@@ -70,6 +70,20 @@ func MarshalBankInfoPacket(clientID uuid.UUID, routingKey broker.KeyType, bankIn
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
+func MarshalBankInfoEOFPacket(clientID uuid.UUID, routingKey broker.KeyType) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeAccountsEOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
 func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (*broker.Message, error) {
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -100,6 +114,38 @@ func MarshalQuery1EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 		return nil, err
 	}
 	return &broker.Message{RoutingKey: broker.KeyControlEOF, Body: serializedMsg}, nil
+}
+
+func MarshalQuery2ResultPacket(clientID uuid.UUID, result domain.Query2Result) (*broker.Message, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery2Result,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: serializedMsg}, nil
+}
+
+func MarshalQuery2EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery2EOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: serializedMsg}, nil
 }
 
 func UnmarshalPacket(msg broker.Message) (*Packet, error) {

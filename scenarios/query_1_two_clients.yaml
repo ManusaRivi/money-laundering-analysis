@@ -49,6 +49,21 @@ services:
       - money-laundering-analysis-net
     depends_on:
       - gateway
+
+  client_2:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_2
+    environment:
+      - LOG_LEVEL=debug
+    volumes:
+      - ./.data:/app/.data
+      - ./.output/client2:/app/.output
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
   
   query_1_filter:
     build:
@@ -66,56 +81,18 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  query_1_cleaner_0:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_cleaner_0
-    environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_1_cleaner
-      - ID=0
-      - WORKER_AMOUNT=2
-    volumes:
-      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  query_1_cleaner_1:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_cleaner_1
-    environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH=/app/config.yaml
-      - WORKER_PREFIX=query_1_cleaner
-      - ID=1
-      - WORKER_AMOUNT=2
-    volumes:
-      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
 
-  query_2_join:
+  query_1_cleaner:
     build:
       context: .
       dockerfile: src/cmd/node/Dockerfile
-    container_name: query_2_join
+    container_name: query_1_cleaner
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
-      - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
-      - WORKER_PREFIX=query_2_join
+      - WORKER_PREFIX=query_1_cleaner
     volumes:
-      - ./configs/q2/q2_join.yaml:/app/config.yaml
-      - ./configs/account_queue_config.yaml:/app/accounts_queue_config.yaml
+      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:

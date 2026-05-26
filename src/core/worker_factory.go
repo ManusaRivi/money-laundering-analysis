@@ -7,6 +7,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/cleaner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/filter"
+	"github.com/ManusaRivi/money-laundering-analysis/src/workers/join"
 )
 
 // TODO: Define worker types as constants
@@ -20,6 +21,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 		return worker, nil
 	case "Cleaner":
 		worker := cleaner.NewCleaner(cfg, communicationBroker)
+		return worker, nil
+	case "Join":
+		worker, err := join.NewJoin(communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Join: %w", err)
+		}
 		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", cfg.Type)

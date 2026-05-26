@@ -17,7 +17,7 @@ type BrokerConfig struct {
 	Type         string   `yaml:"type"`
 	RabbitURL    string   `yaml:"url"`
 	Input        string   `yaml:"input"`
-	InputQueue	 string   `yaml:"input_queue"`
+	InputQueue   string   `yaml:"input_queue"`
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
@@ -42,24 +42,44 @@ type WorkerConfig struct {
 	Params map[string]any `yaml:"params"`
 	Query  int            `yaml:"query"`
 
-	WorkerID         int    `yaml:"-"`
-	WorkerPrefix     string `yaml:"-"`
-	WorkerAmount     int    `yaml:"-"`
-	NextWorkerAmount int    `yaml:"-"`
-	NextWorkerPrefix string `yaml:"-"`
-	SyncEOFConfig	SyncEOFControllerConfig `yaml:"-"`
+	WorkerID         int                     `yaml:"-"`
+	WorkerPrefix     string                  `yaml:"-"`
+	WorkerAmount     int                     `yaml:"-"`
+	NextWorkerAmount int                     `yaml:"-"`
+	NextWorkerPrefix string                  `yaml:"-"`
+	SyncEOFConfig    SyncEOFControllerConfig `yaml:"-"`
 }
 
 type SyncEOFControllerConfig struct {
 	RetryBaseDelay float64 `yaml:"retries_base_delay"`
 	RetryStepDelay float64 `yaml:"retries_step_delay"`
-	MaxRetries int `yaml:"max_retries"`
+	MaxRetries     int     `yaml:"max_retries"`
 
-	RabbitURL 		string `yaml:"-"`
-	WorkerID     	int    `yaml:"-"`
-	EOFPrefix 		string `yaml:"-"`
-	WorkerAmount 	int    `yaml:"-"`
+	RabbitURL         string `yaml:"-"`
+	WorkerID          int    `yaml:"-"`
+	EOFPrefix         string `yaml:"-"`
+	WorkerAmount      int    `yaml:"-"`
 	BroadcastExchange string `yaml:"-"`
+}
+
+func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg struct {
+		AccountsBroker BrokerConfig `yaml:"accounts_broker"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	if err := applyBrokerDefaults(&cfg.AccountsBroker); err != nil {
+		return nil, err
+	}
+
+	return &cfg.AccountsBroker, nil
 }
 
 func Load(filepath string) (*Config, error) {
@@ -164,6 +184,15 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 	}
 	if cfg.Prefetch == 0 {
 		cfg.Prefetch = 30
+	}
+
+	// A "queue" broker is a single point-to-point queue. Only one of
+	// input/output needs to be set — whichever is set names the queue.
+	if cfg.Type == "queue" {
+		if cfg.Input == "" && cfg.Output == "" {
+			return fmt.Errorf("queue broker requires either input or output")
+		}
+		return nil
 	}
 
 	if isInputExchangeType(cfg.Type) {

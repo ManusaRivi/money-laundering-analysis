@@ -18,16 +18,16 @@ type EOFBroker struct {
 	inputQueueName    string
 	EOFPrefix         string
 
-	mu          sync.Mutex
-	consuming   bool
-	consumeDone chan struct{}
+	mu               sync.Mutex
+	consuming        bool
+	consumeDone      chan struct{}
 	consumerTagInput string
 }
 
 const eofPrefetchCount = 3
 
 // NewEOFBroker inicializa el broker compuesto para el EOF
-func NewEOFBroker(rabbitURL string, broadcastExchange string, nodeID int, EOFPrefix string ) (*EOFBroker, error) {
+func NewEOFBroker(rabbitURL string, broadcastExchange string, nodeID int, EOFPrefix string) (*EOFBroker, error) {
 	conn, err := amqp.Dial(rabbitURL)
 	if err != nil {
 		return nil, fmt.Errorf("EOFBroker: dial rabbitmq: %w", err)
@@ -223,4 +223,3 @@ func (eb *EOFBroker) setConsuming(value bool) {
 	eb.consuming = value
 	eb.mu.Unlock()
 }
-
