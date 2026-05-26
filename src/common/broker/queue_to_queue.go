@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -62,6 +64,7 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		cfg.Prefetch = 30
 	}
 
+	slog.Debug("Declaring input queue", "queue", inputQueueName)
 	queueArgs := amqp.Table{}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
@@ -85,23 +88,6 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 			consumeChannel.Close()
 			conn.Close()
 			return nil, fmt.Errorf("failed to set qos: %w", err)
-		}
-	}
-
-	if outputQueueName != "" && outputQueueName != inputQueueName {
-		_, err := consumeChannel.QueueDeclare(
-			outputQueueName,
-			cfg.Durable,
-			cfg.AutoDelete,
-			cfg.Exclusive,
-			cfg.NoWait,
-			queueArgs,
-		)
-		if err != nil {
-			produceChannel.Close()
-			consumeChannel.Close()
-			conn.Close()
-			return nil, fmt.Errorf("failed to declare output queue: %w", err)
 		}
 	}
 
@@ -206,17 +192,12 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	queueName := qb.inputQueue.Name
-	if qb.outputQueue != "" {
-		queueName = qb.outputQueue
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := qb.produceChannel.PublishWithContext(
 		ctx,
 		"",
-		queueName,
+		qb.outputQueue,
 		false,
 		false,
 		amqp.Publishing{

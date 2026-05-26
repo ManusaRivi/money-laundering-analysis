@@ -100,23 +100,6 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		}
 	}
 
-	queueArgs := amqp.Table{}
-
-	_, err = consumeChannel.QueueDeclare(
-		cfg.Output,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
-		queueArgs,
-	)
-	if err != nil {
-		produceChannel.Close()
-		consumeChannel.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare output queue: %w", err)
-	}
-
 	return &exchangeToQueueBroker{
 		conn:           conn,
 		produceChannel: produceChannel,
