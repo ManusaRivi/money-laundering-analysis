@@ -64,11 +64,15 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		cfg.Prefetch = 30
 	}
 
+	if cfg.InputQueue == "" {
+		cfg.Exclusive = true
+	}
+
 	inputQueue, err := consumeChannel.QueueDeclare(
-		"",
+		cfg.InputQueue,
 		false,
 		false,
-		true,
+		cfg.Exclusive,
 		false,
 		nil,
 	)
@@ -79,7 +83,9 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, fmt.Errorf("failed to declare input queue: %w", err)
 	}
 
-	if err := bindInputQueue(consumeChannel, cfg, inputQueue.Name); err != nil {
+	routingKeys := StringsToKeyType(cfg.InputKeys)
+
+	if err := bindInputQueue(consumeChannel, cfg, routingKeys, inputQueue.Name); err != nil {
 		produceChannel.Close()
 		consumeChannel.Close()
 		conn.Close()
@@ -199,7 +205,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if msg.RoutingKey == "" {
+	if msg.RoutingKey == KeyNil {
 		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
@@ -210,7 +216,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	if err := qb.produceChannel.PublishWithContext(
 		ctx,
 		qb.outputExchange,
-		msg.RoutingKey,
+		string(msg.RoutingKey),
 		false,
 		false,
 		amqp.Publishing{

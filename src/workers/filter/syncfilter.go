@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 )
@@ -24,7 +25,8 @@ type SyncFilter struct {
 	// ToDate      string  `json:"to_date"`
 }
 
-func NewSyncFilter(params map[string]any, broker broker.Broker) (*SyncFilter, error) {
+func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, error) {
+	params := cfg.Params
 	typeVal, ok := params["type"].(string)
 	if !ok {
 		return nil, fmt.Errorf("Invalid type parameter for SyncAmountFilter")

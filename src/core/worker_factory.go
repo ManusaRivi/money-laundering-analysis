@@ -13,13 +13,13 @@ import (
 func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (Worker, error) {
 	switch cfg.Type {
 	case "SyncFilter":
-		worker, err := filter.NewSyncFilter(cfg.Params, communicationBroker)
+		worker, err := filter.NewSyncFilter(cfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
 		}
 		return worker, nil
 	case "Cleaner":
-		worker := cleaner.NewCleaner(cfg.Params, communicationBroker)
+		worker := cleaner.NewCleaner(cfg, communicationBroker)
 		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", cfg.Type)

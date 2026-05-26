@@ -17,6 +17,7 @@ type BrokerConfig struct {
 	Type         string   `yaml:"type"`
 	RabbitURL    string   `yaml:"url"`
 	Input        string   `yaml:"input"`
+	InputQueue	 string   `yaml:"input_queue"`
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
@@ -46,6 +47,19 @@ type WorkerConfig struct {
 	WorkerAmount     int    `yaml:"-"`
 	NextWorkerAmount int    `yaml:"-"`
 	NextWorkerPrefix string `yaml:"-"`
+	SyncEOFConfig	SyncEOFControllerConfig `yaml:"-"`
+}
+
+type SyncEOFControllerConfig struct {
+	RetryBaseDelay float64 `yaml:"retries_base_delay"`
+	RetryStepDelay float64 `yaml:"retries_step_delay"`
+	MaxRetries int `yaml:"max_retries"`
+
+	RabbitURL 		string `yaml:"-"`
+	WorkerID     	int    `yaml:"-"`
+	EOFPrefix 		string `yaml:"-"`
+	WorkerAmount 	int    `yaml:"-"`
+	BroadcastExchange string `yaml:"-"`
 }
 
 func Load(filepath string) (*Config, error) {
@@ -59,14 +73,38 @@ func Load(filepath string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := verifyConfig(&cfg); err != nil {
+		return nil, err
+	}
+
 	if err := applyEnv(&cfg); err != nil {
 		return nil, err
 	}
 	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
 		return nil, err
 	}
+	applyEOFDefaults(&cfg)
 
 	return &cfg, nil
+}
+
+func verifyConfig(cfg *Config) error {
+	if cfg.Broker.Type == "" {
+		return fmt.Errorf("broker type is required")
+	}
+	if cfg.Broker.RabbitURL == "" {
+		return fmt.Errorf("broker url is required")
+	}
+	if cfg.Broker.Input == "" {
+		return fmt.Errorf("broker input is refalsequired")
+	}
+	if cfg.Broker.Output == "" {
+		return fmt.Errorf("broker output is required")
+	}
+	if cfg.Worker.Type == "" {
+		return fmt.Errorf("worker type is required")
+	}
+	return nil
 }
 
 func applyEnv(cfg *Config) error {
@@ -166,6 +204,18 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 	}
 
 	return nil
+}
+
+func applyEOFDefaults(cfg *Config) {
+	brokerConfig := &cfg.Broker
+	workerConfig := &cfg.Worker
+	eofConfig := &workerConfig.SyncEOFConfig
+
+	eofConfig.RabbitURL = brokerConfig.RabbitURL
+	eofConfig.WorkerID = brokerConfig.WorkerID
+	eofConfig.EOFPrefix = fmt.Sprintf("%s_eof", brokerConfig.WorkerPrefix)
+	eofConfig.WorkerAmount = brokerConfig.WorkerAmount
+	eofConfig.BroadcastExchange = fmt.Sprintf("%s_eof_broadcast", brokerConfig.WorkerPrefix)
 }
 
 func isInputExchangeType(brokerType string) bool {

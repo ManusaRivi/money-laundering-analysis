@@ -15,7 +15,7 @@ var (
 	ErrInvalidPacket = errors.New("Invalid packet")
 )
 
-func MarshalTransactionPacket(clientID uuid.UUID, routingKey string, tx domain.Transaction) (*broker.Message, error) {
+func MarshalTransactionPacket(clientID uuid.UUID, routingKey broker.KeyType, tx domain.Transaction) (*broker.Message, error) {
 	data, err := json.Marshal(tx)
 	if err != nil {
 		return nil, err
@@ -34,21 +34,25 @@ func MarshalTransactionPacket(clientID uuid.UUID, routingKey string, tx domain.T
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
-func MarshalEOFPacket(clientID uuid.UUID, routingKey string) (*broker.Message, error) {
+func MarshalEOFPacket(clientID uuid.UUID, eof_counts domain.EOFCounts) (*broker.Message, error) {
+	data, err := json.Marshal(eof_counts)
+	if err != nil {
+		return nil, err
+	}
 	msg := Packet{
 		ClientID: clientID,
 		Type:     TypeEOF,
-		Data:     nil,
+		Data:     data,
 	}
 
 	serializedMsg, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: broker.KeyControlEOF, Body: serializedMsg}, nil
 }
 
-func MarshalBankInfoPacket(clientID uuid.UUID, routingKey string, bankInfo domain.BankInfo) (*broker.Message, error) {
+func MarshalBankInfoPacket(clientID uuid.UUID, routingKey broker.KeyType, bankInfo domain.BankInfo) (*broker.Message, error) {
 	data, err := json.Marshal(bankInfo)
 	if err != nil {
 		return nil, err
@@ -81,7 +85,7 @@ func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: broker.KeyNil, Body: serializedMsg}, nil
 }
 
 func MarshalQuery1EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
@@ -95,7 +99,7 @@ func MarshalQuery1EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &broker.Message{Body: serializedMsg}, nil
+	return &broker.Message{RoutingKey: broker.KeyControlEOF, Body: serializedMsg}, nil
 }
 
 func UnmarshalPacket(msg broker.Message) (*Packet, error) {

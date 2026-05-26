@@ -197,7 +197,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if msg.RoutingKey == "" {
+	if msg.RoutingKey == KeyNil {
 		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
@@ -205,7 +205,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	if err := qb.produceChannel.PublishWithContext(
 		ctx,
 		qb.outputExchange,
-		msg.RoutingKey,
+		string(msg.RoutingKey),
 		false,
 		false,
 		amqp.Publishing{
