@@ -1,0 +1,107 @@
+name: money-laundering-analysis
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: src/gateway/Dockerfile
+    container_name: gateway
+    environment:
+      - LOG_LEVEL=debug
+      - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
+    volumes:
+      - ./configs/account_queue_config.yaml:/app/accounts_queue_config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    build:
+      context: ./src/rabbitmq
+      dockerfile: Dockerfile
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_LOG_LEVELS=error
+    networks:
+      - money-laundering-analysis-net
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 50s
+      test: rabbitmq-diagnostics check_port_connectivity
+      timeout: 3s
+    ports:
+      - 5672:5672
+      - 15672:15672
+
+  client_1:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_1
+    environment:
+      - LOG_LEVEL=debug
+    volumes:
+      - ./.data:/app/.data
+      - ./.output/client1:/app/.output
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
+
+  client_2:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_2
+    environment:
+      - LOG_LEVEL=debug
+    volumes:
+      - ./.data:/app/.data
+      - ./.output/client2:/app/.output
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
+  
+  query_1_filter:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_1_filter
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_1_filter
+    volumes:
+      - ./configs/q1/q1_filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  query_1_cleaner:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_1_cleaner
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_1_cleaner
+    volumes:
+      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+networks:
+  money-laundering-analysis-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.125.0/24
