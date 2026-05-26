@@ -1,0 +1,22 @@
+clients:
+  count: 1
+  # env:
+  #   TRANSACTIONS_DATASET_PATH: /app/.data/otro_dataset.csv
+  #   ACCOUNTS_DATASET_PATH: /app/.data/otras_cuentas.csv
+  #   OUTPUT_PATH: /app/.output/cliente_personalizado
+  #   LOG_LEVEL: debug
+
+pipelines:
+  query1:
+    - name: cleaner
+      amount: 2
+    - name: filter
+      amount: 2
+  query2:
+    - name: join
+      amount: 1
+      volumes:
+        - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
+      env:
+        LOG_LEVEL: error
+        ACCOUNTS_CONFIG_PATH: /app/config_2.yaml

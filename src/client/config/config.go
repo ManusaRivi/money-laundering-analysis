@@ -26,6 +26,7 @@ const CONFIG_PATH = "../config.yaml"
 func LoadConfig() (*ClientConfig, error) {
 	v := viper.New()
 	v.SetConfigFile(CONFIG_PATH)
+	v.AutomaticEnv()
 	err := v.ReadInConfig()
 	if err != nil {
 		return nil, err

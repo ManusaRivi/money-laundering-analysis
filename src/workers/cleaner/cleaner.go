@@ -123,6 +123,7 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 }
 
 func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
+	slog.Debug("Received EOF packet, forwarding to next worker...")
 	var eofCounts domain.EOFCounts
 	if err := pkt.UnmarshalData(&eofCounts); err != nil {
 		slog.Error("Error unmarshalling EOF counts", "error", err)

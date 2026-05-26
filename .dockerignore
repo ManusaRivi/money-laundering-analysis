@@ -1,0 +1,12 @@
+.data/
+.output/
+.git/
+.gitignore
+AGENTS.md
+Makefile
+README.md
+docker-compose*.yaml
+topology.yaml
+configs/base-compose.yaml.tmpl
+scenarios/
+scripts/

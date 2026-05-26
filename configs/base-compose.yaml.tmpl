@@ -1,0 +1,86 @@
+name: money-laundering-analysis
+services:
+  rabbitmq:
+    build:
+      context: ./src/rabbitmq
+      dockerfile: Dockerfile
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_LOG_LEVELS=error
+    networks:
+      - money-laundering-analysis-net
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 50s
+      test: rabbitmq-diagnostics check_port_connectivity
+      timeout: 3s
+    ports:
+      - 5672:5672
+      - 15672:15672
+
+  gateway:
+    build:
+      context: .
+      dockerfile: src/gateway/Dockerfile
+    container_name: gateway
+    environment:
+      - LOG_LEVEL=debug
+      - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
+    volumes:
+      - ./configs/gateway.yaml:/app/config.yaml
+      - ./configs/query2/join_account_queue.yaml:/app/accounts_queue_config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+{{- range .Clients}}
+  client_{{.ID}}:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_{{.ID}}
+    environment:
+{{- range .EnvSorted}}
+      - {{.}}
+{{- end}}
+    volumes:
+      - ./configs/client.yaml:/app/config.yaml
+      - ./.data:/app/.data
+      - ./.output/client{{.ID}}:/app/.output
+{{- range .ExtraVolumes}}
+      - {{.}}
+{{- end}}
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
+{{- end}}
+{{- range .Workers}}
+  {{.ContainerName}}:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: {{.ContainerName}}
+    environment:
+{{- range .EnvSorted}}
+      - {{.}}
+{{- end}}
+    volumes:
+      - {{.VolumeMapping}}
+{{- range .ExtraVolumes}}
+      - {{.}}
+{{- end}}
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+{{- end}}
+networks:
+  money-laundering-analysis-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.125.0/24
