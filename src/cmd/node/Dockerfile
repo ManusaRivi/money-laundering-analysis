@@ -6,14 +6,14 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /app
 
 # Descargar dependencias aprovechando la caché de Docker
-COPY go.mod go.sum ../
-RUN go mod download
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copiar todo el código fuente
 COPY . .
 
 # Compilar el orquestador (Fat Binary)
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/node_bin ./src/cmd/node/main.go
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod CGO_ENABLED=0 GOOS=linux go build -o /app/node_bin ./src/cmd/node/main.go
 
 # Etapa 2: Imagen final
 FROM alpine:latest
