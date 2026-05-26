@@ -8,6 +8,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/cleaner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/filter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/join"
+	"github.com/ManusaRivi/money-laundering-analysis/src/workers/router"
 )
 
 // TODO: Define worker types as constants
@@ -26,6 +27,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 		worker, err := join.NewJoin(communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Join: %w", err)
+		}
+		return worker, nil
+	case "Router":
+		worker, err := router.NewRouter(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Router: %w", err)
 		}
 		return worker, nil
 	default:
