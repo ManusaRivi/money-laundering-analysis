@@ -142,6 +142,44 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+  
+  query_2_aggregator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_2_aggregator_0
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_2_sum
+      - ID=0
+      - WORKER_AMOUNT=2
+    volumes:
+      - ./configs/q2/q2_aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  
+  query_2_aggregator_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_2_aggregator_1
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_2_sum
+      - ID=1
+      - WORKER_AMOUNT=2
+    volumes:
+      - ./configs/q2/q2_aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   query_2_join:
     build:
