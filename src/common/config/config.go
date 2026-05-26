@@ -206,9 +206,6 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 			if cfg.WorkerPrefix == "" {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
 			}
-			if cfg.WorkerID == 0 {
-				return fmt.Errorf("ID environment variable is required for input keys")
-			}
 			cfg.InputKeys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
 		}
 	} else if cfg.Input == "" {
