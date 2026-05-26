@@ -69,7 +69,6 @@ func (c *Cleaner) onflush(clientID uuid.UUID) error {
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-
 	counts := map[broker.KeyType]int{broker.KeyNil: finalSent}
 	eofCounts := domain.EOFCounts{
 		Counts: counts,
@@ -79,6 +78,7 @@ func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
+	slog.Debug("Received EOF packet, forwarding to next worker...")
 	if err := c.Broker.Send(*eofMsg); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
@@ -123,8 +123,6 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 }
 
 func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, forwarding to next worker...")
-	// Propagar en varios cleaners?
 	var eofCounts domain.EOFCounts
 	if err := pkt.UnmarshalData(&eofCounts); err != nil {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
