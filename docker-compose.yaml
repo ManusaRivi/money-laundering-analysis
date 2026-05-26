@@ -41,25 +41,10 @@ services:
       dockerfile: src/client/Dockerfile
     container_name: client_1
     environment:
-      - LOG_LEVEL=info
+      - LOG_LEVEL=debug
     volumes:
       - ./.data:/app/.data
       - ./.output/client1:/app/.output
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      - gateway
-  
-  client_2:
-    build:
-      context: .
-      dockerfile: src/client/Dockerfile
-    container_name: client_2
-    environment:
-      - LOG_LEVEL=info
-    volumes:
-      - ./.data:/app/.data
-      - ./.output/client2:/app/.output
     networks:
       - money-laundering-analysis-net
     depends_on:
