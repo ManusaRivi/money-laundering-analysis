@@ -59,6 +59,8 @@ services:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
       - WORKER_PREFIX=query_1_filter
+      - ID=0
+      - WORKER_AMOUNT=1
     volumes:
       - ./configs/q1/q1_filter.yaml:/app/config.yaml
     networks:
@@ -109,7 +111,7 @@ services:
       dockerfile: src/cmd/node/Dockerfile
     container_name: query_2_join
     environment:
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=error
       - CONFIG_PATH=/app/config.yaml
       - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
       - WORKER_PREFIX=query_2_join
