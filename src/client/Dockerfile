@@ -9,5 +9,4 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
 FROM alpine:3.20
 WORKDIR /app/bin
 COPY --from=builder /out/client ./client
-COPY src/client/config.yaml /app/config.yaml
 ENTRYPOINT ["./client"]

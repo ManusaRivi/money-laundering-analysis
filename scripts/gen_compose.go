@@ -4,18 +4,27 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
 )
 
 type WorkerDef struct {
-	Name   string `yaml:"name"`
-	Amount int    `yaml:"amount"`
+	Name    string            `yaml:"name"`
+	Amount  int               `yaml:"amount"`
+	Volumes []string          `yaml:"volumes"`
+	Env     map[string]string `yaml:"env"`
+}
+
+type ClientGroup struct {
+	Count   int               `yaml:"count"`
+	Volumes []string          `yaml:"volumes"`
+	Env     map[string]string `yaml:"env"`
 }
 
 type Topology struct {
-	Clients   int                    `yaml:"clients"`
+	Clients   ClientGroup          `yaml:"clients"`
 	Pipelines map[string][]WorkerDef `yaml:"pipelines"`
 }
 
@@ -29,10 +38,14 @@ type WorkerInstance struct {
 	HasNext          bool
 	NextWorkerPrefix string
 	NextWorkerAmount int
+	ExtraVolumes     []string
+	EnvSorted        []string
 }
 
 type ClientInstance struct {
-	ID int
+	ID           int
+	EnvSorted    []string
+	ExtraVolumes []string
 }
 
 type TemplateData struct {
@@ -72,6 +85,7 @@ func main() {
 					WorkerAmount:  wd.Amount,
 					ConfigPath:    "/app/config.yaml",
 					VolumeMapping: fmt.Sprintf("./configs/%s/%s.yaml:/app/config.yaml", stage, wd.Name),
+					ExtraVolumes:  wd.Volumes,
 				}
 
 				if i+1 < len(defs) {
@@ -81,14 +95,60 @@ func main() {
 					wi.NextWorkerAmount = next.Amount
 				}
 
+				env := map[string]string{
+					"LOG_LEVEL":     "debug",
+					"CONFIG_PATH":   "/app/config.yaml",
+					"WORKER_PREFIX": wi.WorkerPrefix,
+					"ID":            strconv.Itoa(id),
+					"WORKER_AMOUNT": strconv.Itoa(wd.Amount),
+				}
+				if wi.HasNext {
+					env["NEXT_WORKER_PREFIX"] = wi.NextWorkerPrefix
+					env["NEXT_WORKER_AMOUNT"] = strconv.Itoa(wi.NextWorkerAmount)
+				}
+				for k, v := range wd.Env {
+					env[k] = v
+				}
+
+				keys := make([]string, 0, len(env))
+				for k := range env {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					wi.EnvSorted = append(wi.EnvSorted, fmt.Sprintf("%s=%s", k, env[k]))
+				}
+
 				workers = append(workers, wi)
 			}
 		}
 	}
 
 	var clients []ClientInstance
-	for id := range topo.Clients {
-		clients = append(clients, ClientInstance{ID: id})
+	for id := range topo.Clients.Count {
+		env := map[string]string{
+			"LOG_LEVEL": "debug",
+		}
+		for k, v := range topo.Clients.Env {
+			env[k] = v
+		}
+
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		var envSorted []string
+		for _, k := range keys {
+			envSorted = append(envSorted, fmt.Sprintf("%s=%s", k, env[k]))
+		}
+
+		clients = append(clients, ClientInstance{
+			ID:           id,
+			EnvSorted:    envSorted,
+			ExtraVolumes: topo.Clients.Volumes,
+		})
 	}
 
 	tmplData, err := os.ReadFile("configs/base-compose.yaml.tmpl")

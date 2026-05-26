@@ -1,6 +1,10 @@
 docker-compose-dev.yaml: topology.yaml configs/base-compose.yaml.tmpl scripts/gen_compose.go
 	go run scripts/gen_compose.go
 
+compose:
+	go run scripts/gen_compose.go
+.PHONY: compose
+
 up: docker-compose-dev.yaml
 	docker compose -f docker-compose-dev.yaml up -d --build
 .PHONY: up

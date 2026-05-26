@@ -28,7 +28,7 @@ services:
       - LOG_LEVEL=debug
       - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
     volumes:
-      - ./configs/account_queue_config.yaml:/app/accounts_queue_config.yaml
+      - ./configs/query2/join_account_queue.yaml:/app/accounts_queue_config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -41,10 +41,16 @@ services:
       dockerfile: src/client/Dockerfile
     container_name: client_{{.ID}}
     environment:
-      - LOG_LEVEL=debug
+{{- range .EnvSorted}}
+      - {{.}}
+{{- end}}
     volumes:
+      - ./configs/client.yaml:/app/config.yaml
       - ./.data:/app/.data
       - ./.output/client{{.ID}}:/app/.output
+{{- range .ExtraVolumes}}
+      - {{.}}
+{{- end}}
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -57,17 +63,14 @@ services:
       dockerfile: src/cmd/node/Dockerfile
     container_name: {{.ContainerName}}
     environment:
-      - LOG_LEVEL=debug
-      - CONFIG_PATH={{.ConfigPath}}
-      - WORKER_PREFIX={{.WorkerPrefix}}
-      - ID={{.ID}}
-      - WORKER_AMOUNT={{.WorkerAmount}}
-{{- if .HasNext}}
-      - NEXT_WORKER_PREFIX={{.NextWorkerPrefix}}
-      - NEXT_WORKER_AMOUNT={{.NextWorkerAmount}}
+{{- range .EnvSorted}}
+      - {{.}}
 {{- end}}
     volumes:
       - {{.VolumeMapping}}
+{{- range .ExtraVolumes}}
+      - {{.}}
+{{- end}}
     networks:
       - money-laundering-analysis-net
     depends_on:
