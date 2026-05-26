@@ -63,11 +63,15 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		cfg.Prefetch = 30
 	}
 
+	if cfg.InputQueue == "" {
+		cfg.Exclusive = true
+	}
+
 	inputQueue, err := consumeChannel.QueueDeclare(
-		"",
+		cfg.InputQueue,
 		false,
 		false,
-		true,
+		cfg.Exclusive,
 		false,
 		nil,
 	)
@@ -78,7 +82,9 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		return nil, fmt.Errorf("failed to declare input queue: %w", err)
 	}
 
-	if err := bindInputQueue(consumeChannel, cfg, inputQueue.Name); err != nil {
+	routingKeys := StringsToKeyType(cfg.InputKeys)
+
+	if err := bindInputQueue(consumeChannel, cfg, routingKeys, inputQueue.Name); err != nil {
 		produceChannel.Close()
 		consumeChannel.Close()
 		conn.Close()

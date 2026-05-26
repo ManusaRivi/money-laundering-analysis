@@ -19,6 +19,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type Client struct {
+	ID           uuid.UUID
+	tx_count     int
+	tx_usd_count int
+}
+
 type Gateway struct {
 	config         *config.GatewayConfig
 	registry       *clientregistry.ClientRegistry
@@ -27,6 +33,7 @@ type Gateway struct {
 	listener       net.Listener
 	running        atomic.Bool
 	codec          codec.Codec
+	clients        map[uuid.UUID]*Client
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
@@ -51,7 +58,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	registry := clientregistry.NewClientRegistry()
 
-	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New()}
+	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client)}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -84,6 +91,13 @@ func (gateway *Gateway) Run() error {
 
 		client := clientconnection.NewClientConnection(clientId, conn, gateway.codec)
 		gateway.registry.Add(client)
+
+		// Initialize client stats
+		gateway.clients[clientId] = &Client{
+			ID:           clientId,
+			tx_count:     0,
+			tx_usd_count: 0,
+		}
 
 		go func() {
 			defer gateway.registry.Remove(client)
@@ -146,7 +160,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					EntityID:      account.EntityID,
 					EntityName:    account.EntityName,
 				}
-				msg, err := inner.MarshalBankInfoPacket(c.ClientId, "", bankInfo)
+				msg, err := inner.MarshalBankInfoPacket(c.ClientId, broker.KeyNil, bankInfo)
 				if err != nil {
 					slog.Error("Error marshalling bank info packet", "error", err)
 					return false
@@ -197,11 +211,13 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					},
 					Format: transaction.PaymentFormat,
 				}
-				routingTopic := ""
+				routingTopic := broker.KeyNil
+				gateway.clients[c.ClientId].tx_count++
 				if tx.IsUSDTransaction() {
-					routingTopic = broker.DollarTransaction
+					gateway.clients[c.ClientId].tx_usd_count++
+					routingTopic = broker.KeyDollarTransaction
 				} else {
-					routingTopic = broker.NonDollarTransaction
+					routingTopic = broker.KeyNonDollarTransaction
 				}
 				msg, err := inner.MarshalTransactionPacket(c.ClientId, routingTopic, tx)
 				if err != nil {
@@ -217,7 +233,13 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			}
 		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
-			msg, err := inner.MarshalEOFPacket(c.ClientId, broker.ControlEOFKey)
+			eofCounts := domain.EOFCounts{
+				Counts: map[broker.KeyType]int{
+					broker.KeyDollarTransaction:    gateway.clients[c.ClientId].tx_usd_count,
+					broker.KeyNonDollarTransaction: gateway.clients[c.ClientId].tx_count - gateway.clients[c.ClientId].tx_usd_count,
+				},
+			}
+			msg, err := inner.MarshalEOFPacket(c.ClientId, eofCounts)
 			if err != nil {
 				slog.Error("Error marshalling EOF packet", "error", err)
 				return false

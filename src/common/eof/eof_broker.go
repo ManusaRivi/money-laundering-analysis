@@ -27,7 +27,7 @@ type EOFBroker struct {
 const eofPrefetchCount = 3
 
 // NewEOFBroker inicializa el broker compuesto para el EOF
-func NewEOFBroker(rabbitURL, broadcastExchange, nodeID, EOFPrefix string) (*EOFBroker, error) {
+func NewEOFBroker(rabbitURL string, broadcastExchange string, nodeID int, EOFPrefix string ) (*EOFBroker, error) {
 	conn, err := amqp.Dial(rabbitURL)
 	if err != nil {
 		return nil, fmt.Errorf("EOFBroker: dial rabbitmq: %w", err)
@@ -59,7 +59,7 @@ func NewEOFBroker(rabbitURL, broadcastExchange, nodeID, EOFPrefix string) (*EOFB
 		return nil, fmt.Errorf("EOFBroker: declare broadcast exchange: %w", err)
 	}
 
-	queueName := fmt.Sprintf("%s_%s", EOFPrefix, nodeID)
+	queueName := fmt.Sprintf("%s_%d", EOFPrefix, nodeID)
 	if _, err := ch.QueueDeclare(
 		queueName,
 		true,
@@ -167,7 +167,7 @@ func (eb *EOFBroker) Send(msg broker.Message) error {
 
 	switch ctrlMsg.Type {
 	case MsgTypeAmountResponse:
-		queueName := fmt.Sprintf("%s_%s", eb.EOFPrefix, ctrlMsg.RequesterID)
+		queueName := fmt.Sprintf("%s_%d", eb.EOFPrefix, ctrlMsg.RequesterID)
 		return eb.ch.Publish(
 			"",
 			queueName,
@@ -176,7 +176,7 @@ func (eb *EOFBroker) Send(msg broker.Message) error {
 			amqp.Publishing{Body: msg.Body},
 		)
 	case MsgTypeFlushAck:
-		queueName := fmt.Sprintf("%s_%s", eb.EOFPrefix, ctrlMsg.RequesterID)
+		queueName := fmt.Sprintf("%s_%d", eb.EOFPrefix, ctrlMsg.RequesterID)
 		return eb.ch.Publish(
 			"",
 			queueName,

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/google/uuid"
 )
 
 var (
@@ -22,9 +23,9 @@ const (
 // ControlMessage representa la estructura del mensaje enviado para sincronizar EOF
 type ControlMessage struct {
 	Type          string `json:"type"`
-	ClientID      string `json:"client_id"`
-	RequesterID   string `json:"requester_id"`
-	SenderID      string `json:"sender_id"`
+	ClientID      uuid.UUID `json:"client_id"`
+	RequesterID   int `json:"requester_id"`
+	SenderID      int `json:"sender_id"`
 	ReceivedCount int    `json:"received_count"`
 	SentCount     int    `json:"sent_count"`
 }
@@ -43,7 +44,7 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ctrlMsg.Type == "" || ctrlMsg.ClientID == "" {
+	if ctrlMsg.Type == "" || ctrlMsg.ClientID == uuid.Nil {
 		return nil, ErrInvalidControlMessage
 	}
 	return &ctrlMsg, nil

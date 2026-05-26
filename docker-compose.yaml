@@ -81,15 +81,35 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  query_1_cleaner:
+  query_1_cleaner_0:
     build:
       context: .
       dockerfile: src/cmd/node/Dockerfile
-    container_name: query_1_cleaner
+    container_name: query_1_cleaner_0
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
       - WORKER_PREFIX=query_1_cleaner
+      - ID=0
+      - WORKER_AMOUNT=2
+    volumes:
+      - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query_1_cleaner_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query_1_cleaner_1
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - WORKER_PREFIX=query_1_cleaner
+      - ID=1
+      - WORKER_AMOUNT=2
     volumes:
       - ./configs/q1/q1_cleaner.yaml:/app/config.yaml
     networks:

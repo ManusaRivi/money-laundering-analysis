@@ -16,7 +16,7 @@ var (
 )
 
 type Message struct {
-	RoutingKey string // Para ruteo dinámico (opcional)
+	RoutingKey KeyType // Para ruteo dinámico (opcional)
 	Body       []byte
 }
 
@@ -101,7 +101,7 @@ func connectRabbit(rawURL string) (*amqp.Connection, *amqp.Channel, error) {
 	return conn, channel, nil
 }
 
-func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, queueName string) error {
+func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, routingKeys []KeyType, queueName string) error {
 	if cfg.Input == "" {
 		return nil
 	}
@@ -121,12 +121,12 @@ func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, queueName st
 		return fmt.Errorf("failed to declare input exchange: %w", err)
 	}
 
-	inputKeysWithControlEOF := append(cfg.InputKeys, ControlEOFKey)
+	inputKeysWithControlEOF := append(routingKeys, KeyControlEOF)
 
 	for _, key := range inputKeysWithControlEOF {
 		if err := channel.QueueBind(
 			queueName,
-			key,
+			string(key),
 			cfg.Input,
 			false,
 			nil,

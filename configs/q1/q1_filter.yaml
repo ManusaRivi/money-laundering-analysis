@@ -12,11 +12,15 @@ broker:
   internal: false
 
 worker:
-    type: "SyncFilter"
-    params:
-        type: "amount"
-        field: "Amount"
-        operator: "<"
-        value_float: 50.0
-        value_string: ""
-    query: 1
+  type: "SyncFilter"
+  params:
+    type: "amount"
+    field: "Amount"
+    operator: "<"
+    value_float: 50.0
+    value_string: ""
+  query: 1
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5
