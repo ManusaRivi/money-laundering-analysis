@@ -178,7 +178,7 @@ func (r *Router) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	total_transactions := eofCounts.Counts[broker.KeyDollarTransaction]
+	total_transactions := eofCounts.Counts[broker.KeyNil]
 	r.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
 	return nil
 }
