@@ -7,7 +7,6 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
@@ -22,9 +21,8 @@ const (
 )
 
 type Aggregator struct {
-	cfg               config.WorkerConfig
-	Broker            broker.Broker
-	syncEOFController *eof.SyncEOFController
+	cfg    config.WorkerConfig
+	Broker broker.Broker
 
 	op          aggOp
 	field       string // field used for aggregation comparison (e.g., "Amount")
@@ -48,33 +46,18 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 	)
 
 	return &Aggregator{
-		cfg:               cfg,
-		Broker:            b,
-		syncEOFController: nil,
-		op:                op,
-		field:             field,
-		groupSource:       groupSource,
-		groupField:        groupField,
-		state:             make(map[uuid.UUID]map[string]domain.Transaction),
+		cfg:         cfg,
+		Broker:      b,
+		op:          op,
+		field:       field,
+		groupSource: groupSource,
+		groupField:  groupField,
+		state:       make(map[uuid.UUID]map[string]domain.Transaction),
 	}, nil
 }
 
 func (a *Aggregator) Run() error {
 	defer a.Broker.StopConsuming()
-
-	var err error
-	a.syncEOFController, err = eof.NewSyncEOFController(
-		a.cfg.SyncEOFConfig,
-		a.onflush,
-		a.onLeaderFlush,
-		a.onRetryExceeded,
-	)
-	if err != nil {
-		slog.Error("Error creating SyncEOFController", "error", err)
-		return err
-	}
-
-	go a.syncEOFController.Start()
 
 	return a.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		if err := a.handleMessage(msg); err != nil {
@@ -90,50 +73,6 @@ func (a *Aggregator) Stop() {}
 
 // Private Methods
 
-func (a *Aggregator) onflush(clientID uuid.UUID) error {
-	slog.Info("Flush triggered in Aggregator", "client_id", clientID)
-
-	groups := a.state[clientID]
-	for key, tx := range groups {
-		msg, err := inner.MarshalTransactionPacket(clientID, broker.KeyNil, tx)
-		if err != nil {
-			slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
-			return err
-		}
-		if err := a.Broker.Send(*msg); err != nil {
-			slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
-			return err
-		}
-		a.syncEOFController.MessageSent(clientID)
-	}
-
-	delete(a.state, clientID)
-	return nil
-}
-
-func (a *Aggregator) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	slog.Info("Leader flush triggered in Aggregator", "client_id", clientID, "final_sent", finalSent)
-
-	eofMsg, err := inner.MarshalEOFPacket(clientID, domain.EOFCounts{
-		Counts: map[broker.KeyType]int{broker.KeyNil: finalSent},
-	})
-	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
-		return err
-	}
-	if err := a.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending EOF packet", "error", err)
-		return err
-	}
-	return nil
-}
-
-func (a *Aggregator) onRetryExceeded(clientID uuid.UUID) error {
-	slog.Warn("Retry limit exceeded in Aggregator", "client_id", clientID)
-	delete(a.state, clientID)
-	return nil
-}
-
 func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 	var tx domain.Transaction
 	if err := pkt.UnmarshalData(&tx); err != nil {
@@ -144,7 +83,6 @@ func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 	key, err := a.extractGroupKey(tx)
 	if err != nil {
 		slog.Error("Error extracting group key", "error", err)
-		a.syncEOFController.MessageReceived(pkt.ClientID)
 		return err
 	}
 
@@ -154,21 +92,41 @@ func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 	current, exists := a.state[pkt.ClientID][key]
 	a.state[pkt.ClientID][key] = a.combine(current, tx, exists)
 
-	a.syncEOFController.MessageReceived(pkt.ClientID)
 	return nil
 }
 
 func (a *Aggregator) handleEOFMessage(pkt inner.Packet) error {
-	var counts domain.EOFCounts
-	if err := pkt.UnmarshalData(&counts); err != nil {
-		slog.Error("Error unmarshalling EOF counts", "error", err)
+	slog.Debug("Received EOF packet, processing aggregation results", "clientID", pkt.ClientID)
+	groups := a.state[pkt.ClientID]
+	msgSent := 0
+	for key, tx := range groups {
+		msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
+		if err != nil {
+			slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
+			return err
+		}
+		slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
+		if err := a.Broker.Send(*msg); err != nil {
+			slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
+			return err
+		}
+		msgSent++
+	}
+
+	delete(a.state, pkt.ClientID)
+
+	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
+		Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
+	})
+	if err != nil {
+		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
-	expected := 0
-	for _, c := range counts.Counts {
-		expected += c
+	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", pkt.ClientID, "msg_sent", msgSent)
+	if err := a.Broker.Send(*eofMsg); err != nil {
+		slog.Error("Error sending EOF packet", "error", err)
+		return err
 	}
-	a.syncEOFController.SyncEof(pkt.ClientID, expected)
 	return nil
 }
 
