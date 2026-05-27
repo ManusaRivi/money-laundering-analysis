@@ -18,7 +18,14 @@ const (
 	opMin   aggOp = "min"
 	opSum   aggOp = "sum"
 	opCount aggOp = "count"
+	opAvg   aggOp = "avg"
 )
+
+type avgState struct {
+	sum    float64
+	count  int
+	sample domain.Transaction
+}
 
 type Aggregator struct {
 	cfg    config.WorkerConfig
@@ -29,7 +36,8 @@ type Aggregator struct {
 	groupSource string // "origin" or "dest"
 	groupField  string // "BankID" or "ID"
 
-	state map[uuid.UUID]map[string]domain.Transaction
+	state    map[uuid.UUID]map[string]domain.Transaction
+	avgState map[uuid.UUID]map[string]avgState
 }
 
 func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error) {
@@ -53,6 +61,7 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 		groupSource: groupSource,
 		groupField:  groupField,
 		state:       make(map[uuid.UUID]map[string]domain.Transaction),
+		avgState:    make(map[uuid.UUID]map[string]avgState),
 	}, nil
 }
 
@@ -85,6 +94,20 @@ func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 		slog.Error("Error extracting group key", "error", err)
 		return err
 	}
+	if a.op == opAvg {
+		if _, exists := a.avgState[pkt.ClientID]; !exists {
+			a.avgState[pkt.ClientID] = make(map[string]avgState)
+		}
+		current := a.avgState[pkt.ClientID][key]
+		amount := a.fieldValue(tx)
+		current.sum += amount
+		current.count++
+		if current.count == 1 {
+			current.sample = tx
+		}
+		a.avgState[pkt.ClientID][key] = current
+		return nil
+	}
 
 	if _, exists := a.state[pkt.ClientID]; !exists {
 		a.state[pkt.ClientID] = make(map[string]domain.Transaction)
@@ -97,23 +120,50 @@ func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
 
 func (a *Aggregator) handleEOFMessage(pkt inner.Packet) error {
 	slog.Debug("Received EOF packet, processing aggregation results", "clientID", pkt.ClientID)
-	groups := a.state[pkt.ClientID]
 	msgSent := 0
-	for key, tx := range groups {
-		msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
-		if err != nil {
-			slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
-			return err
+	if a.op == opAvg {
+		groups := a.avgState[pkt.ClientID]
+		for key, st := range groups {
+			avg := 0.0
+			if st.count > 0 {
+				avg = st.sum / float64(st.count)
+			}
+			out := st.sample
+			if out.Paid == nil {
+				out.Paid = &domain.Money{}
+			}
+			out.Paid.Amount = avg
+			out.Format = key
+			msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, out)
+			if err != nil {
+				slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
+				return err
+			}
+			slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
+			if err := a.Broker.Send(*msg); err != nil {
+				slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
+				return err
+			}
+			msgSent++
 		}
-		slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
-		if err := a.Broker.Send(*msg); err != nil {
-			slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
-			return err
+		delete(a.avgState, pkt.ClientID)
+	} else {
+		groups := a.state[pkt.ClientID]
+		for key, tx := range groups {
+			msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
+			if err != nil {
+				slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
+				return err
+			}
+			slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
+			if err := a.Broker.Send(*msg); err != nil {
+				slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
+				return err
+			}
+			msgSent++
 		}
-		msgSent++
+		delete(a.state, pkt.ClientID)
 	}
-
-	delete(a.state, pkt.ClientID)
 
 	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
 		Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
@@ -212,6 +262,11 @@ func (a *Aggregator) extractGroupKey(tx domain.Transaction) (string, error) {
 		acct = tx.Origin
 	case "dest":
 		acct = tx.Dest
+	case "format":
+		if tx.Format == "" {
+			return "", fmt.Errorf("Transaction missing format")
+		}
+		return tx.Format, nil
 	default:
 		return "", fmt.Errorf("Invalid group source: %q", a.groupSource)
 	}
@@ -241,7 +296,7 @@ func parseParams(params map[string]any) (aggOp, string, string, string, error) {
 	}
 	op := aggOp(rawType)
 	switch op {
-	case opMax, opMin, opSum, opCount:
+	case opMax, opMin, opSum, opCount, opAvg:
 	default:
 		return "", "", "", "", fmt.Errorf("aggregator params: unsupported type %q", rawType)
 	}
