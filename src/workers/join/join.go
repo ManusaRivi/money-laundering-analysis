@@ -21,27 +21,37 @@ type Join struct {
 	resultsBroker  broker.Broker
 	accountsBroker broker.Broker
 
-	mu              sync.Mutex
-	bankNamesPerCli map[uuid.UUID]map[string]string
-	txCachePerCl    map[uuid.UUID]map[string][]domain.Transaction
+	previousWorkerAmount int
+
+	// All fields below are guarded by mu.
+	mu                  sync.Mutex
+	workerEofReceived   map[uuid.UUID]int
+	accountsEofReceived map[uuid.UUID]bool
+	finalized           map[uuid.UUID]bool
+	bankNamesPerCli     map[uuid.UUID]map[string]string
+	txCachePerCl        map[uuid.UUID]map[string][]domain.Transaction
 }
 
-func NewJoin(resultsBroker broker.Broker) (*Join, error) {
+func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error) {
 	accountsConfigPath := os.Getenv("ACCOUNTS_CONFIG_PATH")
-	cfg, err := config.LoadAccountConfig(accountsConfigPath)
+	accountCfg, err := config.LoadAccountConfig(accountsConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load accounts config: %w", err)
 	}
 	var accountsBroker broker.Broker
-	accountsBroker, err = broker.NewBroker(*cfg)
+	accountsBroker, err = broker.NewBroker(*accountCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create accounts broker: %w", err)
 	}
 	return &Join{
-		resultsBroker:   resultsBroker,
-		accountsBroker:  accountsBroker,
-		bankNamesPerCli: make(map[uuid.UUID]map[string]string),
-		txCachePerCl:    make(map[uuid.UUID]map[string][]domain.Transaction),
+		resultsBroker:        resultsBroker,
+		accountsBroker:       accountsBroker,
+		previousWorkerAmount: cfg.PrevWorkerAmount,
+		workerEofReceived:    make(map[uuid.UUID]int),
+		accountsEofReceived:  make(map[uuid.UUID]bool),
+		finalized:            make(map[uuid.UUID]bool),
+		bankNamesPerCli:      make(map[uuid.UUID]map[string]string),
+		txCachePerCl:         make(map[uuid.UUID]map[string][]domain.Transaction),
 	}, nil
 }
 
@@ -96,18 +106,19 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 			return fmt.Errorf("bank info missing 'id' field")
 		}
 
-		slog.Debug("Received bank info", "clientID", pkt.ClientID, "bankID", info.ID, "bankName", info.Name)
+		// slog.Debug("Received bank info", "clientID", pkt.ClientID, "bankID", info.ID, "bankName", info.Name)
 
 		j.mu.Lock()
 		if j.bankNamesPerCli[pkt.ClientID] == nil {
 			j.bankNamesPerCli[pkt.ClientID] = make(map[string]string)
 		}
 		j.bankNamesPerCli[pkt.ClientID][info.ID] = info.Name
+		// slog.Debug("Cached bank name", "clientID", pkt.ClientID, "bankID", info.ID, "bankName", info.Name)
 		cached := j.txCachePerCl[pkt.ClientID][info.ID]
 		j.mu.Unlock()
 
-		slog.Debug("Emitting cached results", "clientID", pkt.ClientID, "bankID", info.ID, "count", len(cached))
 		for i, tx := range cached {
+			slog.Debug("Emitting cached result", "clientID", pkt.ClientID, "bankID", info.ID)
 			if err := j.emitResult(pkt.ClientID, tx, info.Name); err != nil {
 				// Keep the failed tx (and any after it) in the cache so a
 				// redelivery of this bank info can retry them.
@@ -119,7 +130,9 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 			}
 		}
 
-		slog.Debug("Flushing cached results", "clientID", pkt.ClientID, "bankID", info.ID)
+		if len(cached) > 0 {
+			slog.Debug("Emitted all cached results for bank, clearing cache", "clientID", pkt.ClientID, "bankID", info.ID)
+		}
 		j.mu.Lock()
 		if perBank, ok := j.txCachePerCl[pkt.ClientID]; ok {
 			delete(perBank, info.ID)
@@ -127,13 +140,13 @@ func (j *Join) handleAccountsMessage(msg broker.Message) error {
 		j.mu.Unlock()
 	case inner.TypeAccountsEOF:
 		slog.Debug("Received accounts EOF for client", "clientID", pkt.ClientID)
-		// No more bank info will be received for this client, so we can clear
-		// any cached transactions that haven't been joined yet, as they won't
-		// be able to produce results.
 		j.mu.Lock()
-		delete(j.txCachePerCl, pkt.ClientID)
+		j.accountsEofReceived[pkt.ClientID] = true
+		ready := j.shouldFinalizeLocked(pkt.ClientID)
 		j.mu.Unlock()
-		slog.Debug("Cleared transaction cache for client", "clientID", pkt.ClientID)
+		if ready {
+			return j.finalizeClient(pkt.ClientID)
+		}
 	default:
 		return fmt.Errorf("unexpected accounts packet type: %v", pkt.Type)
 	}
@@ -162,11 +175,13 @@ func (j *Join) handleTransactionMessage(msg broker.Message) error {
 		}
 
 		j.mu.Lock()
+		slog.Debug("Received transaction message for join", "msgType", pkt.Type)
 		name, ok := j.bankNamesPerCli[pkt.ClientID][tx.Origin.BankID]
 		if !ok {
 			if j.txCachePerCl[pkt.ClientID] == nil {
 				j.txCachePerCl[pkt.ClientID] = make(map[string][]domain.Transaction)
 			}
+			slog.Debug("Bank name not found for transaction, caching", "clientID", pkt.ClientID, "bankID", tx.Origin.BankID)
 			j.txCachePerCl[pkt.ClientID][tx.Origin.BankID] = append(j.txCachePerCl[pkt.ClientID][tx.Origin.BankID], tx)
 		}
 		j.mu.Unlock()
@@ -175,20 +190,82 @@ func (j *Join) handleTransactionMessage(msg broker.Message) error {
 			return j.emitResult(pkt.ClientID, tx, name)
 		}
 	case inner.TypeEOF:
-		// Transaction EOF: forward query EOF downstream.
-		eofMsg, err := inner.MarshalQuery2EOFPacket(pkt.ClientID)
-		if err != nil {
-			slog.Error("Error marshalling Query2 EOF", "error", err)
-			return err
+		slog.Debug("Received transaction EOF for client", "clientID", pkt.ClientID)
+		j.mu.Lock()
+		j.workerEofReceived[pkt.ClientID]++
+		count := j.workerEofReceived[pkt.ClientID]
+		ready := j.shouldFinalizeLocked(pkt.ClientID)
+		j.mu.Unlock()
+		slog.Debug("Current EOF count", "clientID", pkt.ClientID, "workerEofReceived", count, "previousWorkerAmount", j.previousWorkerAmount)
+		if ready {
+			return j.finalizeClient(pkt.ClientID)
 		}
-		return j.resultsBroker.Send(*eofMsg)
 	default:
 		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
 	}
 	return nil
 }
 
+// shouldFinalizeLocked reports whether both the worker-side EOF barrier and the
+// accounts-side EOF have been reached for the given client, and atomically
+// claims the finalize for the caller so concurrent callers won't double-emit.
+// Caller must hold j.mu.
+func (j *Join) shouldFinalizeLocked(clientID uuid.UUID) bool {
+	if j.finalized[clientID] {
+		return false
+	}
+	if j.workerEofReceived[clientID] != j.previousWorkerAmount {
+		return false
+	}
+	if !j.accountsEofReceived[clientID] {
+		return false
+	}
+	j.finalized[clientID] = true
+	return true
+}
+
+// finalizeClient is called once per client, when both EOF barriers have been
+// reached. It drains any transactions still cached for banks that have already
+// been registered (the failed-emit retry path stores them back under their
+// known bank), drops cached txs whose bank never appeared in the accounts
+// dataset, emits the Query2 EOF, and tears down the client's state.
+func (j *Join) finalizeClient(clientID uuid.UUID) error {
+	j.mu.Lock()
+	banks := j.bankNamesPerCli[clientID]
+	cached := j.txCachePerCl[clientID]
+	delete(j.bankNamesPerCli, clientID)
+	delete(j.txCachePerCl, clientID)
+	delete(j.workerEofReceived, clientID)
+	delete(j.accountsEofReceived, clientID)
+	j.mu.Unlock()
+
+	for bankID, txs := range cached {
+		name, known := banks[bankID]
+		if !known {
+			slog.Warn("Dropping cached transactions with no matching bank",
+				"clientID", clientID, "bankID", bankID, "count", len(txs))
+			continue
+		}
+		for _, tx := range txs {
+			if err := j.emitResult(clientID, tx, name); err != nil {
+				slog.Error("Error emitting cached result during finalize",
+					"clientID", clientID, "bankID", bankID, "error", err)
+				return err
+			}
+		}
+	}
+
+	slog.Debug("Emitting Query2 EOF for client", "clientID", clientID)
+	eofMsg, err := inner.MarshalQuery2EOFPacket(clientID)
+	if err != nil {
+		slog.Error("Error marshalling Query2 EOF", "error", err)
+		return err
+	}
+	return j.resultsBroker.Send(*eofMsg)
+}
+
 func (j *Join) emitResult(clientID uuid.UUID, tx domain.Transaction, name string) error {
+	slog.Debug("Emitting result for client", "clientID", clientID)
 	result := domain.Query2Result{
 		FromBank:    tx.Origin.BankID,
 		FromAccount: tx.Origin.ID,

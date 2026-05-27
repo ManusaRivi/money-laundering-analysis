@@ -45,6 +45,8 @@ type WorkerConfig struct {
 	WorkerID         int                     `yaml:"-"`
 	WorkerPrefix     string                  `yaml:"-"`
 	WorkerAmount     int                     `yaml:"-"`
+	PrevWorkerAmount int                     `yaml:"-"`
+	PrevWorkerPrefix string                  `yaml:"-"`
 	NextWorkerAmount int                     `yaml:"-"`
 	NextWorkerPrefix string                  `yaml:"-"`
 	SyncEOFConfig    SyncEOFControllerConfig `yaml:"-"`
@@ -155,6 +157,7 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("invalid PREV_WORKER_AMOUNT: %w", err)
 		}
 		brokerConfig.PrevWorkerAmount = amount
+		workerConfig.PrevWorkerAmount = amount
 	}
 
 	if value := os.Getenv("NEXT_WORKER_AMOUNT"); value != "" {
@@ -170,7 +173,9 @@ func applyEnv(cfg *Config) error {
 	brokerConfig.WorkerPrefix = prefix
 	workerConfig.WorkerPrefix = prefix
 
-	brokerConfig.PrevWorkerPrefix = os.Getenv("PREV_WORKER_PREFIX")
+	prefix = os.Getenv("PREV_WORKER_PREFIX")
+	brokerConfig.PrevWorkerPrefix = prefix
+	workerConfig.PrevWorkerPrefix = prefix
 
 	prefix = os.Getenv("NEXT_WORKER_PREFIX")
 	brokerConfig.NextWorkerPrefix = prefix
@@ -206,9 +211,6 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 		if len(cfg.InputKeys) == 0 {
 			if cfg.WorkerPrefix == "" {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
-			}
-			if cfg.WorkerID == 0 {
-				return fmt.Errorf("ID environment variable is required for input keys")
 			}
 			cfg.InputKeys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
 		}

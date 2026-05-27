@@ -1,5 +1,5 @@
 clients:
-  count: 1
+  count: 2
   # env:
   #   TRANSACTIONS_DATASET_PATH: /app/.data/otro_dataset.csv
   #   ACCOUNTS_DATASET_PATH: /app/.data/otras_cuentas.csv
@@ -13,12 +13,17 @@ pipelines:
     - name: filter
       amount: 1
   query2:
+    - name: cleaner
+      amount: 3
+    - name: router
+      amount: 3
+    - name: aggregator
+      amount: 3
     - name: join
       amount: 1
       volumes:
         - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
       env:
-        LOG_LEVEL: error
         ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
   query345:
     - name: filter

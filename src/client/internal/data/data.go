@@ -6,9 +6,21 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
+
+// canonicalBankID strips leading zeros from the transaction-side bank IDs so
+// they match the accounts dataset (which stores plain integers). Empty input
+// is left empty; "0" / "000" canonicalize to "0".
+func canonicalBankID(raw string) string {
+	trimmed := strings.TrimLeft(raw, "0")
+	if trimmed == "" && raw != "" {
+		return "0"
+	}
+	return trimmed
+}
 
 // RecordParser turns a single CSV row into a typed record.
 type RecordParser[T any] func(row []string) (T, error)
@@ -135,9 +147,9 @@ func ParseTransaction(row []string) (external.Transaction, error) {
 	}
 	return external.Transaction{
 		Timestamp:         row[TimestampColumnIndex],
-		FromBank:          row[FromBankColumnIndex],
+		FromBank:          canonicalBankID(row[FromBankColumnIndex]),
 		FromAccount:       row[FromAccountColumnIndex],
-		ToBank:            row[ToBankColumnIndex],
+		ToBank:            canonicalBankID(row[ToBankColumnIndex]),
 		ToAccount:         row[ToAccountColumnIndex],
 		AmountReceived:    amountReceived,
 		ReceivingCurrency: row[ReceivingCurrencyColumnIndex],
