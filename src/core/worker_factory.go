@@ -15,6 +15,7 @@ import (
 
 const (
 	WorkerTypeFilter          = "SyncFilter"
+	WorkerTypeQ5Filter        = "Q5Filter"
 	WorkerTypeCleaner         = "Cleaner"
 	WorkerTypeJoin            = "Join"
 	WorkerTypeRouter          = "Router"
@@ -30,6 +31,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 		worker, err := filter.NewSyncFilter(cfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeQ5Filter:
+		worker, err := filter.NewQ5Filter(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Q5Filter: %w", err)
 		}
 		return worker, nil
 	case WorkerTypeDateRangeFilter:
