@@ -441,6 +441,83 @@ func (BinaryCodec) DecodeQuery2ResultBatch(payload []byte) ([]external.Query2Res
 // ====================
 // ===== Query  3 =====
 // ====================
+func encodeQuery3Result(buf *bytes.Buffer, r external.Query3Result) error {
+	if err := encodeTransactionAccount(buf, r.FromBank, r.FromAccount); err != nil {
+		return err
+	}
+	if err := writeString(buf, r.PaymentFormat); err != nil {
+		return err
+	}
+	writeFloat64(buf, r.AmountPaid)
+	return nil
+
+}
+
+func decodeQuery3Result(r *bytes.Reader) (external.Query3Result, error) {
+	var res external.Query3Result
+	var err error
+	if res.FromBank, res.FromAccount, err = decodeTransactionAccount(r); err != nil {
+		return res, fmt.Errorf("from account: %w", err)
+	}
+	if res.PaymentFormat, err = readString(r); err != nil {
+		return res, fmt.Errorf("payment format: %w", err)
+	}
+	if res.AmountPaid, err = readFloat64(r); err != nil {
+		return res, fmt.Errorf("amount paid: %w", err)
+	}
+	return res, nil
+}
+
+func (BinaryCodec) EncodeQuery3ResultBatch(results []external.Query3Result) ([]byte, error) {
+	var batch bytes.Buffer
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
+	batch.Write(count[:])
+
+	for i, r := range results {
+		var resBuf bytes.Buffer
+		if err := encodeQuery3Result(&resBuf, r); err != nil {
+			return nil, fmt.Errorf("encoding result %d: %w", i, err)
+		}
+		if resBuf.Len() > math.MaxUint16 {
+			return nil, fmt.Errorf("result %d too large: %d bytes (max %d)", i, resBuf.Len(), math.MaxUint16)
+		}
+		var length [2]byte
+		binary.BigEndian.PutUint16(length[:], uint16(resBuf.Len()))
+		batch.Write(length[:])
+		batch.Write(resBuf.Bytes())
+	}
+	return batch.Bytes(), nil
+}
+
+func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Result, error) {
+	r := bytes.NewReader(payload)
+	var countBytes [4]byte
+	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
+		return nil, fmt.Errorf("reading batch count: %w", err)
+	}
+	count := binary.BigEndian.Uint32(countBytes[:])
+
+	results := make([]external.Query3Result, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var lengthBytes [2]byte
+		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
+			return nil, fmt.Errorf("reading length of result %d: %w", i, err)
+		}
+		length := binary.BigEndian.Uint16(lengthBytes[:])
+
+		resBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, resBytes); err != nil {
+			return nil, fmt.Errorf("reading result %d body: %w", i, err)
+		}
+		result, err := decodeQuery3Result(bytes.NewReader(resBytes))
+		if err != nil {
+			return nil, fmt.Errorf("decoding result %d: %w", i, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
 
 // ====================
 // ===== Query  4 =====
