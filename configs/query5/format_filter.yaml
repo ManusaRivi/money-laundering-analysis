@@ -17,11 +17,11 @@ broker:
   internal: false
 
 worker:
-  type: "Filter"
+  type: "SyncFilter"
   params:
     type: format
     field: Format
-    operator: eq
+    operator: "=="
     value_string:
       - "Wire"
       - "ACH"

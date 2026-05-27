@@ -15,11 +15,11 @@ broker:
   internal: false
 
 worker:
-  type: "Filter"
+  type: "SyncFilter"
   params:
     type: amount
     field: Amount
-    operator: lt
+    operator: "<"
     value_float: 1
   query: 5
   sync_eof:

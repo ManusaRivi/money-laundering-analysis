@@ -17,12 +17,7 @@ broker:
   internal: false
 
 worker:
-  type: SyncAmountFilter
-  params:
-    type: amount
-    field: Amount
-    operator: lt
-    value_float: 50
+  type: "Converter"
   query: 5
   sync_eof:
     - retries_base_delay: 0.5

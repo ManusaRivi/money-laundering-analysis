@@ -27,3 +27,14 @@ pipelines:
         ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
         PREV_WORKER_PREFIX: query2_aggregator
         PREV_WORKER_AMOUNT: 2
+  query5:
+    - name: cleaner
+      amount: 1
+    - name: format_filter
+      amount: 1
+    - name: converter
+      amount: 1
+    - name: amount_filter
+      amount: 1
+    - name: aggregator
+      amount: 1
