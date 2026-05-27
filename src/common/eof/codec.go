@@ -26,8 +26,8 @@ type ControlMessage struct {
 	ClientID      uuid.UUID `json:"client_id"`
 	RequesterID   int       `json:"requester_id"`
 	SenderID      int       `json:"sender_id"`
-	ReceivedCount int       `json:"received_count"`
-	SentCount     int       `json:"sent_count"`
+	ReceivedCount int       `json:"received_count,omitempty"`
+	SentCountByKey map[broker.KeyType]int `json:"sent_count_by_key,omitempty"`
 }
 
 func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {
