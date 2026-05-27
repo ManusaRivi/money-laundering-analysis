@@ -203,6 +203,8 @@ services:
       - NEXT_WORKER_PREFIX=query5_aggregator
       - WORKER_AMOUNT=1
       - WORKER_PREFIX=query5_amount_filter
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query5_converter
     volumes:
       - ./configs/query5/amount_filter.yaml:/app/config.yaml
     networks:

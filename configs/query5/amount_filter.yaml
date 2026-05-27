@@ -15,7 +15,7 @@ broker:
   internal: false
 
 worker:
-  type: "SyncFilter"
+  type: "Q5Filter"
   params:
     type: amount
     field: Amount
