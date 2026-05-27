@@ -19,9 +19,9 @@ type SyncFilter struct {
 	Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
 
 	// Campos para filtros simples (amount, string)
-	Operator    string  `json:"operator"`
-	ValueFloat  float64 `json:"value_float"`
-	ValueString string  `json:"value_string"`
+	Operator     string   `json:"operator"`
+	ValueFloat   float64  `json:"value_float"`
+	ValueStrings []string `json:"value_string"`
 
 	syncEOFController *eof.SyncEOFController
 
@@ -46,22 +46,52 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 	}
 	valueFloat, ok := params["value_float"].(float64)
 	if !ok {
-		return nil, fmt.Errorf("Invalid value_float parameter for SyncAmountFilter")
+		return nil, fmt.Errorf("Invalid value_float parameter for SyncFilter")
 	}
-	valueString, ok := params["value_string"].(string)
-	if !ok {
-		return nil, fmt.Errorf("Invalid value_string parameter for SyncAmountFilter")
+	valueStrings, err := parseValueStrings(params["value_string"])
+	if err != nil {
+		return nil, err
+	}
+	if typeVal == "format" && len(valueStrings) == 0 {
+		return nil, fmt.Errorf("format filter requires at least one value_string entry")
 	}
 	return &SyncFilter{
-		cfg: 	   	cfg,
-		Broker:      broker,
-		Type:        typeVal,
-		Field:       field,
-		Operator:    operator,
-		ValueFloat:  valueFloat,
-		ValueString: valueString,
+		cfg:               cfg,
+		Broker:            broker,
+		Type:              typeVal,
+		Field:             field,
+		Operator:          operator,
+		ValueFloat:        valueFloat,
+		ValueStrings:      valueStrings,
 		syncEOFController: nil,
 	}, nil
+}
+
+// parseValueStrings accepts either nil, a scalar string, or a YAML list of
+// strings and normalises to []string. An empty scalar yields an empty slice,
+// which lets amount-style filters omit the field without erroring.
+func parseValueStrings(raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		return []string{v}, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("value_string entries must be strings, got %T", e)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("Invalid value_string parameter for SyncFilter: %T", raw)
+	}
 }
 
 func (f *SyncFilter) Run() error {
@@ -129,7 +159,7 @@ func (f *SyncFilter) handleTransactionMessage(pkt inner.Packet) error {
 		return err
 	}
 	f.syncEOFController.MessageReceived(pkt.ClientID)
-	if filterTransaction(data, f.Type, f.Operator, f.ValueFloat, f.ValueString) {
+	if filterTransaction(data, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 		queryResult := domain.Query1Result{
 			FromBank:    data.Origin.BankID,
 			FromAccount: data.Origin.ID,
