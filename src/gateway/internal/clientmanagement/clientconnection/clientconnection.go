@@ -171,3 +171,11 @@ func (c *ClientConnection) sendQuery2Result(result *external.Query2Result) error
 	}
 	return c.sendEnvelope(external.MsgQuery2Result, payload)
 }
+
+func (c *ClientConnection) sendQuery3Result(result *external.Query3Result) error {
+	payload, err := c.codec.EncodeQuery3ResultBatch([]external.Query3Result{(*result)})
+	if err != nil {
+		return fmt.Errorf("encoding query 3 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery3Result, payload)
+}

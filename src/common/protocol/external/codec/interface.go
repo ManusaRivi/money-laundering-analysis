@@ -16,4 +16,7 @@ type Codec interface {
 
 	EncodeQuery2ResultBatch(result []external.Query2Result) ([]byte, error)
 	DecodeQuery2ResultBatch(payload []byte) ([]external.Query2Result, error)
+
+	EncodeQuery3ResultBatch(result []external.Query3Result) ([]byte, error)
+	DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Result, error)
 }
