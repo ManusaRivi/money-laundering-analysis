@@ -25,7 +25,7 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 		worker := cleaner.NewCleaner(cfg, communicationBroker)
 		return worker, nil
 	case "Join":
-		worker, err := join.NewJoin(communicationBroker)
+		worker, err := join.NewJoin(cfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Join: %w", err)
 		}
