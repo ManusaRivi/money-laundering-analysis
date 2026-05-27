@@ -17,9 +17,11 @@ type Cleaner struct {
 	Broker            broker.Broker
 	syncEOFController *eof.SyncEOFController
 	fieldsToClean     []string
+	
+	syncEOFkeys []broker.KeyType
 }
 
-func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
+func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
 	params := cfg.Params
 	fieldsToClean := make([]string, 0)
 	if field, ok := params["field"]; ok {
@@ -31,8 +33,16 @@ func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
 			}
 		}
 	}
+	
+	syncEOFkeys := broker.StringsToKeyType(cfg.SyncEOFConfig.InputKeys)
 
-	return &Cleaner{cfg: cfg, Broker: broker, fieldsToClean: fieldsToClean, syncEOFController: nil}
+	return &Cleaner{
+		cfg: cfg,
+		Broker: b,
+		fieldsToClean: fieldsToClean,
+		syncEOFController: nil,
+		syncEOFkeys: syncEOFkeys,
+	}
 }
 
 func (c *Cleaner) Run() error {
@@ -129,7 +139,10 @@ func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	total_transactions := eofCounts.Counts[broker.KeyDollarTransaction]
+	total_transactions := 0
+	for _, key := range c.syncEOFkeys {
+		total_transactions += eofCounts.Counts[key]
+	}
 	c.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
 	return nil
 }

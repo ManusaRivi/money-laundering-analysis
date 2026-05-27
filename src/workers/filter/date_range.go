@@ -14,38 +14,27 @@ import (
 )
 
 
-
+const timeTxFormat = "2006/01/02 15:04"
 
 type DateRange struct {
 	cfg	config.WorkerConfig
 	Broker broker.Broker
-	Type   string // Tipo de filtro: "amount", "date_between", etc.
-	// Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
-
-	// Campos para filtros simples (amount, string)
-	// Operator    string  `json:"operator"`
-	// ValueFloat  float64 `json:"value_float"`
-	// ValueString string  `json:"value_string"`
-
+	Type   string
+	fromTime    time.Time
+	toTime      time.Time
+	
 	syncEOFController *eof.SyncEOFController
 	syncEOFkeys []broker.KeyType
 	usdTransactionsSent map[uuid.UUID]int
-
-	// Campos para filtro por rango de fechas
-	fromTime    time.Time
-	toTime      time.Time
 }
 
-func NewDateRange(cfg config.WorkerConfig, brokerToUse broker.Broker) (*DateRange, error) {
+func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) {
 	params := cfg.Params
 	typeVal, ok := params["type"].(string)
 	if !ok {
 		return nil, fmt.Errorf("Invalid type parameter for DateRangeFilter")
 	}
-	// field, ok := params["field"].(string)
-	// if !ok {
-	// 	return nil, fmt.Errorf("Invalid field parameter for DateRangeFilter")
-	// }
+
 	fromDate, ok := params["from"].(string)
 	if !ok {
 		return nil, fmt.Errorf("Invalid from parameter for DateRangeFilter")
@@ -58,12 +47,12 @@ func NewDateRange(cfg config.WorkerConfig, brokerToUse broker.Broker) (*DateRang
 		return nil, fmt.Errorf("both 'from' and 'to' are required for DateRangeFilter")
 	}
 
-	fromTime, err := time.Parse(time.RFC3339, fromDate)
+	fromTime, err := time.Parse(timeTxFormat, fromDate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid from date %q: %w", fromDate, err)
 	}
 	
-	toTime, err := time.Parse(time.RFC3339, toDate)
+	toTime, err := time.Parse(timeTxFormat, toDate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid to date %q: %w", toDate, err)
 	}
@@ -72,12 +61,13 @@ func NewDateRange(cfg config.WorkerConfig, brokerToUse broker.Broker) (*DateRang
 
 	return &DateRange{
 		cfg: 	   	cfg,
-		Broker:      brokerToUse,
+		Broker:      b,
 		Type:        typeVal,
 		fromTime:    fromTime,
 		toTime:      toTime,
 		syncEOFController: nil,
 		syncEOFkeys: syncEOFkeys,
+		usdTransactionsSent: make(map[uuid.UUID]int),
 	}, nil
 }
 
@@ -119,6 +109,7 @@ func (f *DateRange) onflush(clientID uuid.UUID) error {
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
 	// TODO: Loguear que el cliente supero el maximo de reintentos y tomar la decision que se considere (ej: emitir un EOF forzado, loguear un error, etc)
+	slog.Warn("Client exceeded max retries for EOF synchronization", "clientID", clientID)
 	return nil
 }
 
@@ -157,7 +148,8 @@ func (f *DateRange) filterTransactionByDate(tx domain.Transaction) bool {
 		slog.Error("Transaction has no timestamp", "transaction", tx)
 		return false
 	}
-	txTime, err := time.Parse(time.RFC3339, tx.Timestamp)
+	
+	txTime, err := time.Parse(timeTxFormat, tx.Timestamp)
 	if err != nil {
 		slog.Error("Transaction has invalid timestamp", "timestamp", tx.Timestamp, "error", err)
 		return false
@@ -174,8 +166,9 @@ func (f *DateRange) handleTransactionMessage(pkt inner.Packet) error {
 		return err
 	}
 	f.syncEOFController.MessageReceived(pkt.ClientID)
-	
+	slog.Debug("Received transaction message, applying date range filter", "timestamp", tx.Timestamp)
 	if f.filterTransactionByDate(tx) {
+		slog.Debug("Transaction passed date range filter", "timestamp", tx.Timestamp)
 		keyToUse := broker.KeyNonDollarTransaction
 		if tx.IsUSDTransaction() {
 			keyToUse = broker.KeyDollarTransaction
@@ -220,6 +213,10 @@ func (f *DateRange) handleMessage(msg broker.Message) error {
 	if err != nil {
 		slog.Error("Error unmarshalling packet", "error", err)
 		return err
+	}
+
+	if _, exists := f.usdTransactionsSent[pkt.ClientID]; !exists {
+		f.usdTransactionsSent[pkt.ClientID] = 0
 	}
 
 	switch pkt.Type {

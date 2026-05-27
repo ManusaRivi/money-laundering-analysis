@@ -8,10 +8,10 @@ clients:
 
 pipelines:
   query1:
-   - name: cleaner
-     amount: 2
-   - name: filter
-     amount: 2
+    - name: cleaner
+      amount: 1
+    - name: filter
+      amount: 1
   query2:
     - name: cleaner
       amount: 3
@@ -25,5 +25,9 @@ pipelines:
         - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
       env:
         ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
-        PREV_WORKER_PREFIX: query2_aggregator
-        PREV_WORKER_AMOUNT: 2
+  query345:
+    - name: filter
+      amount: 1
+  query4:
+    - name: cleaner
+      amount: 1

@@ -20,4 +20,7 @@ down:
 
 logs:
 	docker compose -f docker-compose-dev.yaml logs -f
-.PHONY: docker-compose-logs
+.PHONY: logs
+
+logs-%:
+	docker compose -f docker-compose-dev.yaml logs -f $*

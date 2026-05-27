@@ -3,12 +3,12 @@ broker:
   type: e-e
   url: amqp://guest:guest@rabbitmq:5672/
   input: e_entry
-  input_queue: q_q345_filter
-  output: e_q345_cleaner
-  exchange_type: topic
-  input_keys:
+  input_queue: q_q345_filter # de input
+  output: e_q345_cleaner 
+  exchange_type: topic # de outpt
+  input_keys: # de input
     - tx.*
-  prefetch: 30
+  prefetch: 300 
   durable: true
   auto_delete: false
   exclusive: false
@@ -16,16 +16,11 @@ broker:
   internal: false
 
 worker:
-  type: "DateRange"
+  type: "DateRangeFilter"
   params:
     type: "date_between"
-    from: "2023-01-01T00:00:00Z"
-    to: "2023-12-31T23:59:59Z"
-    # field: "Timestamp"
-    # operator: "<"
-    # value_float: 50.0
-    # value_string: ""
-  query: 345
+    from: "2022/09/01 00:00"
+    to: "2022/09/05 23:59"
   sync_eof:
     - retries_base_delay: 0.5
     - retries_step_delay: 0.5
