@@ -42,6 +42,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 			return nil, fmt.Errorf("failed to create Router: %w", err)
 		}
 		return worker, nil
+	case "Spliter":
+		worker, err := router.NewSpliter(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Spliter: %w", err)
+		}
+		return worker, nil
 	case "Aggregator":
 		worker, err := aggregator.NewAggregator(cfg, communicationBroker)
 		if err != nil {

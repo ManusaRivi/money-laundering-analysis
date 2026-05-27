@@ -1,0 +1,24 @@
+broker:
+  type: q-e
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q4_router
+  output: e_q4_agg
+  exchange_type: topic
+  
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "Spliter"
+  params:
+    field: 
+      - "origin"
+      - "dest"
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5
