@@ -181,7 +181,7 @@ func (r *Router) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	r.syncEOFController.SyncEofWithKey(pkt.ClientID, eofCounts.Counts, r.syncEOFKey)
+	r.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, r.syncEOFKey)
 	return nil
 }
 

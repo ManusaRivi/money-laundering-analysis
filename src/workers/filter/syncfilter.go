@@ -158,7 +158,7 @@ func (f *SyncFilter) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	f.syncEOFController.SyncEofWithKey(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
+	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
 	return nil
 }
 

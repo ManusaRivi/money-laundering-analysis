@@ -153,11 +153,7 @@ func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broke
 }
 
 // SyncEof inicia el proceso de sincronizacion con key Nil. Se llama cuando un nodo asume el rol de lider.
-func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyType]int) {
-	c.SyncEofWithKey(clientID, counts, broker.KeyNil)
-}
-
-func (c *SyncEOFController) SyncEofWithKey(clientID uuid.UUID, counts map[broker.KeyType]int, keyType broker.KeyType) {
+func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyType]int, keyType broker.KeyType) {
 	expectedTotal := 0
 	if counts != nil {
 		expectedTotal = counts[keyType]

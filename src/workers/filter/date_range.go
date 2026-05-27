@@ -188,7 +188,7 @@ func (f *DateRange) handleEOFMessage(pkt inner.Packet) error {
 		return err
 	}
 
-	f.syncEOFController.SyncEofWithKey(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
+	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
 	return nil
 }
 

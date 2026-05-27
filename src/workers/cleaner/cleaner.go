@@ -137,7 +137,7 @@ func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	c.syncEOFController.SyncEofWithKey(pkt.ClientID, eofCounts.Counts, c.syncEOFKey)
+	c.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, c.syncEOFKey)
 	return nil
 }
 
