@@ -9,9 +9,9 @@ clients:
 pipelines:
   query1:
     - name: cleaner
-      amount: 2
+      amount: 1
     - name: filter
-      amount: 2
+      amount: 1
   query2:
     - name: join
       amount: 1
@@ -20,3 +20,9 @@ pipelines:
       env:
         LOG_LEVEL: error
         ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
+  query345:
+    - name: filter
+      amount: 1
+  query4:
+    - name: cleaner
+      amount: 1

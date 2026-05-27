@@ -19,6 +19,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
 		}
 		return worker, nil
+	case "DateRangeFilter":
+		worker, err := filter.NewDateRange(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create DateRangeFilter: %w", err)
+		}
+		return worker, nil
 	case "Cleaner":
 		worker := cleaner.NewCleaner(cfg, communicationBroker)
 		return worker, nil
