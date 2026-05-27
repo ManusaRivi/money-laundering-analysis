@@ -63,3 +63,7 @@ type Query2Result struct {
 	BankName    string
 	AmountPaid  float64
 }
+
+type Query5Result struct {
+	Count int64
+}

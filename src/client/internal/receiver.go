@@ -88,6 +88,20 @@ func (r *Receiver) Listen() {
 				w.Close()
 			}
 			pendingEOFs--
+		case external.MsgQuery5Result:
+			results, err := r.codec.DecodeQuery5ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery5Result)
+				slog.Warn("Failed to decode query 5 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery5Result, query5RowsToString(results))
+		case external.MsgQuery5ResultEOF:
+			slog.Info("Received Query 5 EOF")
+			if w, ok := r.writers[external.MsgQuery5Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
 		default:
 			slog.Warn("Unknown message type received", "msgType", msgType)
 		}
@@ -149,6 +163,14 @@ func query2RowsToString(results []external.Query2Result) [][]string {
 			res.BankName,
 			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
 		})
+	}
+	return rows
+}
+
+func query5RowsToString(results []external.Query5Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{strconv.FormatInt(res.Count, 10)})
 	}
 	return rows
 }

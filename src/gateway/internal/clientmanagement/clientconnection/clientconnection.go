@@ -103,7 +103,17 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	case inner.TypeQuery4EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery4ResultEOF)
 	case inner.TypeQuery5Result:
-		// Handle query 5 result response
+		var result domain.Query5Result
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 5 result: %w", err)
+		}
+
+		externalResult := external.Query5Result{Count: int64(result.Count)}
+		slog.Debug("Received Query 5 Result", "count", externalResult.Count)
+
+		if err := c.sendQuery5Result(&externalResult); err != nil {
+			return fmt.Errorf("sending query 5 result: %w", err)
+		}
 	case inner.TypeQuery5EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery5ResultEOF)
 	default:
@@ -170,4 +180,12 @@ func (c *ClientConnection) sendQuery2Result(result *external.Query2Result) error
 		return fmt.Errorf("encoding query 2 result: %w", err)
 	}
 	return c.sendEnvelope(external.MsgQuery2Result, payload)
+}
+
+func (c *ClientConnection) sendQuery5Result(result *external.Query5Result) error {
+	payload, err := c.codec.EncodeQuery5ResultBatch([]external.Query5Result{(*result)})
+	if err != nil {
+		return fmt.Errorf("encoding query 5 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery5Result, payload)
 }

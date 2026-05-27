@@ -148,6 +148,38 @@ func MarshalQuery2EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 	return &broker.Message{Body: serializedMsg}, nil
 }
 
+func MarshalQuery5ResultPacket(clientID uuid.UUID, result domain.Query5Result) (*broker.Message, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery5Result,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: broker.KeyNil, Body: serializedMsg}, nil
+}
+
+func MarshalQuery5EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery5EOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: broker.KeyControlEOF, Body: serializedMsg}, nil
+}
+
 func UnmarshalPacket(msg broker.Message) (*Packet, error) {
 	var packet Packet
 	err := json.Unmarshal(msg.Body, &packet)
