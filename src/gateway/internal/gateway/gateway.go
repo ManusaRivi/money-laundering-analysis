@@ -236,6 +236,7 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			
 			eofCounts := domain.EOFCounts{
 				Counts: map[broker.KeyType]int{
+					broker.KeyNil:                tx_count,
 					broker.KeyDollarTransaction:    tx_usd_count,
 					broker.KeyNonDollarTransaction: tx_count - tx_usd_count,
 					broker.KeyAllTransaction:       tx_count,
