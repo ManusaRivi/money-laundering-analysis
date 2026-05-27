@@ -10,17 +10,23 @@ import (
 	"github.com/google/uuid"
 )
 
+type nodeInfo struct {
+	rcvResponse      int  // amount rcv reportado
+
+	sentcountByKeyResponse map[broker.KeyType]int // amount sent reportado por key type
+
+	flushResponse    bool // flush ack
+}
 type client struct {
 	clientID      uuid.UUID
 	msgRcvCount   int // cantidad de mensajes que recibio este nodo
-	msgSntCount   int // cantidad de mensajes que envio este nodo al siguiente stage
+	// msgSntCount   int // cantidad de mensajes que envio este nodo al siguiente stage
+	msgSentCountByKey map[broker.KeyType]int // cantidad de mensajes enviados según key type
 	expectedTotal int // total_messages que espera recibir el cluster para flushear
 	retryCount    int // cantidad de reintentos de amount request
 
-	rcvResponses      map[int]int  // senderID -> amount rcv reportado
-	sntResponses      map[int]int  // senderID -> amount snt reportado
-	flushResponses    map[int]bool // senderID -> flush ack
-	flushExpectedSent int
+	nodesInfo map[int]nodeInfo // senderID -> nodeInfo
+	flushExpectedSent map[broker.KeyType]int
 }
 
 type SyncEOFController struct {
@@ -37,7 +43,7 @@ type SyncEOFController struct {
 	onFlush func(clientID uuid.UUID) error
 
 	// Callback para que el lider emita el EOF a la siguiente etapa.
-	onLeaderFlush func(clientID uuid.UUID, finalSent int) error
+	onLeaderFlush func(clientID uuid.UUID, finalCountSentByKey map[broker.KeyType]int) error
 
 	// Callback cuando el cliente supera el maximo de reintentos.
 	onRetryExceeded func(clientID uuid.UUID) error
@@ -50,9 +56,9 @@ type SyncEOFController struct {
 func NewClient(clientID uuid.UUID) *client {
 	return &client{
 		clientID:       clientID,
-		rcvResponses:   make(map[int]int),
-		sntResponses:   make(map[int]int),
-		flushResponses: make(map[int]bool),
+		msgSentCountByKey: make(map[broker.KeyType]int),
+		nodesInfo:          make(map[int]nodeInfo),
+		flushExpectedSent: make(map[broker.KeyType]int),
 	}
 }
 
@@ -60,7 +66,7 @@ func NewClient(clientID uuid.UUID) *client {
 func NewSyncEOFController(
 	cfg config.SyncEOFControllerConfig,
 	onFlush func(clientID uuid.UUID) error,
-	onLeaderFlush func(clientID uuid.UUID, finalSent int) error,
+	onLeaderFlush func(clientID uuid.UUID, finalCountSentByKey map[broker.KeyType]int) error,
 	onRetryExceeded func(clientID uuid.UUID) error,
 ) (*SyncEOFController, error) {
 	eofBroker, err := NewEOFBroker(cfg.RabbitURL, cfg.BroadcastExchange, cfg.WorkerID, cfg.EOFPrefix)
@@ -120,6 +126,10 @@ func (c *SyncEOFController) MessageReceived(clientID uuid.UUID) {
 }
 
 func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
+	c.MessageSentWithKey(clientID, broker.KeyNil)
+}
+
+func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broker.KeyType) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -127,29 +137,41 @@ func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
 		c.clients[clientID] = NewClient(clientID)
 		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
 	}
-
-	c.clients[clientID].msgSntCount++
+	// c.clients[clientID].msgSntCount++
+	client := c.clients[clientID]
+	if keyType == broker.KeyNil {
+		client.msgSentCountByKey[broker.KeyNil]++
+	} else {
+		client.msgSentCountByKey[keyType]++
+		client.msgSentCountByKey[broker.KeyNil]++
+	}
 	slog.Debug("[SyncEOFController] Message sent",
 		"client_id", clientID,
-		"sent_count", c.clients[clientID].msgSntCount,
+		"sent_count", client.msgSentCountByKey[keyType],
+		"key_type", keyType,
 	)
 }
 
-// SyncEof inicia el proceso de sincronizacion. Se llama cuando un nodo asume el rol de lider
-func (c *SyncEOFController) SyncEof(clientID uuid.UUID, expectedTotalMsg int) {
+// SyncEof inicia el proceso de sincronizacion con key Nil. Se llama cuando un nodo asume el rol de lider.
+func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyType]int, keyType broker.KeyType) {
+	expectedTotal := 0
+	if counts != nil {
+		expectedTotal = counts[keyType]
+	}
+
 	c.mu.Lock()
 	if _, exists := c.clients[clientID]; !exists {
 		c.clients[clientID] = NewClient(clientID)
 		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
 	}
 	client := c.clients[clientID]
-	client.expectedTotal = expectedTotalMsg
+	client.expectedTotal = expectedTotal
 	client.retryCount = 0
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] SyncEof started",
 		"client_id", clientID,
-		"expected_total", expectedTotalMsg,
+		"expected_total", expectedTotal,
 	)
 	c.broadcastAmountRequest(clientID)
 }
@@ -164,16 +186,16 @@ func (c *SyncEOFController) broadcastAmountRequest(clientID uuid.UUID) {
 	c.sendControlMessage(msg)
 }
 
-func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSnt int) {
+func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSntByKey map[broker.KeyType]int) {
 	slog.Debug("[SyncEOFController] Broadcast flush",
 		"client_id", clientID,
-		"total_sent", totalSnt,
+		"total_sent", totalSntByKey,
 	)
 	msg := ControlMessage{
 		Type:        MsgTypeFlush,
 		ClientID:    clientID,
 		RequesterID: c.nodeID,
-		SentCount:   totalSnt,
+		SentCountByKey: totalSntByKey,
 	}
 	c.sendControlMessage(msg)
 }
@@ -219,13 +241,14 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 	}
 	client := c.clients[msg.ClientID]
 	rcvAmount := client.msgRcvCount
-	sntAmount := client.msgSntCount
+	// sntAmount := client.msgSntCount
+	sntAmountByKey := copyCountsMap(client.msgSentCountByKey)
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] Process amount request",
 		"client_id", msg.ClientID,
 		"received_count", rcvAmount,
-		"sent_count", sntAmount,
+		"sent_count", sntAmountByKey,
 		"requester_id", msg.RequesterID,
 	)
 
@@ -235,7 +258,7 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 		RequesterID:   msg.RequesterID,
 		SenderID:      c.nodeID,
 		ReceivedCount: rcvAmount,
-		SentCount:     sntAmount,
+		SentCountByKey: sntAmountByKey,
 	}
 	c.sendControlMessage(resp)
 }
@@ -243,17 +266,18 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 func (c *SyncEOFController) processAmountResponse(msg ControlMessage) {
 	c.mu.Lock()
 	client := c.clients[msg.ClientID]
-	client.rcvResponses[msg.SenderID] = msg.ReceivedCount
-	client.sntResponses[msg.SenderID] = msg.SentCount
-
-	responsesCount := len(client.rcvResponses)
+	info := client.nodesInfo[msg.SenderID]
+	info.rcvResponse = msg.ReceivedCount
+	info.sentcountByKeyResponse = copyCountsMap(msg.SentCountByKey)
+	client.nodesInfo[msg.SenderID] = info
+	responsesCount := len(client.nodesInfo)
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] Process amount response",
 		"client_id", msg.ClientID,
 		"sender_id", msg.SenderID,
 		"received_count", msg.ReceivedCount,
-		"sent_count", msg.SentCount,
+		"sent_count", msg.SentCountByKey,
 		"responses_count", responsesCount,
 	)
 
@@ -268,8 +292,7 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 	client.retryCount++
 	attempt := client.retryCount
 	maxRetries := c.maxRetries
-	client.rcvResponses = make(map[int]int)
-	client.sntResponses = make(map[int]int)
+	client.nodesInfo = make(map[int]nodeInfo)
 	baseDelay := c.retryBaseDelay
 	stepDelay := c.retryStepDelay
 	c.mu.Unlock()
@@ -302,14 +325,19 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	c.mu.Lock()
 	totalRcvReported := 0
-	totalSntReported := 0
-	for _, count := range c.clients[clientID].rcvResponses {
-		totalRcvReported += count
+	combinedSentByKey := make(map[broker.KeyType]int)
+	client := c.clients[clientID]
+	for nodeID, info := range client.nodesInfo {
+		totalRcvReported += info.rcvResponse
+		for key, count := range info.sentcountByKeyResponse {
+			combinedSentByKey[key] += count
+		}
+		if info.flushResponse {
+			info.flushResponse = false
+			client.nodesInfo[nodeID] = info
+		}
 	}
-	for _, count := range c.clients[clientID].sntResponses {
-		totalSntReported += count
-	}
-	expectedRcv := c.clients[clientID].expectedTotal
+	expectedRcv := client.expectedTotal
 	c.mu.Unlock()
 
 	if totalRcvReported == expectedRcv {
@@ -317,11 +345,10 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 			"client_id", clientID,
 			"expected_total", expectedRcv,
 			"reported_total", totalRcvReported,
-			"total_sent", totalSntReported,
+			"total_sent", combinedSentByKey,
 		)
-		c.clients[clientID].flushResponses = make(map[int]bool)
-		c.clients[clientID].flushExpectedSent = totalSntReported
-		c.broadcastFlush(clientID, totalSntReported)
+		client.flushExpectedSent = copyCountsMap(combinedSentByKey)
+		c.broadcastFlush(clientID, combinedSentByKey)
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
@@ -335,7 +362,7 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 func (c *SyncEOFController) processFlush(msg ControlMessage) {
 	slog.Info("[SyncEOFController] Recibido FLUSH",
 		"client_id", msg.ClientID,
-		"sent_count", msg.SentCount,
+		"sent_count", msg.SentCountByKey,
 		"requester_id", msg.RequesterID,
 	)
 	if c.onFlush != nil {
@@ -355,12 +382,12 @@ func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
 	}
 
 	c.mu.Lock()
-	if c.clients[msg.ClientID].flushResponses == nil {
-		c.clients[msg.ClientID].flushResponses = make(map[int]bool)
-	}
-	c.clients[msg.ClientID].flushResponses[msg.SenderID] = true
-	responsesCount := len(c.clients[msg.ClientID].flushResponses)
-	finalSent := c.clients[msg.ClientID].flushExpectedSent
+	client := c.clients[msg.ClientID]
+	info := client.nodesInfo[msg.SenderID]
+	info.flushResponse = true
+	client.nodesInfo[msg.SenderID] = info
+	responsesCount := countFlushResponses(client.nodesInfo)
+	finalCountSent := copyCountsMap(client.flushExpectedSent)
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] FLUSH ack recibido",
@@ -372,10 +399,10 @@ func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
 
 	if responsesCount == c.totalNodes {
 		if c.onLeaderFlush != nil {
-			if err := c.onLeaderFlush(msg.ClientID, finalSent); err != nil {
+			if err := c.onLeaderFlush(msg.ClientID, finalCountSent); err != nil {
 				slog.Error("[SyncEOFController] onLeaderFlush failed",
 					"client_id", msg.ClientID,
-					"final_sent", finalSent,
+					"final_count_sent", finalCountSent,
 					"err", err,
 				)
 			}
@@ -449,4 +476,35 @@ func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 		"requester_id", msg.RequesterID,
 		"sender_id", msg.SenderID,
 	)
+}
+
+func copyCountsMap(source map[broker.KeyType]int) map[broker.KeyType]int {
+	if source == nil {
+		return map[broker.KeyType]int{}
+	}
+	copyMap := make(map[broker.KeyType]int, len(source))
+	for key, count := range source {
+		copyMap[key] = count
+	}
+	return copyMap
+}
+
+func countFlushResponses(nodesInfo map[int]nodeInfo) int {
+	count := 0
+	for _, info := range nodesInfo {
+		if info.flushResponse {
+			count++
+		}
+	}
+	return count
+}
+
+func SyncKeyFromInputKeys(inputKeys []string) broker.KeyType {
+	if len(inputKeys) == 1 {
+		key := broker.KeyType(inputKeys[0])
+		if key != broker.KeyNil && key != broker.KeyAllTransaction {
+			return key
+		}
+	}
+	return broker.KeyNil
 }

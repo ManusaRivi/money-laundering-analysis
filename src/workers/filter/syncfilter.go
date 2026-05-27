@@ -24,10 +24,7 @@ type SyncFilter struct {
 	ValueStrings []string `json:"value_string"`
 
 	syncEOFController *eof.SyncEOFController
-
-	// Campos para filtro por rango de fechas
-	// FromDate    string  `json:"from_date"`
-	// ToDate      string  `json:"to_date"`
+	syncEOFKey        broker.KeyType
 }
 
 func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, error) {
@@ -55,6 +52,8 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 	if typeVal == "format" && len(valueStrings) == 0 {
 		return nil, fmt.Errorf("format filter requires at least one value_string entry")
 	}
+	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
+
 	return &SyncFilter{
 		cfg:               cfg,
 		Broker:            broker,
@@ -64,6 +63,7 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 		ValueFloat:        valueFloat,
 		ValueStrings:      valueStrings,
 		syncEOFController: nil,
+		syncEOFKey: syncEOFKey,
 	}, nil
 }
 
@@ -135,7 +135,7 @@ func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
+func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	eofMsg, err := inner.MarshalQuery1EOFPacket(clientID)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
@@ -174,7 +174,7 @@ func (f *SyncFilter) handleTransactionMessage(pkt inner.Packet) error {
 		if err := f.Broker.Send(*responseMsg); err != nil {
 			return err
 		}
-		f.syncEOFController.MessageSent(pkt.ClientID)
+		f.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
 	}
 	return nil
 }
@@ -188,8 +188,7 @@ func (f *SyncFilter) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	total_transactions := eofCounts.Counts[broker.KeyNil]
-	f.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
+	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
 	return nil
 }
 

@@ -5,6 +5,7 @@ type KeyType string
 const (
 	KeyDollarTransaction    KeyType = "tx.usd"
 	KeyNonDollarTransaction KeyType = "tx.non-usd"
+	KeyAllTransaction       KeyType = "tx.*"
 
 	KeyControlEOF KeyType = "control.eof"
 	KeyNil        KeyType = ""

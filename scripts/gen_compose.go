@@ -35,6 +35,9 @@ type WorkerInstance struct {
 	WorkerAmount     int
 	ConfigPath       string
 	VolumeMapping    string
+	HasPrev          bool
+	PrevWorkerPrefix string
+	PrevWorkerAmount int
 	HasNext          bool
 	NextWorkerPrefix string
 	NextWorkerAmount int
@@ -88,6 +91,13 @@ func main() {
 					ExtraVolumes:  wd.Volumes,
 				}
 
+				if i > 0 {
+					prev := defs[i-1]
+					wi.HasPrev = true
+					wi.PrevWorkerPrefix = fmt.Sprintf("%s_%s", stage, prev.Name)
+					wi.PrevWorkerAmount = prev.Amount
+				}
+
 				if i+1 < len(defs) {
 					next := defs[i+1]
 					wi.HasNext = true
@@ -101,6 +111,10 @@ func main() {
 					"WORKER_PREFIX": wi.WorkerPrefix,
 					"ID":            strconv.Itoa(id),
 					"WORKER_AMOUNT": strconv.Itoa(wd.Amount),
+				}
+				if wi.HasPrev {
+					env["PREV_WORKER_PREFIX"] = wi.PrevWorkerPrefix
+					env["PREV_WORKER_AMOUNT"] = strconv.Itoa(wi.PrevWorkerAmount)
 				}
 				if wi.HasNext {
 					env["NEXT_WORKER_PREFIX"] = wi.NextWorkerPrefix

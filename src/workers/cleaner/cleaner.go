@@ -17,9 +17,10 @@ type Cleaner struct {
 	Broker            broker.Broker
 	syncEOFController *eof.SyncEOFController
 	fieldsToClean     []string
+	syncEOFKey        broker.KeyType
 }
 
-func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
+func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
 	params := cfg.Params
 	fieldsToClean := make([]string, 0)
 	if field, ok := params["field"]; ok {
@@ -31,8 +32,16 @@ func NewCleaner(cfg config.WorkerConfig, broker broker.Broker) *Cleaner {
 			}
 		}
 	}
+	
+	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
-	return &Cleaner{cfg: cfg, Broker: broker, fieldsToClean: fieldsToClean, syncEOFController: nil}
+	return &Cleaner{
+		cfg: cfg,
+		Broker: b,
+		fieldsToClean: fieldsToClean,
+		syncEOFController: nil,
+		syncEOFKey: syncEOFKey,
+	}
 }
 
 func (c *Cleaner) Run() error {
@@ -68,10 +77,9 @@ func (c *Cleaner) onflush(clientID uuid.UUID) error {
 	return nil
 }
 
-func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	counts := map[broker.KeyType]int{broker.KeyNil: finalSent}
+func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	eofCounts := domain.EOFCounts{
-		Counts: counts,
+		Counts: finalSent,
 	}
 	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	if err != nil {
@@ -105,7 +113,7 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 		tx.CutColumn(f)
 	}
 
-	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, "", tx)
+	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
 
 	if err != nil {
 		slog.Error("Error marshalling cleaned packet", "error", err)
@@ -117,7 +125,7 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 		return err
 	}
 	c.syncEOFController.MessageReceived(pkt.ClientID)
-	c.syncEOFController.MessageSent(pkt.ClientID)
+	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
 
 	return nil
 }
@@ -129,8 +137,7 @@ func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	total_transactions := eofCounts.Counts[broker.KeyDollarTransaction]
-	c.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
+	c.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, c.syncEOFKey)
 	return nil
 }
 

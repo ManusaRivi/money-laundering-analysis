@@ -211,15 +211,13 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					},
 					Format: transaction.PaymentFormat,
 				}
-				routingTopic := broker.KeyNil
+				keyToUse := broker.KeyNonDollarTransaction
 				gateway.clients[c.ClientId].tx_count++
 				if tx.IsUSDTransaction() {
 					gateway.clients[c.ClientId].tx_usd_count++
-					routingTopic = broker.KeyDollarTransaction
-				} else {
-					routingTopic = broker.KeyNonDollarTransaction
+					keyToUse = broker.KeyDollarTransaction
 				}
-				msg, err := inner.MarshalTransactionPacket(c.ClientId, routingTopic, tx)
+				msg, err := inner.MarshalTransactionPacket(c.ClientId, keyToUse, tx)
 				if err != nil {
 					slog.Error("Error marshalling transaction packet", "error", err)
 					return false
@@ -233,10 +231,15 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			}
 		case external.MsgTransactionsEOF:
 			slog.Debug("Received transactions EOF")
+			tx_count := gateway.clients[c.ClientId].tx_count
+			tx_usd_count := gateway.clients[c.ClientId].tx_usd_count
+			
 			eofCounts := domain.EOFCounts{
 				Counts: map[broker.KeyType]int{
-					broker.KeyDollarTransaction:    gateway.clients[c.ClientId].tx_usd_count,
-					broker.KeyNonDollarTransaction: gateway.clients[c.ClientId].tx_count - gateway.clients[c.ClientId].tx_usd_count,
+					broker.KeyNil:                tx_count,
+					broker.KeyDollarTransaction:    tx_usd_count,
+					broker.KeyNonDollarTransaction: tx_count - tx_usd_count,
+					broker.KeyAllTransaction:       tx_count,
 				},
 			}
 			msg, err := inner.MarshalEOFPacket(c.ClientId, eofCounts)

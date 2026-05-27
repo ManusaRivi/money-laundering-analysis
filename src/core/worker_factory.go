@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	WorkerTypeFilter     = "SyncFilter"
-	WorkerTypeCleaner    = "Cleaner"
-	WorkerTypeJoin       = "Join"
-	WorkerTypeRouter     = "Router"
-	WorkerTypeAggregator = "Aggregator"
-	WorkerTypeConverter  = "Converter"
+	WorkerTypeFilter          = "SyncFilter"
+	WorkerTypeCleaner         = "Cleaner"
+	WorkerTypeJoin            = "Join"
+	WorkerTypeRouter          = "Router"
+	WorkerTypeAggregator      = "Aggregator"
+	WorkerTypeConverter       = "Converter"
+	WorkerTypeDateRangeFilter = "DateRangeFilter"
 )
 
 // TODO: Define worker types as constants
@@ -29,6 +30,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 		worker, err := filter.NewSyncFilter(cfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeDateRangeFilter:
+		worker, err := filter.NewDateRange(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create DateRangeFilter: %w", err)
 		}
 		return worker, nil
 	case WorkerTypeCleaner:
