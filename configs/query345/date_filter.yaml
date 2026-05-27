@@ -1,0 +1,34 @@
+# e-e example (exchange -> exchange)
+
+broker:
+  type: e-e
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: e_entry
+  input_queue: q_q345_filter
+  output: e_q345_cleaner
+  exchange_type: topic
+  input_keys:
+    - tx.*
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "DateRange"
+  params:
+    type: "date_between"
+    from: "2023-01-01T00:00:00Z"
+    to: "2023-12-31T23:59:59Z"
+  query: 345
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5
+
+# Required envs if input is omitted
+# WORKER_PREFIX=e_entry
+# ID=0
+# NEXT_WORKER_PREFIX=join
