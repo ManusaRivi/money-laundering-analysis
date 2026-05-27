@@ -40,14 +40,31 @@ var currencyISO = map[string]string{
 var ErrUnsupportedCurrency = fmt.Errorf("unsupported currency")
 
 // fallbackUSDPerUnit holds USD per 1 unit of the currency, used only when
-// Frankfurter does not quote the source currency. Values follow the AML
-// dataset generator table (Sep 2022 era); they're constant in time, which is
-// exact for the pegged Saudi Riyal but an approximation for the more volatile
-// Bitcoin and Ruble. Worth revisiting if the dataset window shifts materially.
+// Frankfurter does not quote the source currency and no date-specific table
+// applies (see bitcoinUSDPerUnit). Exact for the pegged Saudi Riyal,
+// approximate for Ruble; the Bitcoin entry is a last-resort default for dates
+// outside bitcoinUSDPerUnit.
 var fallbackUSDPerUnit = map[string]float64{
 	"Saudi Riyal": 1.0 / 3.75, // pegged at 3.75 SAR / USD
 	"Ruble":       1.0 / 60.5, // ≈ Sep 2022
-	"Bitcoin":     20000.0,    // ≈ Sep 2022
+	"Bitcoin":     20000.0,    // ≈ Sep 2022, used when date not in bitcoinUSDPerUnit
+}
+
+// bitcoinUSDPerUnit holds the per-day USD-per-1-BTC rate from the dataset
+// generator's reference table. Keyed by date in YYYY-MM-DD format (matching
+// transactionDate output). For dates outside this map we fall back to
+// fallbackUSDPerUnit["Bitcoin"].
+//
+// NOTE: the source table value for 2022-09-02 was 199999.0, an order of
+// magnitude above neighbouring days (~19,800). Preserved verbatim here for
+// fidelity, but it almost certainly should be ~19,999.0 — confirm before
+// running production datasets that include that date.
+var bitcoinUSDPerUnit = map[string]float64{
+	"2022-09-01": 19793.1,
+	"2022-09-02": 199999.0, // <-- suspected typo; see note above
+	"2022-09-03": 19831.4,
+	"2022-09-04": 19952.7,
+	"2022-09-05": 20126.1,
 }
 
 type rateKey struct {
@@ -82,6 +99,13 @@ func newRateClient() *rateClient {
 func (rc *rateClient) convertToUSD(date string, currency string, amount float64) (float64, error) {
 	iso, ok := currencyISO[currency]
 	if !ok {
+		// Frankfurter doesn't quote this currency. Try a date-specific table
+		// first (Bitcoin), then the static per-currency fallback.
+		if currency == "Bitcoin" {
+			if rate, ok := bitcoinUSDPerUnit[date]; ok {
+				return amount * rate, nil
+			}
+		}
 		if rate, ok := fallbackUSDPerUnit[currency]; ok {
 			return amount * rate, nil
 		}
