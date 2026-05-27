@@ -50,6 +50,21 @@ services:
       - money-laundering-analysis-net
     depends_on:
       - gateway
+  client_1:
+    build:
+      context: .
+      dockerfile: src/client/Dockerfile
+    container_name: client_1
+    environment:
+      - LOG_LEVEL=debug
+    volumes:
+      - ./configs/client.yaml:/app/config.yaml
+      - ./.data:/app/.data
+      - ./.output/client1:/app/.output
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      - gateway
   query1_cleaner_0:
     build:
       context: .
@@ -126,6 +141,186 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+  query2_cleaner_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_cleaner
+    volumes:
+      - ./configs/query2/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_cleaner_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_cleaner_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_cleaner
+    volumes:
+      - ./configs/query2/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_cleaner_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_cleaner_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_cleaner
+    volumes:
+      - ./configs/query2/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_router_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_router_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_router
+    volumes:
+      - ./configs/query2/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_router_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_router_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_router
+    volumes:
+      - ./configs/query2/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_router_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_router_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_router
+    volumes:
+      - ./configs/query2/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query2_join
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query2_join
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query2_join
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
   query2_join_0:
     build:
       context: .
@@ -135,7 +330,9 @@ services:
       - ACCOUNTS_CONFIG_PATH=/app/config_2.yaml
       - CONFIG_PATH=/app/config.yaml
       - ID=0
-      - LOG_LEVEL=error
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query2_aggregator
       - WORKER_AMOUNT=1
       - WORKER_PREFIX=query2_join
     volumes:
