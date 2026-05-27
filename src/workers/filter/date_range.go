@@ -29,6 +29,7 @@ type DateRange struct {
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFkeys []broker.KeyType
+	usdTransactionsSent map[uuid.UUID]int
 
 	// Campos para filtro por rango de fechas
 	fromTime    time.Time
@@ -122,7 +123,14 @@ func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	eofMsg, err := inner.MarshalQuery1EOFPacket(clientID)
+	counts := map[broker.KeyType]int{
+		broker.KeyAllTransaction: finalSent,
+		broker.KeyDollarTransaction: f.usdTransactionsSent[clientID],
+	}
+	eofCounts := domain.EOFCounts{
+		Counts: counts,
+	}
+	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
@@ -131,7 +139,9 @@ func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
-	// limpieza adicional si es necesaria
+	
+	delete(f.usdTransactionsSent, clientID)
+
 	return nil
 }
 
@@ -178,6 +188,10 @@ func (f *DateRange) handleTransactionMessage(pkt inner.Packet) error {
 			return err
 		}
 		f.syncEOFController.MessageSent(pkt.ClientID)
+
+		if tx.IsUSDTransaction() {
+			f.usdTransactionsSent[pkt.ClientID]++
+		}
 	}
 	return nil
 }
