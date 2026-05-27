@@ -135,6 +135,8 @@ func (r *Router) extractFieldValue(tx domain.Transaction) string {
 		return tx.Origin.BankID
 	case "ID":
 		return tx.Origin.ID
+	case "Format":
+		return tx.Format
 	default:
 		return ""
 	}

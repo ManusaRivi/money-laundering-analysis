@@ -33,6 +33,11 @@ pipelines:
       amount: 1
     - name: date_filter
       amount: 1
+    #-----------------avg------------------- TODO: CONSIDERAR QUE ACA EL PREVIOUS ES EL FILTER q345, NO EL DATE_FILTER
+    - name: avg_cleaner
+      amount: 1
+    - name: router
+      amount: 1
   query4:
     - name: cleaner
       amount: 1
