@@ -8,7 +8,6 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
@@ -19,37 +18,24 @@ import (
 // log entry — they're counted as received but not as sent, which is what the
 // downstream EOF synchronisation expects.
 type Converter struct {
-	cfg    config.WorkerConfig
-	Broker broker.Broker
+	cfg                       config.WorkerConfig
+	Broker                    broker.Broker
+	txProcessedCountForClient map[uuid.UUID]int
 
-	syncEOFController *eof.SyncEOFController
-	rates             *rateClient
+	rates *rateClient
 }
 
 func NewConverter(cfg config.WorkerConfig, broker broker.Broker) *Converter {
 	return &Converter{
-		cfg:    cfg,
-		Broker: broker,
-		rates:  newRateClient(),
+		cfg:                       cfg,
+		Broker:                    broker,
+		txProcessedCountForClient: make(map[uuid.UUID]int),
+		rates:                     newRateClient(),
 	}
 }
 
 func (c *Converter) Run() error {
 	defer c.Broker.StopConsuming()
-
-	var err error
-	c.syncEOFController, err = eof.NewSyncEOFController(
-		c.cfg.SyncEOFConfig,
-		c.onflush,
-		c.onLeaderFlush,
-		c.onRetryExceeded,
-	)
-	if err != nil {
-		slog.Error("Error creating SyncEOFController", "error", err)
-		return err
-	}
-
-	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		if err := c.handleMessage(msg); err != nil {
@@ -70,7 +56,6 @@ func (c *Converter) handleTransactionMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling transaction data", "error", err)
 		return err
 	}
-	c.syncEOFController.MessageReceived(pkt.ClientID)
 
 	if tx.Paid == nil {
 		slog.Warn("Skipping transaction without Paid amount", "clientID", pkt.ClientID)
@@ -116,21 +101,25 @@ func (c *Converter) forward(clientID uuid.UUID, tx domain.Transaction) error {
 		slog.Error("Error sending converted transaction to broker", "error", err)
 		return err
 	}
-	c.syncEOFController.MessageSent(clientID)
+	c.txProcessedCountForClient[clientID]++
 	return nil
 }
 
 func (c *Converter) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, syncing with cluster...")
-	var eofCounts domain.EOFCounts
-	if err := pkt.UnmarshalData(&eofCounts); err != nil {
-		slog.Error("Error unmarshalling EOF counts", "error", err)
+	slog.Debug("Received EOF packet, forwarding...")
+
+	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
+		Counts: map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[pkt.ClientID]},
+	})
+	if err != nil {
+		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
-	// Upstream (format_filter) is a SyncFilter, which emits its outbound EOF
-	// total under KeyNil. See SyncFilter.onLeaderFlush.
-	total_transactions := eofCounts.Counts[broker.KeyNil]
-	c.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
+	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", pkt.ClientID, "msg_sent", c.txProcessedCountForClient[pkt.ClientID])
+	if err := c.Broker.Send(*eofMsg); err != nil {
+		slog.Error("Error sending EOF packet", "error", err)
+		return err
+	}
 	return nil
 }
 
@@ -149,32 +138,4 @@ func (c *Converter) handleMessage(msg broker.Message) error {
 	default:
 		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
 	}
-}
-
-func (c *Converter) onflush(clientID uuid.UUID) error {
-	// The converter forwards each transaction as it arrives, so there's no
-	// accumulated state to flush on the followers' callback.
-	return nil
-}
-
-func (c *Converter) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	counts := map[broker.KeyType]int{broker.KeyNil: finalSent}
-	eofMsg, err := inner.MarshalEOFPacket(clientID, domain.EOFCounts{Counts: counts})
-	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
-		return err
-	}
-	slog.Debug("Forwarding EOF to next worker...", "finalSent", finalSent)
-	if err := c.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending EOF packet to broker", "error", err)
-		return err
-	}
-	return nil
-}
-
-func (c *Converter) onRetryExceeded(clientID uuid.UUID) error {
-	// TODO: surface this via metrics; for now, log and let the controller
-	// handle further escalation.
-	slog.Warn("Converter exceeded EOF sync retries", "clientID", clientID)
-	return nil
 }
