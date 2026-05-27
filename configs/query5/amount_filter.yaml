@@ -20,7 +20,8 @@ worker:
     type: amount
     field: Amount
     operator: "<"
-    value_float: 1
+    value_float: 1.0
+    value_string: ""
   query: 5
   sync_eof:
     - retries_base_delay: 0.5

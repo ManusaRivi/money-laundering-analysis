@@ -1,13 +1,12 @@
-# e-e example (exchange -> exchange)
+# q-e example (queue -> exchange)
 
 broker:
-  type: e-q
+  type: q-e
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q345_cleaner
-  output: q_q5_format_filter
+  input: q_q5_router
+  output: e_q5_converter
   exchange_type: direct
-  input_keys:
-    - tx.*
+  # El routing key lo decide el worker (RoutingKey en el broker.Message)
   prefetch: 30
   durable: true
   auto_delete: false
@@ -16,18 +15,11 @@ broker:
   internal: false
 
 worker:
-  type: "Cleaner"
+  type: "Router"
   params:
     field:
-      - "origin"
-      - "dest"
-  query: 5
+      paid: "Currency"
   sync_eof:
     - retries_base_delay: 0.5
     - retries_step_delay: 0.5
     - max_retries: 5
-
-# Required envs if input is omitted
-# WORKER_PREFIX=agg
-# ID=0
-# NEXT_WORKER_PREFIX=join

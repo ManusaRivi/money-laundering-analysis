@@ -1,13 +1,11 @@
 # e-e example (exchange -> exchange)
 
 broker:
-  type: e-e
+  type: q-e
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q5_format_filter
+  input: q_q5_format_filter
   output: e_q5_converter
   exchange_type: direct
-  input_keys:
-    - tx.non-usd
   # El routing key de salida lo decide el worker (RoutingKey en el broker.Message)
   prefetch: 30
   durable: true
@@ -22,6 +20,7 @@ worker:
     type: format
     field: Format
     operator: "=="
+    value_float: 0.0
     value_string:
       - "Wire"
       - "ACH"

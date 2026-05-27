@@ -135,6 +135,11 @@ func (r *Router) extractFieldValue(tx domain.Transaction) string {
 		return tx.Origin.BankID
 	case "ID":
 		return tx.Origin.ID
+	case "Currency":
+		if tx.Paid == nil {
+			return ""
+		}
+		return tx.Paid.Currency
 	default:
 		return ""
 	}
