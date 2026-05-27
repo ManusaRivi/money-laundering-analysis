@@ -17,15 +17,14 @@ import (
 const timeTxFormat = "2006/01/02 15:04"
 
 type DateRange struct {
-	cfg	config.WorkerConfig
+	cfg   config.WorkerConfig
 	Broker broker.Broker
 	Type   string
-	fromTime    time.Time
-	toTime      time.Time
-	
+	fromTime time.Time
+	toTime   time.Time
+
 	syncEOFController *eof.SyncEOFController
-	syncEOFkeys []broker.KeyType
-	usdTransactionsSent map[uuid.UUID]int
+	syncEOFKey        broker.KeyType
 }
 
 func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) {
@@ -57,7 +56,7 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 		return nil, fmt.Errorf("invalid to date %q: %w", toDate, err)
 	}
 
-	syncEOFkeys := broker.StringsToKeyType(cfg.SyncEOFConfig.InputKeys)
+	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
 	return &DateRange{
 		cfg: 	   	cfg,
@@ -66,8 +65,7 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 		fromTime:    fromTime,
 		toTime:      toTime,
 		syncEOFController: nil,
-		syncEOFkeys: syncEOFkeys,
-		usdTransactionsSent: make(map[uuid.UUID]int),
+		syncEOFKey: syncEOFKey,
 	}, nil
 }
 
@@ -113,13 +111,9 @@ func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	counts := map[broker.KeyType]int{
-		broker.KeyAllTransaction: finalSent,
-		broker.KeyDollarTransaction: f.usdTransactionsSent[clientID],
-	}
+func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	eofCounts := domain.EOFCounts{
-		Counts: counts,
+		Counts: finalSent,
 	}
 	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	if err != nil {
@@ -131,8 +125,6 @@ func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
 		return err
 	}
 	
-	delete(f.usdTransactionsSent, clientID)
-
 	return nil
 }
 
@@ -180,11 +172,8 @@ func (f *DateRange) handleTransactionMessage(pkt inner.Packet) error {
 		if err := f.Broker.Send(*msdToSend); err != nil {
 			return err
 		}
-		f.syncEOFController.MessageSent(pkt.ClientID)
+		f.syncEOFController.MessageSentWithKey(pkt.ClientID, keyToUse)
 
-		if tx.IsUSDTransaction() {
-			f.usdTransactionsSent[pkt.ClientID]++
-		}
 	}
 	return nil
 }
@@ -199,11 +188,7 @@ func (f *DateRange) handleEOFMessage(pkt inner.Packet) error {
 		return err
 	}
 
-	total_transactions := 0
-	for _, key := range f.syncEOFkeys {
-		total_transactions += eofCounts.Counts[key]
-	}
-	f.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
+	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
 	return nil
 }
 
@@ -213,10 +198,6 @@ func (f *DateRange) handleMessage(msg broker.Message) error {
 	if err != nil {
 		slog.Error("Error unmarshalling packet", "error", err)
 		return err
-	}
-
-	if _, exists := f.usdTransactionsSent[pkt.ClientID]; !exists {
-		f.usdTransactionsSent[pkt.ClientID] = 0
 	}
 
 	switch pkt.Type {

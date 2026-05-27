@@ -21,6 +21,7 @@ type Router struct {
 	syncEOFController *eof.SyncEOFController
 	fieldToRouteBy    string
 	nextWorkerAmount  int
+	syncEOFKey        broker.KeyType
 }
 
 func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
@@ -47,12 +48,15 @@ func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
 		}
 	}
 	slog.Debug("Router created with fieldToRouteBy", "fieldToRouteBy", fieldToRouteBy)
+	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
+
 	return &Router{
 		cfg:               cfg,
 		Broker:            broker,
 		syncEOFController: nil,
 		fieldToRouteBy:    fieldToRouteBy,
 		nextWorkerAmount:  nextWorkerAmountInt,
+		syncEOFKey:        syncEOFKey,
 	}, nil
 }
 
@@ -88,10 +92,9 @@ func (r *Router) onflush(clientID uuid.UUID) error {
 	return nil
 }
 
-func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent int) error {
-	counts := map[broker.KeyType]int{broker.KeyNil: finalSent}
+func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	eofCounts := domain.EOFCounts{
-		Counts: counts,
+		Counts: finalSent,
 	}
 	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	if err != nil {
@@ -167,7 +170,7 @@ func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
 		return err
 	}
 	r.syncEOFController.MessageReceived(pkt.ClientID)
-	r.syncEOFController.MessageSent(pkt.ClientID)
+	r.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyType(routingKey))
 
 	return nil
 }
@@ -178,8 +181,7 @@ func (r *Router) handleEOFMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	total_transactions := eofCounts.Counts[broker.KeyNil]
-	r.syncEOFController.SyncEof(pkt.ClientID, total_transactions)
+	r.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, r.syncEOFKey)
 	return nil
 }
 
