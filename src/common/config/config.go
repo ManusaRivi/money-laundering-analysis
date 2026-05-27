@@ -21,6 +21,7 @@ type BrokerConfig struct {
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
+	OutputExchangeType string   `yaml:"output_exchange_type"`
 	Prefetch     int      `yaml:"prefetch"`
 	Durable      bool     `yaml:"durable"`
 	AutoDelete   bool     `yaml:"auto_delete"`
@@ -233,6 +234,10 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 			return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
 		}
 		cfg.Output = cfg.NextWorkerPrefix
+	}
+
+	if cfg.OutputExchangeType == "" {
+		cfg.OutputExchangeType = cfg.ExchangeType
 	}
 
 	return nil
