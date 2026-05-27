@@ -54,12 +54,13 @@ type SyncEOFControllerConfig struct {
 	RetryBaseDelay float64 `yaml:"retries_base_delay"`
 	RetryStepDelay float64 `yaml:"retries_step_delay"`
 	MaxRetries     int     `yaml:"max_retries"`
-
+	
 	RabbitURL         string `yaml:"-"`
 	WorkerID          int    `yaml:"-"`
 	EOFPrefix         string `yaml:"-"`
 	WorkerAmount      int    `yaml:"-"`
 	BroadcastExchange string `yaml:"-"`
+	InputKeys	[]string `yaml:"-"`
 }
 
 func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
@@ -245,6 +246,7 @@ func applyEOFDefaults(cfg *Config) {
 	eofConfig.EOFPrefix = fmt.Sprintf("%s_eof", brokerConfig.WorkerPrefix)
 	eofConfig.WorkerAmount = brokerConfig.WorkerAmount
 	eofConfig.BroadcastExchange = fmt.Sprintf("%s_eof_broadcast", brokerConfig.WorkerPrefix)
+	eofConfig.InputKeys = cfg.Broker.InputKeys
 }
 
 func isInputExchangeType(brokerType string) bool {
