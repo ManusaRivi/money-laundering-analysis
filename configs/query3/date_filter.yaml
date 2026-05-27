@@ -1,0 +1,25 @@
+broker:
+  type: q-q
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q3_date_filter
+  output: q_q3_amount_filter
+  exchange_type: direct
+  input_keys:
+    - tx.*
+  prefetch: 300 
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "DateRangeFilter"
+  params:
+    type: "date_between"
+    from: "2022/09/06 00:00"
+    to: "2022/09/15 23:59"
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5

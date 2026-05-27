@@ -28,6 +28,11 @@ pipelines:
   query345:
     - name: filter
       amount: 1
+  query3:
+    - name: cleaner
+      amount: 1
+    - name: date_filter
+      amount: 1
   query4:
     - name: cleaner
       amount: 1
