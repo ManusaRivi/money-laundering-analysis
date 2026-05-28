@@ -31,7 +31,7 @@ pipelines:
   query3A:
     - name: cleaner
       amount: 1
-    - name: date_filter
+    - name: filter
       amount: 1
   query3B:
     - name: cleaner
