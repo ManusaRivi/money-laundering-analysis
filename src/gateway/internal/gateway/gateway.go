@@ -166,12 +166,12 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 					return false
 				}
 				if gateway.accountsBroker == nil {
-					slog.Error("No accounts broker configured; cannot forward bank info")
-					return false
+					slog.Warn("No accounts broker configured; skipping bank info")
+					continue
 				}
 				if err := gateway.accountsBroker.Send(*msg); err != nil {
-					slog.Error("Error sending bank info to accounts broker", "error", err)
-					return false
+					slog.Warn("Error sending bank info to accounts broker, disabling", "error", err)
+					gateway.accountsBroker = nil
 				}
 			}
 		case external.MsgAccountsEOF:
@@ -180,12 +180,11 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 			if gateway.accountsBroker != nil {
 				eofMsg, err := inner.MarshalBankInfoEOFPacket(c.ClientId, "")
 				if err != nil {
-					slog.Error("Error marshalling accounts EOF packet", "error", err)
-					return false
-				}
-				if err := gateway.accountsBroker.Send(*eofMsg); err != nil {
-					slog.Error("Error sending accounts EOF to broker", "error", err)
-					return false
+					slog.Warn("Error marshalling accounts EOF packet", "error", err)
+					gateway.accountsBroker = nil
+				} else if err := gateway.accountsBroker.Send(*eofMsg); err != nil {
+					slog.Warn("Error sending accounts EOF to broker, disabling", "error", err)
+					gateway.accountsBroker = nil
 				}
 			}
 		case external.MsgTransactionsBatch:
