@@ -61,7 +61,7 @@ var fallbackUSDPerUnit = map[string]float64{
 // When this table has a (date, currency) entry, convertToUSD uses it
 // verbatim and bypasses Frankfurter — useful for reproducing the notebook's
 // row-by-row results exactly.
-var notebookForeignPerUSD = map[string]map[string]float64{
+/* var notebookForeignPerUSD = map[string]map[string]float64{
 	"2022-09-01": {
 		"Australian Dollar": 1.4644,
 		"Brazil Real":       5.1805,
@@ -147,7 +147,7 @@ var notebookForeignPerUSD = map[string]map[string]float64{
 		"US Dollar":         1.0,
 		"Bitcoin":           20126.1,
 	},
-}
+} */
 
 // bitcoinUSDPerUnit holds the per-day USD-per-1-BTC rate from the dataset
 // generator's reference table. Keyed by date in YYYY-MM-DD format (matching
@@ -199,11 +199,11 @@ func (rc *rateClient) convertToUSD(date string, currency string, amount float64)
 	// Notebook-parity path: if we have the exact notebook rate for this
 	// (date, currency) pair, use it verbatim with the notebook's `amount / rate`
 	// convention (rate stored as foreign-per-USD).
-	if dayRates, ok := notebookForeignPerUSD[date]; ok {
+	/* if dayRates, ok := notebookForeignPerUSD[date]; ok {
 		if rate, ok := dayRates[currency]; ok {
 			return amount / rate, nil
 		}
-	}
+	} */
 
 	iso, ok := currencyISO[currency]
 	if !ok {
@@ -212,13 +212,13 @@ func (rc *rateClient) convertToUSD(date string, currency string, amount float64)
 		if currency == "Bitcoin" {
 			if rate, ok := bitcoinUSDPerUnit[date]; ok {
 				slog.Debug("Bitcoin currency detected. USD conversion using date-specific fallback rate.", "date", date, "rate", rate, "end_amount", amount*rate)
-				return amount * rate, nil
+				return amount / rate, nil
 			}
 		}
-		/* if rate, ok := fallbackUSDPerUnit[currency]; ok {
+		if rate, ok := fallbackUSDPerUnit[currency]; ok {
 			slog.Debug("Falling back to static USD conversion rate", "currency", currency, "rate", rate)
 			return amount * rate, nil
-		} */
+		}
 		return 0, fmt.Errorf("%w: %q", ErrUnsupportedCurrency, currency)
 	}
 	if iso == "USD" {
