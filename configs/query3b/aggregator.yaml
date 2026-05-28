@@ -1,0 +1,25 @@
+broker:
+  type: e-e
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: e_q3_agg
+  output: e_q3_avg
+  exchange_type: direct
+  output_exchange_type: fanout
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "Aggregator"
+  params:
+    type: avg
+    field: Amount
+    group:
+      format: Format
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5

@@ -7,78 +7,119 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/aggregator"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/cleaner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/workers/converter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/filter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/join"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/router"
 )
 
+const (
+	WorkerTypeFilter          = "SyncFilter"
+	WorkerTypeQ5Filter        = "Q5Filter"
+	WorkerTypeCleaner         = "Cleaner"
+	WorkerTypeJoin            = "Join"
+	WorkerTypeRouter          = "Router"
+	WorkerTypeAggregator      = "Aggregator"
+	WorkerTypeConverter       = "Converter"
+	WorkerTypeDateRangeFilter = "DateRangeFilter"
+	WorkerTypeAvgFormatFilter = "AvgFormatFilter"
+	WorkerTypeSpliter         = "Spliter"
+	WorkerTypeScatterAndGather = "ScatterAndGather"
+	WorkerTypeScatterGather = "ScatterGather"
+	WorkerTypeScatterGatherFilter = "ScatterGatherFilter"
+	WorkerTypeJoinQuery4 = "JoinQuery4"
+)
+
 // TODO: Define worker types as constants
-func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (Worker, error) {
-	switch cfg.Type {
-	case "SyncFilter":
-		worker, err := filter.NewSyncFilter(cfg, communicationBroker)
+func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) (Worker, error) {
+	workerCfg := workercfg.Worker
+	switch workerCfg.Type {
+	case WorkerTypeFilter:
+		worker, err := filter.NewSyncFilter(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SyncFilter: %w", err)
 		}
 		return worker, nil
-	case "DateRangeFilter":
-		worker, err := filter.NewDateRange(cfg, communicationBroker)
+	case WorkerTypeQ5Filter:
+		worker, err := filter.NewQ5Filter(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Q5Filter: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeDateRangeFilter:
+		worker, err := filter.NewDateRange(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create DateRangeFilter: %w", err)
 		}
 		return worker, nil
-	case "ScatterGatherFilter":
-		worker, err := filter.NewScatterGather(cfg, communicationBroker)
+	case WorkerTypeScatterGatherFilter:
+		worker, err := filter.NewScatterGather(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ScatterGatherFilter: %w", err)
 		}
 		return worker, nil
-	case "Cleaner":
-		worker := cleaner.NewCleaner(cfg, communicationBroker)
+	case WorkerTypeCleaner:
+		worker := cleaner.NewCleaner(workerCfg, communicationBroker)
 		return worker, nil
-	case "Join":
-		worker, err := join.NewJoin(cfg, communicationBroker)
+	case WorkerTypeJoin:
+		worker, err := join.NewJoin(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Join: %w", err)
 		}
 		return worker, nil
-	case "JoinQuery4":
-		worker, err := join.NewQuery4(cfg, communicationBroker)
+	case WorkerTypeJoinQuery4:
+		worker, err := join.NewQuery4(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create JoinQuery4: %w", err)
 		}
 		return worker, nil
-	case "Router":
-		worker, err := router.NewRouter(cfg, communicationBroker)
+	case WorkerTypeAvgFormatFilter:
+		if workercfg.AvgBroker == nil {
+			return nil, fmt.Errorf("avg_broker config is required for AvgFormatFilter")
+		}
+		avgBroker, err := broker.NewBroker(*workercfg.AvgBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create avg broker: %w", err)
+		}
+		worker, err := filter.NewAvgFormatFilter(workerCfg, communicationBroker, avgBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AvgFormatFilter: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeRouter:
+		worker, err := router.NewRouter(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Router: %w", err)
 		}
 		return worker, nil
-	case "Spliter":
-		worker, err := router.NewSpliter(cfg, communicationBroker)
+	case WorkerTypeSpliter:
+		worker, err := router.NewSpliter(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Spliter: %w", err)
 		}
 		return worker, nil
-	case "Aggregator":
-		worker, err := aggregator.NewAggregator(cfg, communicationBroker)
+	case WorkerTypeAggregator:
+		worker, err := aggregator.NewAggregator(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Aggregator: %w", err)
 		}
 		return worker, nil
-	case "ScatterAndGather":
-		worker, err := aggregator.NewScatterAndGather(cfg, communicationBroker)
+	case WorkerTypeScatterAndGather:
+		worker, err := aggregator.NewScatterAndGather(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ScatterAndGather: %w", err)
 		}
 		return worker, nil
-	case "ScatterGather":
-		worker, err := aggregator.NewScatterGather(cfg, communicationBroker)
+	case WorkerTypeScatterGather:
+		worker, err := aggregator.NewScatterGather(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ScatterGather: %w", err)
 		}
 		return worker, nil
+	case WorkerTypeConverter:
+		worker := converter.NewConverter(workerCfg, communicationBroker)
+		return worker, nil
 	default:
-		return nil, fmt.Errorf("unknown worker type: %s", cfg.Type)
+		return nil, fmt.Errorf("unknown worker type: %s", workerCfg.Type)
 	}
 }

@@ -32,15 +32,17 @@ func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
 			}
 		}
 	}
-	
+
 	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
+	slog.Debug("Creating Cleaner worker with configuration", "fields_to_clean", fieldsToClean, "sync_eof_key", syncEOFKey)
+
 	return &Cleaner{
-		cfg: cfg,
-		Broker: b,
-		fieldsToClean: fieldsToClean,
+		cfg:               cfg,
+		Broker:            b,
+		fieldsToClean:     fieldsToClean,
 		syncEOFController: nil,
-		syncEOFKey: syncEOFKey,
+		syncEOFKey:        syncEOFKey,
 	}
 }
 
@@ -127,6 +129,10 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 		slog.Error("Error sending cleaned packet to broker", "error", err)
 		return err
 	}
+	slog.Debug("Cleaner sent transaction",
+		"client_id", pkt.ClientID,
+		"input_key", msg.RoutingKey,
+	)
 	c.syncEOFController.MessageReceived(pkt.ClientID)
 	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
 

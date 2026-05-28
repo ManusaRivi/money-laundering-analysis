@@ -1,0 +1,36 @@
+# e-e example (exchange -> exchange)
+
+broker:
+  type: q-q
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q5_format_filter
+  output: q_q5_router
+  exchange_type: direct
+  # El routing key de salida lo decide el worker (RoutingKey en el broker.Message)
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "SyncFilter"
+  params:
+    type: format
+    field: Format
+    operator: "=="
+    value_float: 0.0
+    value_string:
+      - "Wire"
+      - "ACH"
+  query: 5
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5
+
+# Required envs if input is omitted
+# WORKER_PREFIX=agg
+# ID=0
+# NEXT_WORKER_PREFIX=join

@@ -1,0 +1,35 @@
+# q-q example (queue -> queue)
+# Names can be provided here or derived from env.
+
+broker:
+  type: q-q
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q5_amount_filter
+  output: q_q5_count
+  exchange_type: direct
+  prefetch: 30
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "Q5Filter"
+  params:
+    type: amount
+    field: Amount
+    operator: "<"
+    value_float: 1.0
+    value_string: ""
+  query: 5
+  sync_eof:
+    - retries_base_delay: 0.5
+    - retries_step_delay: 0.5
+    - max_retries: 5
+
+# Optional envs used when input/output are omitted
+# WORKER_PREFIX=tx_1
+# NEXT_WORKER_PREFIX=tx_2
+# ID=0
+# NEXT_WORKER_AMOUNT=3

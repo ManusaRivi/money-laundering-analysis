@@ -33,7 +33,7 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 
-	worker, err := workerFactory(cfg.Worker, communicationBroker)
+	worker, err := workerFactory(cfg, communicationBroker)
 	if err != nil {
 		return nil, err
 	}

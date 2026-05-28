@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	Broker BrokerConfig `yaml:"broker"`
-	Worker WorkerConfig `yaml:"worker"`
+	Broker    BrokerConfig  `yaml:"broker"`
+	AvgBroker *BrokerConfig `yaml:"avg_broker"`
+	Worker    WorkerConfig  `yaml:"worker"`
 }
 
 type BrokerConfig struct {
@@ -21,6 +22,7 @@ type BrokerConfig struct {
 	Output       string   `yaml:"output"`
 	InputKeys    []string `yaml:"input_keys"`
 	ExchangeType string   `yaml:"exchange_type"`
+	OutputExchangeType string   `yaml:"output_exchange_type"`
 	Prefetch     int      `yaml:"prefetch"`
 	Durable      bool     `yaml:"durable"`
 	AutoDelete   bool     `yaml:"auto_delete"`
@@ -105,6 +107,11 @@ func Load(filepath string) (*Config, error) {
 	}
 	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
 		return nil, err
+	}
+	if cfg.AvgBroker != nil {
+		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
+			return nil, err
+		}
 	}
 	applyEOFDefaults(&cfg)
 
@@ -233,6 +240,10 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 			return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
 		}
 		cfg.Output = cfg.NextWorkerPrefix
+	}
+
+	if cfg.OutputExchangeType == "" {
+		cfg.OutputExchangeType = cfg.ExchangeType
 	}
 
 	return nil

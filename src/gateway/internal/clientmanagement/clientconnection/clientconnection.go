@@ -95,7 +95,22 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	case inner.TypeQuery2EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery2ResultEOF)
 	case inner.TypeQuery3Result:
-		// Handle query 3 result response
+		var result domain.Query3Result
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 3 result: %w", err)
+		}
+
+		externalResult := external.Query3Result{
+			FromBank:      result.FromBank,
+			FromAccount:   result.FromAccount,
+			PaymentFormat: result.PaymentFormat,
+			AmountPaid:    result.AmountPaid,
+		}
+		slog.Debug("Received Query Result", "amount_paid", externalResult.AmountPaid)
+
+		if err := c.sendQuery3Result(&externalResult); err != nil {
+			return fmt.Errorf("sending query 3 result: %w", err)
+		}
 	case inner.TypeQuery3EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery3ResultEOF)
 	case inner.TypeQuery4Result:
@@ -118,7 +133,17 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	case inner.TypeQuery4EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery4ResultEOF)
 	case inner.TypeQuery5Result:
-		// Handle query 5 result response
+		var result domain.Query5Result
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 5 result: %w", err)
+		}
+
+		externalResult := external.Query5Result{Count: int64(result.Count)}
+		slog.Debug("Received Query 5 Result", "count", externalResult.Count)
+
+		if err := c.sendQuery5Result(&externalResult); err != nil {
+			return fmt.Errorf("sending query 5 result: %w", err)
+		}
 	case inner.TypeQuery5EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery5ResultEOF)
 	default:
@@ -187,10 +212,26 @@ func (c *ClientConnection) sendQuery2Result(result *external.Query2Result) error
 	return c.sendEnvelope(external.MsgQuery2Result, payload)
 }
 
+func (c *ClientConnection) sendQuery3Result(result *external.Query3Result) error {
+	payload, err := c.codec.EncodeQuery3ResultBatch([]external.Query3Result{(*result)})
+	if err != nil {
+		return fmt.Errorf("encoding query 3 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery3Result, payload)
+}
+
 func (c *ClientConnection) sendQuery4Result(results *[]external.Query4Result) error {
 	payload, err := c.codec.EncodeQuery4ResultBatch(*results)
 	if err != nil {
 		return fmt.Errorf("encoding query 4 result: %w", err)
 	}
 	return c.sendEnvelope(external.MsgQuery4Result, payload)
+}
+
+func (c *ClientConnection) sendQuery5Result(result *external.Query5Result) error {
+	payload, err := c.codec.EncodeQuery5ResultBatch([]external.Query5Result{(*result)})
+	if err != nil {
+		return fmt.Errorf("encoding query 5 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery5Result, payload)
 }

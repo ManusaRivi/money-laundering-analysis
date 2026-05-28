@@ -30,6 +30,7 @@ func LoadConfig() (*GatewayConfig, error) {
 			Input:        v.GetString("input"),
 			Output:       v.GetString("output"),
 			ExchangeType: v.GetString("exchange_type"),
+			OutputExchangeType: v.GetString("output_exchange_type"),
 			Prefetch:     v.GetInt("prefetch"),
 			Durable:      v.GetBool("durable"),
 			AutoDelete:   v.GetBool("auto_delete"),
@@ -39,6 +40,10 @@ func LoadConfig() (*GatewayConfig, error) {
 		},
 		ServerHost: v.GetString("server_host"),
 		ServerPort: v.GetString("server_port"),
+	}
+
+	if config.BrokerConfig.OutputExchangeType == "" {
+		config.BrokerConfig.OutputExchangeType = config.BrokerConfig.ExchangeType
 	}
 
 	if accountsConfigPath := os.Getenv("ACCOUNTS_CONFIG_PATH"); accountsConfigPath != "" {

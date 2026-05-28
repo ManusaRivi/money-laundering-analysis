@@ -88,6 +88,20 @@ func (r *Receiver) Listen() {
 				w.Close()
 			}
 			pendingEOFs--
+		case external.MsgQuery3Result:
+			results, err := r.codec.DecodeQuery3ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery3Result)
+				slog.Warn("Failed to decode query 3 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery3Result, query3RowsToString(results))
+		case external.MsgQuery3ResultEOF:
+			slog.Info("Received Query 3 EOF")
+			if w, ok := r.writers[external.MsgQuery3Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
 		case external.MsgQuery4Result:
 			results, err := r.codec.DecodeQuery4ResultBatch(payload)
 			if err != nil {
@@ -99,6 +113,20 @@ func (r *Receiver) Listen() {
 		case external.MsgQuery4ResultEOF:
 			slog.Info("Received Query 4 EOF")
 			if w, ok := r.writers[external.MsgQuery4Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
+		case external.MsgQuery5Result:
+			results, err := r.codec.DecodeQuery5ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery5Result)
+				slog.Warn("Failed to decode query 5 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery5Result, query5RowsToString(results))
+		case external.MsgQuery5ResultEOF:
+			slog.Info("Received Query 5 EOF")
+			if w, ok := r.writers[external.MsgQuery5Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
@@ -167,6 +195,19 @@ func query2RowsToString(results []external.Query2Result) [][]string {
 	return rows
 }
 
+func query3RowsToString(results []external.Query3Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{
+			res.FromBank,
+			res.FromAccount,
+			res.PaymentFormat,
+			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
+		})
+	}
+	return rows
+}
+
 func query4RowsToString(results []external.Query4Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
@@ -174,6 +215,14 @@ func query4RowsToString(results []external.Query4Result) [][]string {
 			res.BankID,
 			res.ID,
 		})
+	}
+	return rows
+}
+
+func query5RowsToString(results []external.Query5Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{strconv.FormatInt(res.Count, 10)})
 	}
 	return rows
 }

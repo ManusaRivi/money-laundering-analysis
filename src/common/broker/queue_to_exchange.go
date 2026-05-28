@@ -92,7 +92,7 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 
 	if err := consumeChannel.ExchangeDeclare(
 		cfg.Output,
-		cfg.ExchangeType,
+		cfg.OutputExchangeType,
 		cfg.Durable,
 		cfg.AutoDelete,
 		cfg.Internal,
@@ -197,7 +197,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if msg.RoutingKey == KeyNil {
+	if msg.RoutingKey == KeyNil && qb.config.OutputExchangeType != "fanout" {
 		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
