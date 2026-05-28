@@ -102,7 +102,10 @@ func (c *Cleaner) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (c *Cleaner) Stop() {}
+func (c *Cleaner) Stop() {
+	c.Broker.StopConsuming()
+	c.Broker.Close()
+}
 
 func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 	var tx domain.Transaction

@@ -23,11 +23,16 @@ const (
 	WorkerTypeConverter       = "Converter"
 	WorkerTypeDateRangeFilter = "DateRangeFilter"
 	WorkerTypeAvgFormatFilter = "AvgFormatFilter"
+	WorkerTypeSpliter         = "Spliter"
+	WorkerTypeScatterAndGather = "ScatterAndGather"
+	WorkerTypeScatterGather = "ScatterGather"
+	WorkerTypeScatterGatherFilter = "ScatterGatherFilter"
+	WorkerTypeJoinQuery4 = "JoinQuery4"
 )
 
 // TODO: Define worker types as constants
-func workerFactory(cfg *config.Config, communicationBroker broker.Broker) (Worker, error) {
-	workerCfg := cfg.Worker
+func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) (Worker, error) {
+	workerCfg := workercfg.Worker
 	switch workerCfg.Type {
 	case WorkerTypeFilter:
 		worker, err := filter.NewSyncFilter(workerCfg, communicationBroker)
@@ -47,6 +52,12 @@ func workerFactory(cfg *config.Config, communicationBroker broker.Broker) (Worke
 			return nil, fmt.Errorf("failed to create DateRangeFilter: %w", err)
 		}
 		return worker, nil
+	case WorkerTypeScatterGatherFilter:
+		worker, err := filter.NewScatterGather(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ScatterGatherFilter: %w", err)
+		}
+		return worker, nil
 	case WorkerTypeCleaner:
 		worker := cleaner.NewCleaner(workerCfg, communicationBroker)
 		return worker, nil
@@ -56,11 +67,17 @@ func workerFactory(cfg *config.Config, communicationBroker broker.Broker) (Worke
 			return nil, fmt.Errorf("failed to create Join: %w", err)
 		}
 		return worker, nil
+	case WorkerTypeJoinQuery4:
+		worker, err := join.NewQuery4(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JoinQuery4: %w", err)
+		}
+		return worker, nil
 	case WorkerTypeAvgFormatFilter:
-		if cfg.AvgBroker == nil {
+		if workercfg.AvgBroker == nil {
 			return nil, fmt.Errorf("avg_broker config is required for AvgFormatFilter")
 		}
-		avgBroker, err := broker.NewBroker(*cfg.AvgBroker)
+		avgBroker, err := broker.NewBroker(*workercfg.AvgBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create avg broker: %w", err)
 		}
@@ -75,10 +92,28 @@ func workerFactory(cfg *config.Config, communicationBroker broker.Broker) (Worke
 			return nil, fmt.Errorf("failed to create Router: %w", err)
 		}
 		return worker, nil
+	case WorkerTypeSpliter:
+		worker, err := router.NewSpliter(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Spliter: %w", err)
+		}
+		return worker, nil
 	case WorkerTypeAggregator:
 		worker, err := aggregator.NewAggregator(workerCfg, communicationBroker)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Aggregator: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeScatterAndGather:
+		worker, err := aggregator.NewScatterAndGather(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ScatterAndGather: %w", err)
+		}
+		return worker, nil
+	case WorkerTypeScatterGather:
+		worker, err := aggregator.NewScatterGather(workerCfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ScatterGather: %w", err)
 		}
 		return worker, nil
 	case WorkerTypeConverter:

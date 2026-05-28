@@ -114,7 +114,22 @@ func (c *ClientConnection) HandleResponseMessage(pkt *inner.Packet) error {
 	case inner.TypeQuery3EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery3ResultEOF)
 	case inner.TypeQuery4Result:
-		// Handle query 4 result response
+		var result domain.Query4Result
+		if err := pkt.UnmarshalData(&result); err != nil {
+			return fmt.Errorf("unmarshalling query 4 result: %w", err)
+		}
+		slog.Debug("Received Query4 Result", "num_accounts", len(result.Accounts))
+
+		extResults := make([]external.Query4Result, 0, len(result.Accounts))
+		for _, acc := range result.Accounts {
+			extResults = append(extResults, external.Query4Result{
+				BankID: acc.BankID,
+				ID:     acc.ID,
+			})
+		}
+		if err := c.sendQuery4Result(&extResults); err != nil {
+			return fmt.Errorf("sending query 4 result: %w", err)
+		}
 	case inner.TypeQuery4EOF:
 		return c.flagAndSendQueryEOF(external.MsgQuery4ResultEOF)
 	case inner.TypeQuery5Result:
@@ -203,6 +218,14 @@ func (c *ClientConnection) sendQuery3Result(result *external.Query3Result) error
 		return fmt.Errorf("encoding query 3 result: %w", err)
 	}
 	return c.sendEnvelope(external.MsgQuery3Result, payload)
+}
+
+func (c *ClientConnection) sendQuery4Result(results *[]external.Query4Result) error {
+	payload, err := c.codec.EncodeQuery4ResultBatch(*results)
+	if err != nil {
+		return fmt.Errorf("encoding query 4 result: %w", err)
+	}
+	return c.sendEnvelope(external.MsgQuery4Result, payload)
 }
 
 func (c *ClientConnection) sendQuery5Result(result *external.Query5Result) error {

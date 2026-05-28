@@ -23,8 +23,9 @@ type Query3Result struct {
 }
 
 type Query4Result struct {
-	Bank    string `json:"bank"`
-	Account string `json:"account"`
+	// Bank    string `json:"bank"`
+	// Account string `json:"account"`
+	Accounts []Account `json:"accounts"`
 }
 
 type Query5Result struct {

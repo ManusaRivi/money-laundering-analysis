@@ -119,10 +119,10 @@ func (c *SyncEOFController) MessageReceived(clientID uuid.UUID) {
 	}
 
 	c.clients[clientID].msgRcvCount++
-	slog.Debug("[SyncEOFController] Message received",
-		"client_id", clientID,
-		"received_count", c.clients[clientID].msgRcvCount,
-	)
+	// slog.Debug("[SyncEOFController] Message received",
+	// 	"client_id", clientID,
+	// 	"received_count", c.clients[clientID].msgRcvCount,
+	// )
 }
 
 func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
@@ -145,11 +145,11 @@ func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broke
 		client.msgSentCountByKey[keyType]++
 		client.msgSentCountByKey[broker.KeyNil]++
 	}
-	slog.Debug("[SyncEOFController] Message sent",
-		"client_id", clientID,
-		"sent_count", client.msgSentCountByKey[keyType],
-		"key_type", keyType,
-	)
+	// slog.Debug("[SyncEOFController] Message sent",
+	// 	"client_id", clientID,
+	// 	"sent_count", client.msgSentCountByKey[keyType],
+	// 	"key_type", keyType,
+	// )
 }
 
 // SyncEof inicia el proceso de sincronizacion con key Nil. Se llama cuando un nodo asume el rol de lider.

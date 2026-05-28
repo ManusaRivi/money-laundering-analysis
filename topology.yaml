@@ -1,5 +1,5 @@
 clients:
-  count: 2
+  count: 1
   # env:
   #   TRANSACTIONS_DATASET_PATH: /app/.data/otro_dataset.csv
   #   ACCOUNTS_DATASET_PATH: /app/.data/otras_cuentas.csv
@@ -7,36 +7,27 @@ clients:
   #   LOG_LEVEL: debug
 
 pipelines:
-  # query1:
-  #  - name: cleaner
-  #    amount: 2
-  #  - name: filter
-  #    amount: 2
-  # query2:
-  #   - name: cleaner
-  #     amount: 3
-  #   - name: router
-  #     amount: 3
-  #   - name: aggregator
-  #     amount: 3
-  #   - name: join
-  #     amount: 1
-  #     volumes:
-  #       - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
-  #     env:
-  #       ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
-  #       PREV_WORKER_PREFIX: query2_aggregator
-  #       PREV_WORKER_AMOUNT: 2
-  query5:
+  query1:
     - name: cleaner
-      amount: 2
-    - name: format_filter
-      amount: 2
-    - name: router
-      amount: 2
-    - name: converter
-      amount: 3
-    - name: amount_filter
       amount: 1
+    - name: filter
+      amount: 1
+  query2:
+    - name: cleaner
+      amount: 3
+    - name: router
+      amount: 3
     - name: aggregator
+      amount: 3
+    - name: join
+      amount: 1
+      volumes:
+        - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
+      env:
+        ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
+  query345:
+    - name: filter
+      amount: 1
+  query4:
+    - name: cleaner
       amount: 1
