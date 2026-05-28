@@ -446,6 +446,76 @@ func (BinaryCodec) DecodeQuery2ResultBatch(payload []byte) ([]external.Query2Res
 // ===== Query  4 =====
 // ====================
 
+func encodeQuery4Result(buf *bytes.Buffer, r external.Query4Result) error {
+	if err := writeString(buf, r.BankID); err != nil {
+		return err
+	}
+	return writeString(buf, r.ID)
+}
+
+func decodeQuery4Result(r *bytes.Reader) (external.Query4Result, error) {
+	var res external.Query4Result
+	var err error
+	if res.BankID, err = readString(r); err != nil {
+		return res, fmt.Errorf("bank id: %w", err)
+	}
+	if res.ID, err = readString(r); err != nil {
+		return res, fmt.Errorf("id: %w", err)
+	}
+	return res, nil
+}
+
+func (BinaryCodec) EncodeQuery4ResultBatch(results []external.Query4Result) ([]byte, error) {
+	var batch bytes.Buffer
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
+	batch.Write(count[:])
+
+	for i, r := range results {
+		var resBuf bytes.Buffer
+		if err := encodeQuery4Result(&resBuf, r); err != nil {
+			return nil, fmt.Errorf("encoding result %d: %w", i, err)
+		}
+		if resBuf.Len() > math.MaxUint16 {
+			return nil, fmt.Errorf("result %d too large: %d bytes (max %d)", i, resBuf.Len(), math.MaxUint16)
+		}
+		var length [2]byte
+		binary.BigEndian.PutUint16(length[:], uint16(resBuf.Len()))
+		batch.Write(length[:])
+		batch.Write(resBuf.Bytes())
+	}
+	return batch.Bytes(), nil
+}
+
+func (BinaryCodec) DecodeQuery4ResultBatch(payload []byte) ([]external.Query4Result, error) {
+	r := bytes.NewReader(payload)
+	var countBytes [4]byte
+	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
+		return nil, fmt.Errorf("reading batch count: %w", err)
+	}
+	count := binary.BigEndian.Uint32(countBytes[:])
+
+	results := make([]external.Query4Result, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var lengthBytes [2]byte
+		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
+			return nil, fmt.Errorf("reading length of result %d: %w", i, err)
+		}
+		length := binary.BigEndian.Uint16(lengthBytes[:])
+
+		resBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, resBytes); err != nil {
+			return nil, fmt.Errorf("reading result %d body: %w", i, err)
+		}
+		result, err := decodeQuery4Result(bytes.NewReader(resBytes))
+		if err != nil {
+			return nil, fmt.Errorf("decoding result %d: %w", i, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
 // ====================
 // ===== Query  5 =====
 // ====================

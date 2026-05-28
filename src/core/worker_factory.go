@@ -42,6 +42,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 			return nil, fmt.Errorf("failed to create Join: %w", err)
 		}
 		return worker, nil
+	case "JoinQuery4":
+		worker, err := join.NewQuery4(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JoinQuery4: %w", err)
+		}
+		return worker, nil
 	case "Router":
 		worker, err := router.NewRouter(cfg, communicationBroker)
 		if err != nil {

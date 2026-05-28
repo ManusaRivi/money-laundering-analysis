@@ -118,24 +118,47 @@ func (a *ScatterGather) handleEOFMessage(pkt inner.Packet) error {
 	}
 
 	scatterGather := a.getClient(pkt.ClientID).accumulator
+	msgSent := 0
 	if len(scatterGather) > 0 {
-		txQ4PhaseThree := domain.MakePhaseThree(scatterGather)
 		slog.Debug("Sending Scatter-Gather to phase three", "clientID", pkt.ClientID, "scatter_gather_count", len(scatterGather))
 
-		msg, err := inner.MarshalTxQ4PhaseThreePacket(pkt.ClientID, broker.KeyNil, txQ4PhaseThree)
-		if err != nil {
-			slog.Error("Error marshalling Scatter-Gather to phase three", "error", err)
-			return err
+		const batchSize = 1000
+		batch := make(map[string]*domain.TxQ4PairEntry, batchSize)
+		for pk, entry := range scatterGather {
+			batch[pk.Key()] = entry
+			if len(batch) >= batchSize {
+				txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
+				msg, err := inner.MarshalTxQ4PhaseThreePacket(pkt.ClientID, broker.KeyNil, txQ4PhaseThree)
+				if err != nil {
+					slog.Error("Error marshalling Scatter-Gather batch", "error", err)
+					return err
+				}
+				if err := a.broker.Send(*msg); err != nil {
+					slog.Error("Error sending Scatter-Gather batch", "error", err)
+					return err
+				}
+				msgSent++
+				batch = make(map[string]*domain.TxQ4PairEntry, batchSize)
+			}
 		}
-		if err := a.broker.Send(*msg); err != nil {
-			slog.Error("Error sending Scatter-Gather to phase three", "error", err)
-			return err
+		if len(batch) > 0 {
+			txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
+			msg, err := inner.MarshalTxQ4PhaseThreePacket(pkt.ClientID, broker.KeyNil, txQ4PhaseThree)
+			if err != nil {
+				slog.Error("Error marshalling Scatter-Gather final batch", "error", err)
+				return err
+			}
+			if err := a.broker.Send(*msg); err != nil {
+				slog.Error("Error sending Scatter-Gather final batch", "error", err)
+				return err
+			}
+			msgSent++
 		}
 	}
 
-	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", pkt.ClientID)
+	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", pkt.ClientID, "msg_sent", msgSent)
 	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
-		Counts: map[broker.KeyType]int{broker.KeyNil: 1},
+		Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
 	})
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)

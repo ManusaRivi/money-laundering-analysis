@@ -174,6 +174,20 @@ func MarshalQuery4ResultPacket(clientID uuid.UUID, routingKey broker.KeyType, re
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
+func MarshalQuery4EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery4EOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: serializedMsg}, nil
+}
+
 func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (*broker.Message, error) {
 	data, err := json.Marshal(result)
 	if err != nil {

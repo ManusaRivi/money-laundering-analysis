@@ -63,3 +63,8 @@ type Query2Result struct {
 	BankName    string
 	AmountPaid  float64
 }
+
+type Query4Result struct {
+	BankID string
+	ID     string
+}

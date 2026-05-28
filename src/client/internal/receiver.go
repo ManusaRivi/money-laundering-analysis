@@ -88,6 +88,20 @@ func (r *Receiver) Listen() {
 				w.Close()
 			}
 			pendingEOFs--
+		case external.MsgQuery4Result:
+			results, err := r.codec.DecodeQuery4ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery4Result)
+				slog.Warn("Failed to decode query 4 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery4Result, query4RowsToString(results))
+		case external.MsgQuery4ResultEOF:
+			slog.Info("Received Query 4 EOF")
+			if w, ok := r.writers[external.MsgQuery4Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
 		default:
 			slog.Warn("Unknown message type received", "msgType", msgType)
 		}
@@ -148,6 +162,17 @@ func query2RowsToString(results []external.Query2Result) [][]string {
 			res.FromAccount,
 			res.BankName,
 			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
+		})
+	}
+	return rows
+}
+
+func query4RowsToString(results []external.Query4Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{
+			res.BankID,
+			res.ID,
 		})
 	}
 	return rows

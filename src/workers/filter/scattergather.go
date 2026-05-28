@@ -118,11 +118,10 @@ func (f *ScatterGatherThreshold) handleMessage(msg broker.Message) error {
 
 	switch pkt.Type {
 	case inner.TypeTxQ4:
-		f.handleTxQ4Message(*pkt)
+		return f.handleTxQ4Message(*pkt)
 	case inner.TypeEOF:
-		f.handleEOFMessage(*pkt)
+		return f.handleEOFMessage(*pkt)
 	default:
 		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
 	}
-	return nil
 }
