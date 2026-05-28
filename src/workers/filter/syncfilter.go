@@ -13,7 +13,7 @@ import (
 )
 
 type SyncFilter struct {
-	cfg	config.WorkerConfig
+	cfg    config.WorkerConfig
 	Broker broker.Broker
 	Type   string `json:"type"`  // Tipo de filtro: "amount", "date_range", etc.
 	Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
@@ -63,7 +63,7 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 		ValueFloat:        valueFloat,
 		ValueStrings:      valueStrings,
 		syncEOFController: nil,
-		syncEOFKey: syncEOFKey,
+		syncEOFKey:        syncEOFKey,
 	}, nil
 }
 
@@ -113,7 +113,7 @@ func (f *SyncFilter) Run() error {
 	}
 
 	go f.syncEOFController.Start()
-		
+
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
 		err := f.handleMessage(msg)
 		if err != nil {
@@ -136,7 +136,7 @@ func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	eofMsg, err := inner.MarshalQuery1EOFPacket(clientID)
+	eofMsg, err := f.resolveEOFMessage(clientID, finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
@@ -153,6 +153,32 @@ func (f *SyncFilter) Stop() {}
 
 // Private methods
 
+func (f *SyncFilter) resolveMessage(tx domain.Transaction, clientID uuid.UUID) (*broker.Message, error) {
+	if f.cfg.Query == 1 {
+		queryResult := domain.Query1Result{
+			FromBank:    tx.Origin.BankID,
+			FromAccount: tx.Origin.ID,
+			ToBank:      tx.Dest.BankID,
+			ToAccount:   tx.Dest.ID,
+			AmountPaid:  tx.Paid.Amount,
+		}
+		return inner.MarshalQuery1ResultPacket(clientID, queryResult)
+	} else {
+		return inner.MarshalTransactionPacket(clientID, broker.KeyNil, tx)
+	}
+}
+
+func (f *SyncFilter) resolveEOFMessage(clientID uuid.UUID, finalSent map[broker.KeyType]int) (*broker.Message, error) {
+	if f.cfg.Query == 1 {
+		return inner.MarshalQuery1EOFPacket(clientID)
+	} else {
+		eofCounts := domain.EOFCounts{
+			Counts: finalSent,
+		}
+		return inner.MarshalEOFPacket(clientID, eofCounts)
+	}
+}
+
 func (f *SyncFilter) handleTransactionMessage(pkt inner.Packet) error {
 	var data domain.Transaction
 	if err := pkt.UnmarshalData(&data); err != nil {
@@ -160,18 +186,11 @@ func (f *SyncFilter) handleTransactionMessage(pkt inner.Packet) error {
 	}
 	f.syncEOFController.MessageReceived(pkt.ClientID)
 	if filterTransaction(data, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
-		queryResult := domain.Query1Result{
-			FromBank:    data.Origin.BankID,
-			FromAccount: data.Origin.ID,
-			ToBank:      data.Dest.BankID,
-			ToAccount:   data.Dest.ID,
-			AmountPaid:  data.Paid.Amount,
-		}
-		responseMsg, err := inner.MarshalQuery1ResultPacket(pkt.ClientID, queryResult)
+		msg, err := f.resolveMessage(data, pkt.ClientID)
 		if err != nil {
 			return err
 		}
-		if err := f.Broker.Send(*responseMsg); err != nil {
+		if err := f.Broker.Send(*msg); err != nil {
 			return err
 		}
 		f.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
