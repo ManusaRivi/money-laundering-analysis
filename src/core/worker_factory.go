@@ -26,7 +26,7 @@ const (
 )
 
 // TODO: Define worker types as constants
-func workerFactory(cfg config.Config, communicationBroker broker.Broker) (Worker, error) {
+func workerFactory(cfg *config.Config, communicationBroker broker.Broker) (Worker, error) {
 	workerCfg := cfg.Worker
 	switch workerCfg.Type {
 	case WorkerTypeFilter:
