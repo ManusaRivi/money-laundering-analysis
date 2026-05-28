@@ -1,10 +1,5 @@
 accounts_dataset_path: "../.data/LI-Small_accounts.csv"
-<<<<<<< HEAD
-transactions_dataset_path: "../.data/medium.csv"
-# transactions_dataset_path: "../.data/LI-Small_Trans.csv"
-=======
 transactions_dataset_path: "../.data/LI-Small_Trans.csv"
->>>>>>> main
 output_path: "../.output"
 transaction_batch_size: 100
 account_batch_size: 100

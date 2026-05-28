@@ -65,21 +65,629 @@ services:
       - money-laundering-analysis-net
     depends_on:
       - gateway
-  q345_date_filter:
+  query1_cleaner_0:
     build:
       context: .
       dockerfile: src/cmd/node/Dockerfile
-    container_name: q345_date_filter
+    container_name: query1_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=2
+      - NEXT_WORKER_PREFIX=query1_filter
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query1_cleaner
+    volumes:
+      - ./configs/query1/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query1_cleaner_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query1_cleaner_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=2
+      - NEXT_WORKER_PREFIX=query1_filter
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query1_cleaner
+    volumes:
+      - ./configs/query1/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query1_filter_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query1_filter_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query1_cleaner
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query1_filter
+    volumes:
+      - ./configs/query1/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query1_filter_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query1_filter_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query1_cleaner
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query1_filter
+    volumes:
+      - ./configs/query1/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_cleaner_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=2
+      - NEXT_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query2_cleaner
+    volumes:
+      - ./configs/query2/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_cleaner_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_cleaner_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=2
+      - NEXT_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query2_cleaner
+    volumes:
+      - ./configs/query2/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_router_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_router_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_aggregator
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query2_cleaner
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query2_router
+    volumes:
+      - ./configs/query2/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_router_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_router_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query2_aggregator
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query2_cleaner
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query2_router
+    volumes:
+      - ./configs/query2/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_0
     environment:
       - CONFIG_PATH=/app/config.yaml
       - ID=0
       - LOG_LEVEL=debug
       - NEXT_WORKER_AMOUNT=1
-      - NEXT_WORKER_PREFIX=q345_cleaner
+      - NEXT_WORKER_PREFIX=query2_join
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query2_join
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_aggregator_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_aggregator_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query2_join
+      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_PREFIX=query2_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query2_aggregator
+    volumes:
+      - ./configs/query2/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query2_join_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query2_join_0
+    environment:
+      - ACCOUNTS_CONFIG_PATH=/app/config_2.yaml
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query2_aggregator
       - WORKER_AMOUNT=1
-      - WORKER_PREFIX=q345_date_filter
+      - WORKER_PREFIX=query2_join
+    volumes:
+      - ./configs/query2/join.yaml:/app/config.yaml
+      - ./configs/query2/join_account_queue.yaml:/app/config_2.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query345_filter_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query345_filter_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query345_filter
     volumes:
       - ./configs/query345/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query345_filter_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query345_filter_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - WORKER_AMOUNT=2
+      - WORKER_PREFIX=query345_filter
+    volumes:
+      - ./configs/query345/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3a_cleaner_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3a_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query3a_filter
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3a_cleaner
+    volumes:
+      - ./configs/query3a/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3a_filter_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3a_filter_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query3a_cleaner
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3a_filter
+    volumes:
+      - ./configs/query3a/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3b_cleaner_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3b_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query3b_router
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3b_cleaner
+    volumes:
+      - ./configs/query3b/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3b_router_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3b_router_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query3b_aggregator
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query3b_cleaner
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3b_router
+    volumes:
+      - ./configs/query3b/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3b_aggregator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3b_aggregator_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query3b_filter
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query3b_router
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3b_aggregator
+    volumes:
+      - ./configs/query3b/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query3b_filter_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query3b_filter_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query3b_aggregator
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query3b_filter
+    volumes:
+      - ./configs/query3b/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_cleaner_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_cleaner_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query4_router
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query4_cleaner
+    volumes:
+      - ./configs/query4/cleaner.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_router_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_router_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query4_aggregator
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query4_cleaner
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query4_router
+    volumes:
+      - ./configs/query4/router.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_aggregator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_aggregator_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query4_accumulator
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query4_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_aggregator
+    volumes:
+      - ./configs/query4/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_aggregator_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_aggregator_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query4_accumulator
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query4_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_aggregator
+    volumes:
+      - ./configs/query4/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_aggregator_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_aggregator_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=3
+      - NEXT_WORKER_PREFIX=query4_accumulator
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query4_router
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_aggregator
+    volumes:
+      - ./configs/query4/aggregator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_accumulator_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_accumulator_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query4_filter
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query4_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_accumulator
+    volumes:
+      - ./configs/query4/accumulator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_accumulator_1:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_accumulator_1
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=1
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query4_filter
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query4_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_accumulator
+    volumes:
+      - ./configs/query4/accumulator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_accumulator_2:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_accumulator_2
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=2
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query4_filter
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query4_aggregator
+      - WORKER_AMOUNT=3
+      - WORKER_PREFIX=query4_accumulator
+    volumes:
+      - ./configs/query4/accumulator.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_filter_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_filter_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - NEXT_WORKER_AMOUNT=1
+      - NEXT_WORKER_PREFIX=query4_join
+      - PREV_WORKER_AMOUNT=3
+      - PREV_WORKER_PREFIX=query4_accumulator
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query4_filter
+    volumes:
+      - ./configs/query4/filter.yaml:/app/config.yaml
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  query4_join_0:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: query4_join_0
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - ID=0
+      - LOG_LEVEL=debug
+      - PREV_WORKER_AMOUNT=1
+      - PREV_WORKER_PREFIX=query4_filter
+      - WORKER_AMOUNT=1
+      - WORKER_PREFIX=query4_join
+    volumes:
+      - ./configs/query4/join.yaml:/app/config.yaml
     networks:
       - money-laundering-analysis-net
     depends_on:
@@ -94,29 +702,9 @@ services:
       - CONFIG_PATH=/app/config.yaml
       - ID=0
       - LOG_LEVEL=debug
-      - NEXT_WORKER_AMOUNT=2
+      - NEXT_WORKER_AMOUNT=1
       - NEXT_WORKER_PREFIX=query5_format_filter
-      - WORKER_AMOUNT=2
-      - WORKER_PREFIX=query5_cleaner
-    volumes:
-      - ./configs/query5/cleaner.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  query5_cleaner_1:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query5_cleaner_1
-    environment:
-      - CONFIG_PATH=/app/config.yaml
-      - ID=1
-      - LOG_LEVEL=debug
-      - NEXT_WORKER_AMOUNT=2
-      - NEXT_WORKER_PREFIX=query5_format_filter
-      - WORKER_AMOUNT=2
+      - WORKER_AMOUNT=1
       - WORKER_PREFIX=query5_cleaner
     volumes:
       - ./configs/query5/cleaner.yaml:/app/config.yaml
@@ -136,31 +724,9 @@ services:
       - LOG_LEVEL=debug
       - NEXT_WORKER_AMOUNT=2
       - NEXT_WORKER_PREFIX=query5_router
-      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_AMOUNT=1
       - PREV_WORKER_PREFIX=query5_cleaner
-      - WORKER_AMOUNT=2
-      - WORKER_PREFIX=query5_format_filter
-    volumes:
-      - ./configs/query5/format_filter.yaml:/app/config.yaml
-    networks:
-      - money-laundering-analysis-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  query5_format_filter_1:
-    build:
-      context: .
-      dockerfile: src/cmd/node/Dockerfile
-    container_name: query5_format_filter_1
-    environment:
-      - CONFIG_PATH=/app/config.yaml
-      - ID=1
-      - LOG_LEVEL=debug
-      - NEXT_WORKER_AMOUNT=2
-      - NEXT_WORKER_PREFIX=query5_router
-      - PREV_WORKER_AMOUNT=2
-      - PREV_WORKER_PREFIX=query5_cleaner
-      - WORKER_AMOUNT=2
+      - WORKER_AMOUNT=1
       - WORKER_PREFIX=query5_format_filter
     volumes:
       - ./configs/query5/format_filter.yaml:/app/config.yaml
@@ -180,7 +746,7 @@ services:
       - LOG_LEVEL=debug
       - NEXT_WORKER_AMOUNT=3
       - NEXT_WORKER_PREFIX=query5_converter
-      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_AMOUNT=1
       - PREV_WORKER_PREFIX=query5_format_filter
       - WORKER_AMOUNT=2
       - WORKER_PREFIX=query5_router
@@ -202,7 +768,7 @@ services:
       - LOG_LEVEL=debug
       - NEXT_WORKER_AMOUNT=3
       - NEXT_WORKER_PREFIX=query5_converter
-      - PREV_WORKER_AMOUNT=2
+      - PREV_WORKER_AMOUNT=1
       - PREV_WORKER_PREFIX=query5_format_filter
       - WORKER_AMOUNT=2
       - WORKER_PREFIX=query5_router
