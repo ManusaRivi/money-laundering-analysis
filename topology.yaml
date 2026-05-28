@@ -1,5 +1,5 @@
 clients:
-  count: 1
+  count: 2
   # env:
   #   TRANSACTIONS_DATASET_PATH: /app/.data/otro_dataset.csv
   #   ACCOUNTS_DATASET_PATH: /app/.data/otras_cuentas.csv
@@ -29,11 +29,11 @@ pipelines:
   #       PREV_WORKER_AMOUNT: 2
   query5:
     - name: cleaner
-      amount: 1
+      amount: 2
     - name: format_filter
-      amount: 1
+      amount: 2
     - name: router
-      amount: 1
+      amount: 2
     - name: converter
       amount: 3
     - name: amount_filter
