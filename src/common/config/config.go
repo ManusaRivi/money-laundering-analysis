@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	Broker BrokerConfig `yaml:"broker"`
-	Worker WorkerConfig `yaml:"worker"`
+	Broker    BrokerConfig  `yaml:"broker"`
+	AvgBroker *BrokerConfig `yaml:"avg_broker"`
+	Worker    WorkerConfig  `yaml:"worker"`
 }
 
 type BrokerConfig struct {
@@ -106,6 +107,11 @@ func Load(filepath string) (*Config, error) {
 	}
 	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
 		return nil, err
+	}
+	if cfg.AvgBroker != nil {
+		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
+			return nil, err
+		}
 	}
 	applyEOFDefaults(&cfg)
 
