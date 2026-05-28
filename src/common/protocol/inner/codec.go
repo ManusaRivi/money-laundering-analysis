@@ -138,6 +138,42 @@ func MarshalTxQ4PhaseThreePacket(clientID uuid.UUID, routingKey broker.KeyType, 
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
+func MarshalAccountsPacket(clientID uuid.UUID, routingKey broker.KeyType, accounts []domain.Account) (*broker.Message, error) {
+	data, err := json.Marshal(accounts)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeAccounts,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
+func MarshalQuery4ResultPacket(clientID uuid.UUID, routingKey broker.KeyType, result domain.Query4Result) (*broker.Message, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery4Result,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
 func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (*broker.Message, error) {
 	data, err := json.Marshal(result)
 	if err != nil {

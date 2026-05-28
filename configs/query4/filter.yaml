@@ -1,0 +1,17 @@
+
+broker:
+  type: q-q
+  url: amqp://guest:guest@rabbitmq:5672/
+  input: q_q4_filter
+  output: q_q4_join
+  prefetch: 100 
+  durable: true
+  auto_delete: false
+  exclusive: false
+  no_wait: false
+  internal: false
+
+worker:
+  type: "ScatterGatherFilter"
+  params:
+    amount: 2

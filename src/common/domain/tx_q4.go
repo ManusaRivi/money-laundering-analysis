@@ -35,7 +35,19 @@ type TxQ4PhaseTwo struct {
 }
 
 type TxQ4PhaseThree struct {
-	ScatterGather map[TxQ4PairKey]*TxQ4PairEntry
+	ScatterGather map[string]*TxQ4PairEntry `json:"scatter_gather"`
+}
+
+func (k TxQ4PairKey) Key() string {
+	return k.Src + "::" + k.Dst
+}
+
+func MakePhaseThree(gather map[TxQ4PairKey]*TxQ4PairEntry) TxQ4PhaseThree {
+	out := make(map[string]*TxQ4PairEntry, len(gather))
+	for k, v := range gather {
+		out[k.Key()] = v
+	}
+	return TxQ4PhaseThree{ScatterGather: out}
 }
 
 

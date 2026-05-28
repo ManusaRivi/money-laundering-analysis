@@ -16,6 +16,7 @@ const (
 	TypeAccountsEOF
 
 	TypeTxQ4
+	TypeAccounts
 
 	TypeQuery1Result
 	TypeQuery1EOF

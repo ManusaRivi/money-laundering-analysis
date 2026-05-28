@@ -27,6 +27,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 			return nil, fmt.Errorf("failed to create DateRangeFilter: %w", err)
 		}
 		return worker, nil
+	case "ScatterGatherFilter":
+		worker, err := filter.NewScatterGather(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ScatterGatherFilter: %w", err)
+		}
+		return worker, nil
 	case "Cleaner":
 		worker := cleaner.NewCleaner(cfg, communicationBroker)
 		return worker, nil
