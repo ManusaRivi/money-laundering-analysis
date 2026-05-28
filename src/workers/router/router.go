@@ -19,6 +19,7 @@ type Router struct {
 	cfg               config.WorkerConfig
 	Broker            broker.Broker
 	syncEOFController *eof.SyncEOFController
+	sectionToRouteBy  string
 	fieldToRouteBy    string
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
@@ -36,28 +37,39 @@ func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
 		return nil, fmt.Errorf("Invalid NEXT_WORKER_AMOUNT environment variable: %w", err)
 	}
 
-	params := cfg.Params
-	fieldToRouteBy := ""
-	if field, ok := params["field"]; ok {
-		if fieldMap, ok := field.(map[string]any); ok {
-			if originField, ok := fieldMap["origin"]; ok {
-				if str, ok := originField.(string); ok {
-					fieldToRouteBy = str
-				}
-			}
-		}
-	}
-	slog.Debug("Router created with fieldToRouteBy", "fieldToRouteBy", fieldToRouteBy)
+	section, field := parseRouteField(cfg.Params)
+	slog.Debug("Router created", "section", section, "field", field)
 	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
 	return &Router{
 		cfg:               cfg,
 		Broker:            broker,
 		syncEOFController: nil,
-		fieldToRouteBy:    fieldToRouteBy,
+		sectionToRouteBy:  section,
+		fieldToRouteBy:    field,
 		nextWorkerAmount:  nextWorkerAmountInt,
 		syncEOFKey:        syncEOFKey,
 	}, nil
+}
+
+// parseRouteField reads params["field"] expecting `{ <section>: <field> }`
+// (e.g. { origin: "BankID" } or { paid: "Currency" }) and returns the
+// section and field name.
+func parseRouteField(params map[string]any) (string, string) {
+	field, ok := params["field"]
+	if !ok {
+		return "", ""
+	}
+	fieldMap, ok := field.(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	for section, v := range fieldMap {
+		if str, ok := v.(string); ok {
+			return section, str
+		}
+	}
+	return "", ""
 }
 
 func (r *Router) Run() error {
@@ -130,25 +142,47 @@ func (r *Router) shardByField(tx domain.Transaction) string {
 }
 
 func (r *Router) extractFieldValue(tx domain.Transaction) string {
-	if tx.Origin == nil {
-		return ""
-	}
-	switch r.fieldToRouteBy {
-	case "BankID":
-		return tx.Origin.BankID
-	case "ID":
-		return tx.Origin.ID
-	case "Format":
+	switch r.sectionToRouteBy {
+	case "origin":
+		return accountField(tx.Origin, r.fieldToRouteBy)
+	case "dest":
+		return accountField(tx.Dest, r.fieldToRouteBy)
+	case "paid":
+		return moneyField(tx.Paid, r.fieldToRouteBy)
+	case "format":
 		return tx.Format
 	default:
 		return ""
 	}
 }
 
+func accountField(a *domain.Account, field string) string {
+	if a == nil {
+		return ""
+	}
+	switch field {
+	case "BankID":
+		return a.BankID
+	case "ID":
+		return a.ID
+	default:
+		return ""
+	}
+}
+
+func moneyField(m *domain.Money, field string) string {
+	if m == nil {
+		return ""
+	}
+	switch field {
+	case "Currency":
+		return m.Currency
+	default:
+		return ""
+	}
+}
+
 func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
-	// Aquí se implementaría la lógica para manejar mensajes de tipo transacción.
-	// Por ejemplo, podríamos extraer el valor del campo especificado en r.fieldToRouteBy
-	// y usarlo para determinar a qué worker enviar el mensaje.
 	var tx domain.Transaction
 	err := pkt.UnmarshalData(&tx)
 	if err != nil {
@@ -158,7 +192,7 @@ func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
 
 	routingKey := r.shardByField(tx)
 
-	slog.Debug("Routing transaction", "bankID", tx.Origin.BankID, "routingKey", routingKey)
+	slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
 
 	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyType(routingKey), tx)
 

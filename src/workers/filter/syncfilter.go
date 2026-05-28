@@ -13,15 +13,15 @@ import (
 )
 
 type SyncFilter struct {
-	cfg	config.WorkerConfig
+	cfg    config.WorkerConfig
 	Broker broker.Broker
 	Type   string `json:"type"`  // Tipo de filtro: "amount", "date_range", etc.
 	Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
 
 	// Campos para filtros simples (amount, string)
-	Operator    string  `json:"operator"`
-	ValueFloat  float64 `json:"value_float"`
-	ValueString string  `json:"value_string"`
+	Operator     string   `json:"operator"`
+	ValueFloat   float64  `json:"value_float"`
+	ValueStrings []string `json:"value_string"`
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
@@ -43,25 +43,55 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 	}
 	valueFloat, ok := params["value_float"].(float64)
 	if !ok {
-		return nil, fmt.Errorf("Invalid value_float parameter for SyncAmountFilter")
+		return nil, fmt.Errorf("Invalid value_float parameter for SyncFilter")
 	}
-	valueString, ok := params["value_string"].(string)
-	if !ok {
-		return nil, fmt.Errorf("Invalid value_string parameter for SyncAmountFilter")
+	valueStrings, err := parseValueStrings(params["value_string"])
+	if err != nil {
+		return nil, err
+	}
+	if typeVal == "format" && len(valueStrings) == 0 {
+		return nil, fmt.Errorf("format filter requires at least one value_string entry")
 	}
 	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
 	return &SyncFilter{
-		cfg: 	   	cfg,
-		Broker:      broker,
-		Type:        typeVal,
-		Field:       field,
-		Operator:    operator,
-		ValueFloat:  valueFloat,
-		ValueString: valueString,
+		cfg:               cfg,
+		Broker:            broker,
+		Type:              typeVal,
+		Field:             field,
+		Operator:          operator,
+		ValueFloat:        valueFloat,
+		ValueStrings:      valueStrings,
 		syncEOFController: nil,
-		syncEOFKey: syncEOFKey,
+		syncEOFKey:        syncEOFKey,
 	}, nil
+}
+
+// parseValueStrings accepts either nil, a scalar string, or a YAML list of
+// strings and normalises to []string. An empty scalar yields an empty slice,
+// which lets amount-style filters omit the field without erroring.
+func parseValueStrings(raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		return []string{v}, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("value_string entries must be strings, got %T", e)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("Invalid value_string parameter for SyncFilter: %T", raw)
+	}
 }
 
 func (f *SyncFilter) Run() error {
@@ -83,7 +113,7 @@ func (f *SyncFilter) Run() error {
 	}
 
 	go f.syncEOFController.Start()
-		
+
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
 		err := f.handleMessage(msg)
 		if err != nil {
@@ -106,7 +136,7 @@ func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	eofMsg, err := inner.MarshalQuery1EOFPacket(clientID)
+	eofMsg, err := f.resolveEOFMessage(clientID, finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
@@ -123,25 +153,44 @@ func (f *SyncFilter) Stop() {}
 
 // Private methods
 
+func (f *SyncFilter) resolveMessage(tx domain.Transaction, clientID uuid.UUID) (*broker.Message, error) {
+	if f.cfg.Query == 1 {
+		queryResult := domain.Query1Result{
+			FromBank:    tx.Origin.BankID,
+			FromAccount: tx.Origin.ID,
+			ToBank:      tx.Dest.BankID,
+			ToAccount:   tx.Dest.ID,
+			AmountPaid:  tx.Paid.Amount,
+		}
+		return inner.MarshalQuery1ResultPacket(clientID, queryResult)
+	} else {
+		return inner.MarshalTransactionPacket(clientID, broker.KeyNil, tx)
+	}
+}
+
+func (f *SyncFilter) resolveEOFMessage(clientID uuid.UUID, finalSent map[broker.KeyType]int) (*broker.Message, error) {
+	if f.cfg.Query == 1 {
+		return inner.MarshalQuery1EOFPacket(clientID)
+	} else {
+		eofCounts := domain.EOFCounts{
+			Counts: finalSent,
+		}
+		return inner.MarshalEOFPacket(clientID, eofCounts)
+	}
+}
+
 func (f *SyncFilter) handleTransactionMessage(pkt inner.Packet) error {
 	var data domain.Transaction
 	if err := pkt.UnmarshalData(&data); err != nil {
 		return err
 	}
 	f.syncEOFController.MessageReceived(pkt.ClientID)
-	if filterTransaction(data, f.Type, f.Operator, f.ValueFloat, f.ValueString) {
-		queryResult := domain.Query1Result{
-			FromBank:    data.Origin.BankID,
-			FromAccount: data.Origin.ID,
-			ToBank:      data.Dest.BankID,
-			ToAccount:   data.Dest.ID,
-			AmountPaid:  data.Paid.Amount,
-		}
-		responseMsg, err := inner.MarshalQuery1ResultPacket(pkt.ClientID, queryResult)
+	if filterTransaction(data, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
+		msg, err := f.resolveMessage(data, pkt.ClientID)
 		if err != nil {
 			return err
 		}
-		if err := f.Broker.Send(*responseMsg); err != nil {
+		if err := f.Broker.Send(*msg); err != nil {
 			return err
 		}
 		f.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)

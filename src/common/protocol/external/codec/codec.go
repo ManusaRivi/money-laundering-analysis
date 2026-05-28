@@ -309,54 +309,11 @@ func decodeQuery1Result(r *bytes.Reader) (external.Query1Result, error) {
 }
 
 func (BinaryCodec) EncodeQuery1ResultBatch(results []external.Query1Result) ([]byte, error) {
-	var batch bytes.Buffer
-	var count [4]byte
-	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
-	batch.Write(count[:])
-
-	for i, r := range results {
-		var resBuf bytes.Buffer
-		if err := encodeQuery1Result(&resBuf, r); err != nil {
-			return nil, fmt.Errorf("encoding result %d: %w", i, err)
-		}
-		if resBuf.Len() > math.MaxUint16 {
-			return nil, fmt.Errorf("result %d too large: %d bytes (max %d)", i, resBuf.Len(), math.MaxUint16)
-		}
-		var length [2]byte
-		binary.BigEndian.PutUint16(length[:], uint16(resBuf.Len()))
-		batch.Write(length[:])
-		batch.Write(resBuf.Bytes())
-	}
-	return batch.Bytes(), nil
+	return encodeBatch(results, encodeQuery1Result)
 }
 
 func (BinaryCodec) DecodeQuery1ResultBatch(payload []byte) ([]external.Query1Result, error) {
-	r := bytes.NewReader(payload)
-	var countBytes [4]byte
-	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
-		return nil, fmt.Errorf("reading batch count: %w", err)
-	}
-	count := binary.BigEndian.Uint32(countBytes[:])
-
-	results := make([]external.Query1Result, 0, count)
-	for i := uint32(0); i < count; i++ {
-		var lengthBytes [2]byte
-		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
-			return nil, fmt.Errorf("reading length of result %d: %w", i, err)
-		}
-		length := binary.BigEndian.Uint16(lengthBytes[:])
-
-		resBytes := make([]byte, length)
-		if _, err := io.ReadFull(r, resBytes); err != nil {
-			return nil, fmt.Errorf("reading result %d body: %w", i, err)
-		}
-		result, err := decodeQuery1Result(bytes.NewReader(resBytes))
-		if err != nil {
-			return nil, fmt.Errorf("decoding result %d: %w", i, err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
+	return decodeBatch(payload, decodeQuery1Result)
 }
 
 // ====================
@@ -388,54 +345,11 @@ func decodeQuery2Result(r *bytes.Reader) (external.Query2Result, error) {
 }
 
 func (BinaryCodec) EncodeQuery2ResultBatch(results []external.Query2Result) ([]byte, error) {
-	var batch bytes.Buffer
-	var count [4]byte
-	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
-	batch.Write(count[:])
-
-	for i, r := range results {
-		var resBuf bytes.Buffer
-		if err := encodeQuery2Result(&resBuf, r); err != nil {
-			return nil, fmt.Errorf("encoding result %d: %w", i, err)
-		}
-		if resBuf.Len() > math.MaxUint16 {
-			return nil, fmt.Errorf("result %d too large: %d bytes (max %d)", i, resBuf.Len(), math.MaxUint16)
-		}
-		var length [2]byte
-		binary.BigEndian.PutUint16(length[:], uint16(resBuf.Len()))
-		batch.Write(length[:])
-		batch.Write(resBuf.Bytes())
-	}
-	return batch.Bytes(), nil
+	return encodeBatch(results, encodeQuery2Result)
 }
 
 func (BinaryCodec) DecodeQuery2ResultBatch(payload []byte) ([]external.Query2Result, error) {
-	r := bytes.NewReader(payload)
-	var countBytes [4]byte
-	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
-		return nil, fmt.Errorf("reading batch count: %w", err)
-	}
-	count := binary.BigEndian.Uint32(countBytes[:])
-
-	results := make([]external.Query2Result, 0, count)
-	for i := uint32(0); i < count; i++ {
-		var lengthBytes [2]byte
-		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
-			return nil, fmt.Errorf("reading length of result %d: %w", i, err)
-		}
-		length := binary.BigEndian.Uint16(lengthBytes[:])
-
-		resBytes := make([]byte, length)
-		if _, err := io.ReadFull(r, resBytes); err != nil {
-			return nil, fmt.Errorf("reading result %d body: %w", i, err)
-		}
-		result, err := decodeQuery2Result(bytes.NewReader(resBytes))
-		if err != nil {
-			return nil, fmt.Errorf("decoding result %d: %w", i, err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
+	return decodeBatch(payload, decodeQuery2Result)
 }
 
 // ====================
@@ -527,6 +441,89 @@ func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Res
 // ===== Query  5 =====
 // ====================
 
+func encodeQuery5Result(buf *bytes.Buffer, r external.Query5Result) error {
+	writeInt64(buf, r.Count)
+	return nil
+}
+
+func decodeQuery5Result(r *bytes.Reader) (external.Query5Result, error) {
+	var res external.Query5Result
+	count, err := readInt64(r)
+	if err != nil {
+		return res, fmt.Errorf("count: %w", err)
+	}
+	res.Count = count
+	return res, nil
+}
+
+func (BinaryCodec) EncodeQuery5ResultBatch(results []external.Query5Result) ([]byte, error) {
+	return encodeBatch(results, encodeQuery5Result)
+}
+
+func (BinaryCodec) DecodeQuery5ResultBatch(payload []byte) ([]external.Query5Result, error) {
+	return decodeBatch(payload, decodeQuery5Result)
+}
+
+// --- batch framing ---
+
+// encodeBatch serialises a slice of T into the standard result-batch layout
+// used across every query: a uint32 element count followed by each element
+// length-prefixed with a uint16. The per-element body is produced by
+// encodeOne, which is the only piece that differs between queries.
+func encodeBatch[T any](items []T, encodeOne func(*bytes.Buffer, T) error) ([]byte, error) {
+	var batch bytes.Buffer
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(items)))
+	batch.Write(count[:])
+
+	for i, item := range items {
+		var itemBuf bytes.Buffer
+		if err := encodeOne(&itemBuf, item); err != nil {
+			return nil, fmt.Errorf("encoding result %d: %w", i, err)
+		}
+		if itemBuf.Len() > math.MaxUint16 {
+			return nil, fmt.Errorf("result %d too large: %d bytes (max %d)", i, itemBuf.Len(), math.MaxUint16)
+		}
+		var length [2]byte
+		binary.BigEndian.PutUint16(length[:], uint16(itemBuf.Len()))
+		batch.Write(length[:])
+		batch.Write(itemBuf.Bytes())
+	}
+	return batch.Bytes(), nil
+}
+
+// decodeBatch is the inverse of encodeBatch. decodeOne reads a single element
+// body from its own bounded reader, so individual element decoders can't
+// overflow into the next element's body.
+func decodeBatch[T any](payload []byte, decodeOne func(*bytes.Reader) (T, error)) ([]T, error) {
+	r := bytes.NewReader(payload)
+	var countBytes [4]byte
+	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
+		return nil, fmt.Errorf("reading batch count: %w", err)
+	}
+	count := binary.BigEndian.Uint32(countBytes[:])
+
+	items := make([]T, 0, count)
+	for i := range count {
+		var lengthBytes [2]byte
+		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
+			return nil, fmt.Errorf("reading length of result %d: %w", i, err)
+		}
+		length := binary.BigEndian.Uint16(lengthBytes[:])
+
+		itemBytes := make([]byte, length)
+		if _, err := io.ReadFull(r, itemBytes); err != nil {
+			return nil, fmt.Errorf("reading result %d body: %w", i, err)
+		}
+		item, err := decodeOne(bytes.NewReader(itemBytes))
+		if err != nil {
+			return nil, fmt.Errorf("decoding result %d: %w", i, err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 // --- primitives ---
 
 func writeString(buf *bytes.Buffer, s string) error {
@@ -562,6 +559,20 @@ func readFloat64(r *bytes.Reader) (float64, error) {
 		return 0, err
 	}
 	return math.Float64frombits(binary.BigEndian.Uint64(b[:])), nil
+}
+
+func writeInt64(buf *bytes.Buffer, v int64) {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(v))
+	buf.Write(b[:])
+}
+
+func readInt64(r *bytes.Reader) (int64, error) {
+	var b [8]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(b[:])), nil
 }
 
 func writeBool(buf *bytes.Buffer, b bool) {

@@ -1,4 +1,3 @@
-
 broker:
   type: e-e
   url: amqp://guest:guest@rabbitmq:5672/

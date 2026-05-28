@@ -70,3 +70,7 @@ type Query3Result struct {
 	PaymentFormat string
 	AmountPaid    float64
 }
+
+type Query5Result struct {
+	Count int64
+}
