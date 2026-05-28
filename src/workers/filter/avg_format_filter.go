@@ -28,6 +28,9 @@ type AvgFormatFilter struct {
 	avgEofByClient map[uuid.UUID]int
 	avgDoneByClient map[uuid.UUID]bool
 	txCacheByClient map[uuid.UUID]map[string][]domain.Transaction
+	txEOFByClient   map[uuid.UUID]bool
+	pendingEOFCounts map[uuid.UUID]map[broker.KeyType]int
+	syncStartedByClient map[uuid.UUID]bool
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
@@ -51,6 +54,9 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		avgEofByClient: make(map[uuid.UUID]int),
 		avgDoneByClient: make(map[uuid.UUID]bool),
 		txCacheByClient: make(map[uuid.UUID]map[string][]domain.Transaction),
+		txEOFByClient: make(map[uuid.UUID]bool),
+		pendingEOFCounts: make(map[uuid.UUID]map[broker.KeyType]int),
+		syncStartedByClient: make(map[uuid.UUID]bool),
 		syncEOFKey:    eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
 	}, nil
 }
@@ -143,6 +149,7 @@ func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) error {
 			f.dropUnresolvedCachedLocked(pkt.ClientID)
 		}
 		f.mu.Unlock()
+		f.tryStartSyncEOF(pkt.ClientID)
 	default:
 		return fmt.Errorf("unexpected avg packet type: %v", pkt.Type)
 	}
@@ -265,6 +272,27 @@ func (f *AvgFormatFilter) handleEOF(pkt *inner.Packet) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
+	f.mu.Lock()
+	f.txEOFByClient[pkt.ClientID] = true
+	f.pendingEOFCounts[pkt.ClientID] = eofCounts.Counts
+	f.mu.Unlock()
+	f.tryStartSyncEOF(pkt.ClientID)
 	return nil
+}
+
+func (f *AvgFormatFilter) tryStartSyncEOF(clientID uuid.UUID) {
+	f.mu.Lock()
+	if f.syncStartedByClient[clientID] {
+		f.mu.Unlock()
+		return
+	}
+	if !f.txEOFByClient[clientID] || !f.avgDoneByClient[clientID] {
+		f.mu.Unlock()
+		return
+	}
+	counts := f.pendingEOFCounts[clientID]
+	f.syncStartedByClient[clientID] = true
+	f.mu.Unlock()
+
+	f.syncEOFController.SyncEof(clientID, counts, f.syncEOFKey)
 }
