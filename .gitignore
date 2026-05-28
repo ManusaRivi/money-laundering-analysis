@@ -1,3 +1,6 @@
 .data/
 .output*
 docker-compose-dev.yaml
+
+.venv/
+__pycache__/

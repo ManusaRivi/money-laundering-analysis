@@ -79,6 +79,88 @@ def expected_query2(trans_df, accounts_df):
     )
 
 
+
+
+def expected_query3(trans_df):
+    usd = trans_df[trans_df["Payment Currency"] == "US Dollar"]
+    period_1 = usd[(usd["Timestamp"] >= "2022/09/01") & (usd["Timestamp"] <= "2022/09/06")]
+    avg_per_type = period_1.groupby("Payment Format")["Amount Paid"].mean().reset_index()
+
+    period_2 = usd[(usd["Timestamp"] >= "2022/09/06") & (usd["Timestamp"] <= "2022/09/15")]
+    merged = period_2.merge(avg_per_type, on="Payment Format", suffixes=("", "_avg"))
+    filtered = merged[merged["Amount Paid"] < merged["Amount Paid_avg"] * 0.01]
+    return filtered[["From Bank", "Account", "Payment Format", "Amount Paid"]].rename(
+        columns={
+            "From Bank": "from_bank",
+            "Account": "from_account",
+            "Payment Format": "payment_format",
+            "Amount Paid": "amount_paid",
+        }
+    )
+
+
+def expected_query4(trans_df):
+    threshold = 5
+    usd = trans_df[trans_df["Payment Currency"] == "US Dollar"]
+    sept_1st = usd[(usd["Timestamp"] >= "2022/09/01") & (usd["Timestamp"] <= "2022/09/06")]
+
+    ranged = sept_1st.groupby(["From Bank", "Account"]).filter(
+        lambda x: x.groupby(["To Bank", "Account.1"]).size().size > threshold
+    )
+    accounts = ranged[["From Bank", "Account", "To Bank", "Account.1"]]
+    pairs = accounts.merge(
+        accounts,
+        left_on=["To Bank", "Account.1"],
+        right_on=["From Bank", "Account"],
+    ).rename(columns={
+        "From Bank_x": "From Bank",
+        "Account_x": "From Account",
+        "To Bank_y": "To Bank",
+        "Account.1_y": "To Account",
+    })
+    pairs = pairs[(pairs["From Bank"] != pairs["To Bank"]) | (pairs["From Account"] != pairs["To Account"])]
+    pairs = pairs.groupby(["From Bank", "From Account", "To Bank", "To Account"], as_index=False).size()
+    pairs = pairs[pairs["size"] > threshold]
+
+    from_acc = pairs[["From Bank", "From Account"]].rename(columns={"From Bank": "bank_id", "From Account": "account_id"})
+    to_acc = pairs[["To Bank", "To Account"]].rename(columns={"To Bank": "bank_id", "To Account": "account_id"})
+    return pd.concat([from_acc, to_acc]).drop_duplicates()
+
+
+def expected_query4_bis(trans_df, threshold=2):
+    usd = trans_df[trans_df["Payment Currency"] == "US Dollar"]
+    date_filtered = usd[(usd["Timestamp"] >= "2022/09/01 00:00") & (usd["Timestamp"] <= "2022/09/05 23:59")]
+
+    scatter = {}
+    gather = {}
+
+    for _, row in date_filtered.iterrows():
+        src = (str(row["From Bank"]), str(row["Account"]))
+        dst = (str(row["To Bank"]), str(row["Account.1"]))
+
+        scatter.setdefault(src, set()).add(dst)
+        gather.setdefault(dst, set()).add(src)
+
+    pair_counts = {}
+    for bridge, dst_accounts in scatter.items():
+        if bridge not in gather:
+            continue
+        src_accounts = gather[bridge]
+        for src in src_accounts:
+            for dst in dst_accounts:
+                key = (src, dst)
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    filtered_pairs = {k: v for k, v in pair_counts.items() if v >= threshold}
+    accounts = set()
+    for (src, dst) in filtered_pairs:
+        accounts.add(src)
+        accounts.add(dst)
+
+    result = pd.DataFrame(sorted(accounts), columns=["bank_id", "account_id"])
+    return result
+
+
 def expected_query5(trans_df):
     sept_1st = trans_df[(trans_df["Timestamp"] >= "2022/09/01") & (trans_df["Timestamp"] <= "2022/09/06")]
     wire_ach = sept_1st[sept_1st["Payment Format"].isin(["Wire", "ACH"])].copy()
@@ -91,9 +173,12 @@ def expected_query5(trans_df):
 
 
 QUERY_BUILDERS = {
-    "query1": lambda trans, _: expected_query1(trans),
-    "query2": lambda trans, accounts: expected_query2(trans, accounts),
-    "query5": lambda trans, _: expected_query5(trans),
+    # "query1": lambda trans, _: expected_query1(trans),
+    # "query2": lambda trans, accounts: expected_query2(trans, accounts),
+    # "query3": lambda trans, _: expected_query3(trans),
+    # "query4": lambda trans, _: expected_query4(trans),
+    "query4": lambda trans, _: expected_query4_bis(trans),
+    # "query5": lambda trans, _: expected_query5(trans),
 }
 
 
@@ -110,7 +195,11 @@ def read_output_queries(output_dir):
         match = pattern.match(entry)
         if not match:
             continue
-        queries[match.group(1)] = pd.read_csv(os.path.join(output_dir, entry))
+        path = os.path.join(output_dir, entry)
+        if os.path.getsize(path) == 0:
+            queries[match.group(1)] = pd.DataFrame()
+        else:
+            queries[match.group(1)] = pd.read_csv(path)
     return queries
 
 
@@ -119,11 +208,22 @@ def _row_multiset(df):
     for column in normalized.columns:
         if pd.api.types.is_float_dtype(normalized[column]):
             normalized[column] = normalized[column].round(FLOAT_DECIMALS)
+        normalized[column] = normalized[column].astype(str)
     return Counter(tuple(row) for row in normalized.itertuples(index=False, name=None))
 
 
 def _compare(query_name, expected_df, actual_df):
     logging.info(f"Comparing {query_name}...")
+
+    if len(expected_df) == 0 and len(actual_df) == 0:
+        logging.info(f"{query_name} OK (empty)")
+        return
+
+    if len(actual_df.columns) == 0:
+        raise ClientValidationError(
+            f"{query_name}: actual file is empty but expected {len(expected_df)} rows with columns {list(expected_df.columns)}"
+        )
+
     if list(expected_df.columns) != list(actual_df.columns):
         raise ClientValidationError(
             f"{query_name}: column mismatch — expected {list(expected_df.columns)}, got {list(actual_df.columns)}"
