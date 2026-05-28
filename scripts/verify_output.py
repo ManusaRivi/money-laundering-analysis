@@ -87,7 +87,7 @@ def expected_query5(trans_df):
         axis=1,
     )
     filtered = wire_ach[wire_ach["Converted"] < 1.0]
-    return filtered[["Amount Paid"]].rename(columns={"Amount Paid": "amount"})
+    return pd.DataFrame({"amount": [len(filtered)]})
 
 
 QUERY_BUILDERS = {
