@@ -3,6 +3,7 @@ package converter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,6 +49,104 @@ var fallbackUSDPerUnit = map[string]float64{
 	"Saudi Riyal": 1.0 / 3.75, // pegged at 3.75 SAR / USD
 	"Ruble":       1.0 / 60.5, // ≈ Sep 2022
 	"Bitcoin":     20000.0,    // ≈ Sep 2022, used when date not in bitcoinUSDPerUnit
+}
+
+// notebookForeignPerUSD mirrors the hardcoded conversion_rates_records table
+// in money-laundering-analysis.ipynb. Outer key is date (YYYY-MM-DD); inner
+// key is the human-readable currency label used in the dataset. Values are
+// **units of the foreign currency per 1 USD** — i.e. apply as
+// `usd_amount = paid_amount / notebookForeignPerUSD[date][currency]`,
+// the same operation the notebook performs.
+//
+// When this table has a (date, currency) entry, convertToUSD uses it
+// verbatim and bypasses Frankfurter — useful for reproducing the notebook's
+// row-by-row results exactly.
+var notebookForeignPerUSD = map[string]map[string]float64{
+	"2022-09-01": {
+		"Australian Dollar": 1.4644,
+		"Brazil Real":       5.1805,
+		"Canadian Dollar":   1.314,
+		"Swiss Franc":       0.97999,
+		"Yuan":              6.9,
+		"Euro":              1.0002,
+		"UK Pound":          0.86272,
+		"Shekel":            3.3535,
+		"Rupee":             79.543,
+		"Yen":               139.34,
+		"Mexican Peso":      20.189,
+		"Ruble":             60.367,
+		"Saudi Riyal":       3.75,
+		"US Dollar":         1.0,
+		"Bitcoin":           19793.1,
+	},
+	"2022-09-02": {
+		"Australian Dollar": 1.4691,
+		"Brazil Real":       5.2035,
+		"Canadian Dollar":   1.3141,
+		"Swiss Franc":       0.98175,
+		"Yuan":              6.9035,
+		"Euro":              1.0011,
+		"UK Pound":          0.86468,
+		"Shekel":            3.3755,
+		"Rupee":             79.719,
+		"Yen":               140.11,
+		"Mexican Peso":      20.085,
+		"Ruble":             60.427,
+		"Saudi Riyal":       3.75,
+		"US Dollar":         1.0,
+		"Bitcoin":           199999.0, // notebook value verbatim; suspected typo, see bitcoinUSDPerUnit
+	},
+	"2022-09-03": {
+		"Australian Dollar": 1.4691,
+		"Brazil Real":       5.2056,
+		"Canadian Dollar":   1.3138,
+		"Swiss Franc":       0.98207,
+		"Yuan":              6.9046,
+		"Euro":              1.0013,
+		"UK Pound":          0.86478,
+		"Shekel":            3.3791,
+		"Rupee":             79.75,
+		"Yen":               140.17,
+		"Mexican Peso":      20.081,
+		"Ruble":             60.471,
+		"Saudi Riyal":       3.75,
+		"US Dollar":         1.0,
+		"Bitcoin":           19831.4,
+	},
+	"2022-09-04": {
+		"Australian Dollar": 1.4695,
+		"Brazil Real":       5.2082,
+		"Canadian Dollar":   1.3139,
+		"Swiss Franc":       0.98219,
+		"Yuan":              6.9047,
+		"Euro":              1.0013,
+		"UK Pound":          0.8649,
+		"Shekel":            3.3815,
+		"Rupee":             79.754,
+		"Yen":               140.22,
+		"Mexican Peso":      20.084,
+		"Ruble":             60.461,
+		"Saudi Riyal":       3.75,
+		"US Dollar":         1.0,
+		"Bitcoin":           19952.7,
+	},
+	"2022-09-05": {
+		"Australian Dollar": 1.4722,
+		"Brazil Real":       5.1786,
+		"Canadian Dollar":   1.3142,
+		"Swiss Franc":       0.98273,
+		"Yuan":              6.9216,
+		"Euro":              1.0068,
+		"UK Pound":          0.86813,
+		"Shekel":            3.4006,
+		"Rupee":             79.816,
+		"Yen":               140.49,
+		"Mexican Peso":      20.018,
+		"Ruble":             60.737,
+		"Saudi Riyal":       3.75,
+		"US Dollar":         1.0,
+		"Bitcoin":           20126.1,
+	},
 }
 
 // bitcoinUSDPerUnit holds the per-day USD-per-1-BTC rate from the dataset
@@ -97,18 +196,29 @@ func newRateClient() *rateClient {
 // given date. Looks up the cache first; on miss, hits Frankfurter and stores
 // the result.
 func (rc *rateClient) convertToUSD(date string, currency string, amount float64) (float64, error) {
+	// Notebook-parity path: if we have the exact notebook rate for this
+	// (date, currency) pair, use it verbatim with the notebook's `amount / rate`
+	// convention (rate stored as foreign-per-USD).
+	if dayRates, ok := notebookForeignPerUSD[date]; ok {
+		if rate, ok := dayRates[currency]; ok {
+			return amount / rate, nil
+		}
+	}
+
 	iso, ok := currencyISO[currency]
 	if !ok {
 		// Frankfurter doesn't quote this currency. Try a date-specific table
 		// first (Bitcoin), then the static per-currency fallback.
 		if currency == "Bitcoin" {
 			if rate, ok := bitcoinUSDPerUnit[date]; ok {
+				slog.Debug("Bitcoin currency detected. USD conversion using date-specific fallback rate.", "date", date, "rate", rate, "end_amount", amount*rate)
 				return amount * rate, nil
 			}
 		}
-		if rate, ok := fallbackUSDPerUnit[currency]; ok {
+		/* if rate, ok := fallbackUSDPerUnit[currency]; ok {
+			slog.Debug("Falling back to static USD conversion rate", "currency", currency, "rate", rate)
 			return amount * rate, nil
-		}
+		} */
 		return 0, fmt.Errorf("%w: %q", ErrUnsupportedCurrency, currency)
 	}
 	if iso == "USD" {
