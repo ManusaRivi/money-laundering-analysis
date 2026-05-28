@@ -15,6 +15,8 @@ const (
 	TypeEOF
 	TypeAccountsEOF
 
+	TypeTxQ4
+
 	TypeQuery1Result
 	TypeQuery1EOF
 
@@ -45,6 +47,8 @@ func (t *PacketType) String() string {
 		return "transaction"
 	case TypeBankInfo:
 		return "bank_info"
+	case TypeTxQ4:
+		return "tx_q4"
 	case TypeQuery1Result:
 		return "query1_result"
 	case TypeQuery2Result:

@@ -54,6 +54,12 @@ func workerFactory(cfg config.WorkerConfig, communicationBroker broker.Broker) (
 			return nil, fmt.Errorf("failed to create Aggregator: %w", err)
 		}
 		return worker, nil
+	case "ScatterAndGather":
+		worker, err := aggregator.NewScatterAndGather(cfg, communicationBroker)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ScatterAndGather: %w", err)
+		}
+		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", cfg.Type)
 	}

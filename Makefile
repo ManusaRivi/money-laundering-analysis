@@ -18,9 +18,16 @@ down:
 	docker compose -f docker-compose-dev.yaml down
 .PHONY: docker-compose-down
 
+ps:
+	docker compose -f docker-compose-dev.yaml ps
+.PHONY: ps
+
 logs:
-	docker compose -f docker-compose-dev.yaml logs -f
+	docker compose -f docker-compose-dev.yaml logs --tail=50 -f
 .PHONY: logs
 
 logs-%:
 	docker compose -f docker-compose-dev.yaml logs -f $*
+
+logst-%:
+	docker compose -f docker-compose-dev.yaml logs --tail=50 -f $*

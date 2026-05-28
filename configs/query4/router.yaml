@@ -3,7 +3,7 @@ broker:
   url: amqp://guest:guest@rabbitmq:5672/
   input: q_q4_router
   output: e_q4_agg
-  exchange_type: topic
+  exchange_type: direct
   
   prefetch: 30
   durable: true

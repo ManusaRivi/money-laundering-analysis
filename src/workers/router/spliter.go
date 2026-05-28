@@ -102,7 +102,10 @@ func (r *Spliter) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (r *Spliter) Stop() {}
+func (r *Spliter) Stop() {
+	r.Broker.StopConsuming()
+	r.Broker.Close()
+}
 
 // Private methods
 
@@ -116,7 +119,13 @@ func (r *Spliter) routeByField(field string, tx domain.Transaction, clientID uui
 
 	slog.Debug("Routing transaction", "routing_key", routingKey)
 
-	msg, err := inner.MarshalTransactionPacket(clientID, broker.KeyType(routingKey), tx)
+	txQ4Type := domain.GetTypeTxQ4ByField(field)
+	slog.Debug("Marshalling TxQ4 packet", "type", txQ4Type, "field_used", field)
+	txQ4 := domain.TxQ4{
+		Type:        txQ4Type,
+		Transaction: &tx,
+	}
+	msg, err := inner.MarshalTxQ4Packet(clientID, broker.KeyType(routingKey), txQ4)
 	if err != nil {
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return err
@@ -149,7 +158,7 @@ func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
 		slog.Error("Error unmarshalling transaction data", "error", err)
 		return err
 	}
-	slog.Debug("Received transaction message, routing by fields")
+	slog.Debug("Received transaction to split")
 	for _, field := range r.fieldsToRouteBy {
 		if err := r.routeByField(field, tx, pkt.ClientID); err != nil {
 			return err

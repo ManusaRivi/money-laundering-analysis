@@ -84,6 +84,41 @@ func MarshalBankInfoEOFPacket(clientID uuid.UUID, routingKey broker.KeyType) (*b
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
+func MarshalTxQ4Packet(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4) (*broker.Message, error) {
+	data, err := json.Marshal(txQ4)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeTxQ4,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+func MarshalTxQ4Phase2Packet(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4Phase2) (*broker.Message, error) {
+	data, err := json.Marshal(txQ4)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeTxQ4,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
 func MarshalQuery1ResultPacket(clientID uuid.UUID, result domain.Query1Result) (*broker.Message, error) {
 	data, err := json.Marshal(result)
 	if err != nil {

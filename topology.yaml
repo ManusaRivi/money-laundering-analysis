@@ -27,11 +27,13 @@ pipelines:
   #       ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
   query345:
     - name: filter
-      amount: 1
+      amount: 2
   query4:
     - name: cleaner
-      amount: 1
+      amount: 2
     - name: router
       amount: 1
     - name: aggregator
       amount: 3
+    - name: accumulator
+      amount: 2
