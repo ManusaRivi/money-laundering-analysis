@@ -103,7 +103,7 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 
 	if err := consumeChannel.ExchangeDeclare(
 		cfg.Output,
-		cfg.ExchangeType,
+		cfg.OutputExchangeType,
 		cfg.Durable,
 		cfg.AutoDelete,
 		cfg.Internal,
@@ -205,7 +205,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if msg.RoutingKey == KeyNil {
+	if msg.RoutingKey == KeyNil && qb.config.OutputExchangeType != "fanout" {
 		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}

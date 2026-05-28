@@ -88,6 +88,20 @@ func (r *Receiver) Listen() {
 				w.Close()
 			}
 			pendingEOFs--
+		case external.MsgQuery3Result:
+			results, err := r.codec.DecodeQuery3ResultBatch(payload)
+			if err != nil {
+				r.closeWriter(external.MsgQuery3Result)
+				slog.Warn("Failed to decode query 3 result", "err", err)
+				continue
+			}
+			r.writeRows(external.MsgQuery3Result, query3RowsToString(results))
+		case external.MsgQuery3ResultEOF:
+			slog.Info("Received Query 3 EOF")
+			if w, ok := r.writers[external.MsgQuery3Result]; ok {
+				w.Close()
+			}
+			pendingEOFs--
 		case external.MsgQuery5Result:
 			results, err := r.codec.DecodeQuery5ResultBatch(payload)
 			if err != nil {
@@ -161,6 +175,19 @@ func query2RowsToString(results []external.Query2Result) [][]string {
 			res.FromBank,
 			res.FromAccount,
 			res.BankName,
+			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
+		})
+	}
+	return rows
+}
+
+func query3RowsToString(results []external.Query3Result) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, res := range results {
+		rows = append(rows, []string{
+			res.FromBank,
+			res.FromAccount,
+			res.PaymentFormat,
 			strconv.FormatFloat(res.AmountPaid, 'f', -1, 64),
 		})
 	}

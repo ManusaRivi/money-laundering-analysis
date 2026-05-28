@@ -166,10 +166,42 @@ func MarshalQuery5ResultPacket(clientID uuid.UUID, result domain.Query5Result) (
 	return &broker.Message{RoutingKey: broker.KeyNil, Body: serializedMsg}, nil
 }
 
+func MarshalQuery3ResultPacket(clientID uuid.UUID, result domain.Query3Result) (*broker.Message, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery3Result,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: broker.KeyNil, Body: serializedMsg}, nil
+}
+
 func MarshalQuery5EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
 	msg := Packet{
 		ClientID: clientID,
 		Type:     TypeQuery5EOF,
+		Data:     nil,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{Body: serializedMsg}, nil
+}
+
+func MarshalQuery3EOFPacket(clientID uuid.UUID) (*broker.Message, error) {
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeQuery3EOF,
 		Data:     nil,
 	}
 

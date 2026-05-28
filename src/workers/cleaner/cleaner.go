@@ -126,6 +126,10 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 		slog.Error("Error sending cleaned packet to broker", "error", err)
 		return err
 	}
+	slog.Debug("Cleaner sent transaction",
+		"client_id", pkt.ClientID,
+		"input_key", msg.RoutingKey,
+	)
 	c.syncEOFController.MessageReceived(pkt.ClientID)
 	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
 

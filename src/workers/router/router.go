@@ -149,6 +149,8 @@ func (r *Router) extractFieldValue(tx domain.Transaction) string {
 		return accountField(tx.Dest, r.fieldToRouteBy)
 	case "paid":
 		return moneyField(tx.Paid, r.fieldToRouteBy)
+	case "format":
+		return tx.Format
 	default:
 		return ""
 	}

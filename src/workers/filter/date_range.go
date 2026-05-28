@@ -172,6 +172,10 @@ func (f *DateRange) handleTransactionMessage(pkt inner.Packet) error {
 		if err := f.Broker.Send(*msdToSend); err != nil {
 			return err
 		}
+		slog.Debug("Date range filter sent transaction",
+			"client_id", pkt.ClientID,
+			"routing_key", keyToUse,
+		)
 		f.syncEOFController.MessageSentWithKey(pkt.ClientID, keyToUse)
 
 	}
@@ -189,6 +193,11 @@ func (f *DateRange) handleEOFMessage(pkt inner.Packet) error {
 	}
 
 	f.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, f.syncEOFKey)
+	slog.Debug("Date range filter EOF sync",
+		"client_id", pkt.ClientID,
+		"expected_total", eofCounts.Counts[f.syncEOFKey],
+		"sync_key", f.syncEOFKey,
+	)
 	return nil
 }
 
