@@ -9,10 +9,6 @@ up: docker-compose-dev.yaml
 	docker compose -f docker-compose-dev.yaml up -d --build
 .PHONY: up
 
-docker-compose-up:
-	docker compose -f docker-compose-dev.yaml up -d --build
-.PHONY: docker-compose-up
-
 down:
 	docker compose -f docker-compose-dev.yaml stop -t 1
 	docker compose -f docker-compose-dev.yaml down
@@ -29,5 +25,5 @@ logs:
 logs-%:
 	docker compose -f docker-compose-dev.yaml logs -f $*
 
-logst-%:
+logs-tail-%:
 	docker compose -f docker-compose-dev.yaml logs --tail=50 -f $*

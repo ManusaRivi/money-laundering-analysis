@@ -30,10 +30,6 @@ import (
 //  Y envía scatter-gather
 //  keys: hash[ (src_acc,dst_acc) ] % next_workers_amount
 
-type pairKey struct {
-	src, dst string
-}
-
 type accountSet map[domain.Account]struct{}
 
 type client struct {
@@ -127,7 +123,7 @@ func (a *ScatterAndGather) handleGatherTx(tx *domain.Transaction, clientID uuid.
 }
 
 func (a *ScatterAndGather) handleTxQ4Message(pkt inner.Packet) error {
-	var txQ4 domain.TxQ4
+	var txQ4 domain.TxQ4PhaseOne
 	if err := pkt.UnmarshalData(&txQ4); err != nil {
 		slog.Error("Error unmarshalling TxQ4 data", "error", err)
 		return err
@@ -145,18 +141,37 @@ func (a *ScatterAndGather) handleTxQ4Message(pkt inner.Packet) error {
 		return fmt.Errorf("unknown TxQ4 type: %v", txQ4.Type)
 	}
 }
+ 
+func (a *ScatterAndGather) sendScatterGatherPhaseTwo(scatterGather map[domain.TxQ4PairKey]*domain.TxQ4PairEntry, pkt inner.Packet) int {
+	msgSent := 0
+	for pk, entry := range scatterGather {
+		routingString := pk.Src + "::" + pk.Dst
+		txQ4Phase2 := domain.TxQ4PhaseTwo{
+			Key:        pk,
+			Count:      entry.Count,
+			SrcAccount: &entry.SrcAccount,
+			DstAccount: &entry.DstAccount,
+		}
 
-// en EOF:
-//  scatter-gahter = Map<(src_acc,dst_acc), int >>
-//  for bridge_acc, destinos in scatter
-//    origenes = gather[bridge_acc]
-//    for src in origenes
-//      for dst in destinos
-//        scatter-gather[src, dst] += 1
-//  Y envía scatter-gather
-//  keys: hash[ (src_acc,dst_acc) ] % num_workers_next_stage
-func (a *ScatterAndGather) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, processing scatter and gather groups", "clientID", pkt.ClientID)
+		routingKey := a.shardByValue(routingString)
+
+		slog.Debug("Sending Scatter-Gather to phase two", "clientID", pkt.ClientID, "routing_key", routingKey)
+
+		msg, err := inner.MarshalTxQ4PhaseTwoPacket(pkt.ClientID, broker.KeyType(routingKey), txQ4Phase2)
+		if err != nil {
+			slog.Error("Error marshalling Scatter-Gather to phase two", "error", err, "routing_key", routingKey)
+			continue
+		}
+		if err := a.broker.Send(*msg); err != nil {
+			slog.Error("Error sending Scatter-Gather to phase two", "error", err, "routing_key", routingKey)
+			continue
+		}
+		msgSent++
+	}
+	return msgSent
+}
+
+func (a *ScatterAndGather) aggregatePairs(pkt inner.Packet) map[domain.TxQ4PairKey]*domain.TxQ4PairEntry {
 	client := a.getClient(pkt.ClientID)
 	scatter := client.scatterGroups
 	gather := client.gatherGroups
@@ -168,8 +183,7 @@ func (a *ScatterAndGather) handleEOFMessage(pkt inner.Packet) error {
 		}
 	}
 
-	scatterGather := make(map[pairKey]int, estimatedPairs)
-	globalAccountSet := make(map[domain.Account]struct{}, estimatedPairs)
+	scatterGather := make(map[domain.TxQ4PairKey]*domain.TxQ4PairEntry, estimatedPairs)
 
 	for bridgeAcc, dstAccounts := range scatter {
 		srcAccounts, exists := gather[bridgeAcc]
@@ -177,46 +191,38 @@ func (a *ScatterAndGather) handleEOFMessage(pkt inner.Packet) error {
 			continue
 		}
 		for srcAcc := range srcAccounts {
-			globalAccountSet[srcAcc] = struct{}{}
 			for dstAcc := range dstAccounts {
-				globalAccountSet[dstAcc] = struct{}{}
-				scatterGather[pairKey{src: srcAcc.GetID(), dst: dstAcc.GetID()}]++
+				pk := domain.TxQ4PairKey{Src: srcAcc.GetID(), Dst: dstAcc.GetID()}
+				entry, ok := scatterGather[pk]
+				if !ok {
+					entry = &domain.TxQ4PairEntry{Count: 0, SrcAccount: srcAcc, DstAccount: dstAcc}
+					scatterGather[pk] = entry
+				}
+				entry.Count++
 			}
 		}
 	}
-	slog.Debug("Completed processing scatter and gather groups", "clientID", pkt.ClientID, "scatter_gather_pairs", len(scatterGather), "unique_accounts", len(globalAccountSet))
-
-	accountList := make([]domain.Account, 0, len(globalAccountSet))
-	for acc := range globalAccountSet {
-		accountList = append(accountList, acc)
-	}
-
-	msgSent := 0
-	for pk, count := range scatterGather {
-		srcDestKey := fmt.Sprintf("%s-%s", pk.src, pk.dst)
-		txQ4Phase2 := domain.TxQ4Phase2{
-			ScatterGather: map[string]int{srcDestKey: count},
-			Accounts: accountList,
-		}
-
-		routingKey := a.shardByValue(srcDestKey)
-
-		msg, err := inner.MarshalTxQ4Phase2Packet(pkt.ClientID, broker.KeyType(routingKey), txQ4Phase2)
-		if err != nil {
-			slog.Error("Error marshalling Scatter-Gather phase 2", "error", err, "routing_key", routingKey)
-			return err
-		}
-		slog.Debug("Sending Scatter-Gather phase 2", "clientID", pkt.ClientID, "routing_key", routingKey)
-		if err := a.broker.Send(*msg); err != nil {
-			slog.Error("Error sending Scatter-Gather phase 2", "error", err, "routing_key", routingKey)
-			return err
-		}
-		msgSent++
-	}
-	slog.Debug("Finished sending Scatter-Gather phase 2 messages", "clientID", pkt.ClientID, "messages_sent", msgSent)
+	return scatterGather
+}
+// en EOF:
+//  scatter-gahter = Map<(src_acc,dst_acc), int >>
+//  for bridge_acc, destinos in scatter
+//    origenes = gather[bridge_acc]
+//    for src in origenes
+//      for dst in destinos
+//        scatter-gather[src, dst] += 1
+//  Y envía scatter-gather
+//  keys: hash[ (src_acc,dst_acc) ] % num_workers_next_stage
+func (a *ScatterAndGather) handleEOFMessage(pkt inner.Packet) error {
+	slog.Debug("Received EOF packet, processing scatter and gather groups", "clientID", pkt.ClientID)
 	
-	// hacer eof packet especial para poder enviar una sola vez:
-	// globalAccountSet
+	scatterGather := a.aggregatePairs(pkt)
+
+	slog.Debug("Completed processing scatter and gather groups", "clientID", pkt.ClientID, "scatter_gather_pairs", len(scatterGather))
+
+	msgSent := a.sendScatterGatherPhaseTwo(scatterGather, pkt)
+
+	slog.Debug("Finished sending Scatter-Gather to phase two messages", "clientID", pkt.ClientID, "messages_sent", msgSent)
 	
 	eofCounts := domain.EOFCounts{
 		Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},

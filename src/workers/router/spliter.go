@@ -121,11 +121,11 @@ func (r *Spliter) routeByField(field string, tx domain.Transaction, clientID uui
 
 	txQ4Type := domain.GetTypeTxQ4ByField(field)
 	slog.Debug("Marshalling TxQ4 packet", "type", txQ4Type, "field_used", field)
-	txQ4 := domain.TxQ4{
+	txQ4 := domain.TxQ4PhaseOne{
 		Type:        txQ4Type,
 		Transaction: &tx,
 	}
-	msg, err := inner.MarshalTxQ4Packet(clientID, broker.KeyType(routingKey), txQ4)
+	msg, err := inner.MarshalTxQ4PhaseOnePacket(clientID, broker.KeyType(routingKey), txQ4)
 	if err != nil {
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return err

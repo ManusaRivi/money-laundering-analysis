@@ -84,7 +84,7 @@ func MarshalBankInfoEOFPacket(clientID uuid.UUID, routingKey broker.KeyType) (*b
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
 
-func MarshalTxQ4Packet(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4) (*broker.Message, error) {
+func MarshalTxQ4PhaseOnePacket(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4PhaseOne) (*broker.Message, error) {
 	data, err := json.Marshal(txQ4)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,26 @@ func MarshalTxQ4Packet(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domai
 	}
 	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
 }
-func MarshalTxQ4Phase2Packet(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4Phase2) (*broker.Message, error) {
+
+func MarshalTxQ4PhaseTwoPacket(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4PhaseTwo) (*broker.Message, error) {
+	data, err := json.Marshal(txQ4)
+	if err != nil {
+		return nil, err
+	}
+	msg := Packet{
+		ClientID: clientID,
+		Type:     TypeTxQ4,
+		Data:     data,
+	}
+
+	serializedMsg, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &broker.Message{RoutingKey: routingKey, Body: serializedMsg}, nil
+}
+
+func MarshalTxQ4PhaseThreePacket(clientID uuid.UUID, routingKey broker.KeyType, txQ4 domain.TxQ4PhaseThree) (*broker.Message, error) {
 	data, err := json.Marshal(txQ4)
 	if err != nil {
 		return nil, err
