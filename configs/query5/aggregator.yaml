@@ -7,7 +7,7 @@ broker:
   input: q_q5_count
   output: query_results
   exchange_type: direct
-  prefetch: 30
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false

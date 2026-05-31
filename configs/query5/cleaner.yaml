@@ -8,7 +8,7 @@ broker:
   exchange_type: topic
   input_keys:
     - tx.*
-  prefetch: 30
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false

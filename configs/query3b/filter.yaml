@@ -7,7 +7,7 @@ avg_broker:
   exchange_type: fanout
   input_keys:
     - tx.*
-  prefetch: 30
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false
@@ -20,7 +20,7 @@ broker:
   input: q_q3_amount_filter
   output: query_results
   exchange_type: direct
-  prefetch: 30
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false

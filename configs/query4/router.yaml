@@ -5,7 +5,7 @@ broker:
   output: e_q4_agg
   exchange_type: direct
   
-  prefetch: 30
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false
