@@ -111,20 +111,26 @@ func (c *Client) Start() error {
 		c.TransactionsStream.Close()
 	}()
 
+	start := time.Now()
+
 	go c.handleSignals()
 
 	go c.receiver.Listen()
 
-	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
+	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
 		return err
 	}
-	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
+
+	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
 		return err
 	}
 
 	slog.Info("Finished streaming datasets, waiting for results...")
 
 	<-c.receiver.Done()
+
+	end := time.Now()
+	slog.Info("Client finished", "duration", end.Sub(start))
 
 	return nil
 }
