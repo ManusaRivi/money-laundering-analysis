@@ -6,22 +6,36 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/google/uuid"
 )
 
 const (
-	HeaderSize         = 5
-	PayloadLengthBytes = 4
+	ExternalHeaderSize = 5
+	InternalHeaderSize = 21
+
+	MsgTypeHeaderBytes     = 1
+	ClientIDHeaderBytes    = 16
+	PayloadSizeHeaderBytes = 4
 )
 
-// DecodeHeader parses a 5-byte frame header into its message type and payload
-// length. Framing is uniform across codec implementations, so this is a
-// package-level function rather than an interface method.
-func DecodeHeader(header []byte) (external.MsgType, uint32) {
+func DecodeExternalHeader(header []byte) (external.MsgType, uint32) {
 	msgType := external.MsgType(header[0])
-	payloadLen := binary.BigEndian.Uint32(header[1:HeaderSize])
+	payloadLen := binary.BigEndian.Uint32(header[MsgTypeHeaderBytes : MsgTypeHeaderBytes+PayloadSizeHeaderBytes])
 	return msgType, payloadLen
+}
+
+func DecodeInternalHeader(header []byte) (external.MsgType, uuid.UUID, uint32) {
+	msgType := external.MsgType(header[0])
+	clientId, err := uuid.FromBytes(header[MsgTypeHeaderBytes : MsgTypeHeaderBytes+ClientIDHeaderBytes])
+	if err != nil {
+		return msgType, uuid.Nil, 0
+	}
+	payloadLen := binary.BigEndian.Uint32(header[MsgTypeHeaderBytes+ClientIDHeaderBytes : MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes])
+	return msgType, clientId, payloadLen
 }
 
 type BinaryCodec struct{}
@@ -30,12 +44,36 @@ func New() *BinaryCodec { return &BinaryCodec{} }
 
 // --- envelope ---
 
-func (BinaryCodec) EncodeEnvelope(envelope external.Envelope) ([]byte, error) {
-	buffer := make([]byte, HeaderSize+len(envelope.Payload))
+// TODO: Client ID: FIrst item in Internal header
+
+func (BinaryCodec) EncodeExternalEnvelope(envelope external.ExternalEnvelope) ([]byte, error) {
+	buffer := make([]byte, MsgTypeHeaderBytes+PayloadSizeHeaderBytes+len(envelope.Payload))
 	buffer[0] = byte(envelope.MsgType)
-	binary.BigEndian.PutUint32(buffer[1:HeaderSize], uint32(len(envelope.Payload)))
-	copy(buffer[HeaderSize:], envelope.Payload)
+	binary.BigEndian.PutUint32(buffer[MsgTypeHeaderBytes:MsgTypeHeaderBytes+PayloadSizeHeaderBytes], uint32(len(envelope.Payload)))
+	copy(buffer[MsgTypeHeaderBytes+PayloadSizeHeaderBytes:], envelope.Payload)
 	return buffer, nil
+}
+
+func (BinaryCodec) EncodeInternalEnvelope(envelope external.InternalEnvelope) ([]byte, error) {
+	buffer := make([]byte, MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes+len(envelope.Payload))
+	buffer[0] = byte(envelope.MsgType)
+	copy(buffer[MsgTypeHeaderBytes:MsgTypeHeaderBytes+ClientIDHeaderBytes], envelope.ClientId[:])
+	binary.BigEndian.PutUint32(buffer[MsgTypeHeaderBytes+ClientIDHeaderBytes:MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes], uint32(len(envelope.Payload)))
+	copy(buffer[MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes:], envelope.Payload)
+	return buffer, nil
+}
+
+func (BinaryCodec) DecodeInternalEnvelope(message []byte) (external.InternalEnvelope, error) {
+	msgType, ClientId, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
+	if uint32(len(message)-InternalHeaderSize) < payloadLen {
+		return external.InternalEnvelope{}, fmt.Errorf("payload length mismatch: header says %d bytes but only %d bytes remain", payloadLen, len(message)-InternalHeaderSize)
+	}
+	payload := message[InternalHeaderSize : InternalHeaderSize+payloadLen]
+	return external.InternalEnvelope{
+		MsgType:  msgType,
+		ClientId: ClientId,
+		Payload:  payload,
+	}, nil
 }
 
 // ====================
@@ -526,12 +564,72 @@ func decodeQuery5Result(r *bytes.Reader) (external.Query5Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery5ResultBatch(results []external.Query5Result) ([]byte, error) {
-	return encodeBatch(results, encodeQuery5Result)
+func (BinaryCodec) EncodeQuery5Result(result external.Query5Result) ([]byte, error) {
+	return encodeBatch([]external.Query5Result{result}, encodeQuery5Result)
 }
 
-func (BinaryCodec) DecodeQuery5ResultBatch(payload []byte) ([]external.Query5Result, error) {
-	return decodeBatch(payload, decodeQuery5Result)
+func (BinaryCodec) DecodeQuery5Result(payload []byte) (external.Query5Result, error) {
+	result, err := decodeBatch(payload, decodeQuery5Result)
+	return result[0], err
+}
+
+// ====================
+// ===== EOF Counts ===
+// ====================
+
+// EncodeEOFCounts serialises the per-key message counts carried by a
+// layer-to-layer EOF (the payload of an InternalEnvelope tagged as an EOF type).
+// Keys are written in sorted order so the encoding is deterministic for a given
+// map, which keeps logs stable and makes the bytes comparable in tests.
+//
+// Layout:
+//
+//	[uint32 entryCount] then entryCount × ( [uint8 keyLen][key bytes][int64 count] )
+func (BinaryCodec) EncodeEOFCounts(counts map[broker.KeyType]int) ([]byte, error) {
+	var buf bytes.Buffer
+	var entryCount [4]byte
+	binary.BigEndian.PutUint32(entryCount[:], uint32(len(counts)))
+	buf.Write(entryCount[:])
+
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, string(key))
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if err := writeString(&buf, key); err != nil {
+			return nil, fmt.Errorf("encoding eof count key %q: %w", key, err)
+		}
+		writeInt64(&buf, int64(counts[broker.KeyType(key)]))
+	}
+	return buf.Bytes(), nil
+}
+
+// DecodeEOFCounts is the inverse of EncodeEOFCounts. It always returns a
+// non-nil map (empty when entryCount is zero) so callers can range over it
+// without a nil check.
+func (BinaryCodec) DecodeEOFCounts(payload []byte) (map[broker.KeyType]int, error) {
+	r := bytes.NewReader(payload)
+	var entryCountBytes [4]byte
+	if _, err := io.ReadFull(r, entryCountBytes[:]); err != nil {
+		return nil, fmt.Errorf("reading eof counts length: %w", err)
+	}
+	entryCount := binary.BigEndian.Uint32(entryCountBytes[:])
+
+	counts := make(map[broker.KeyType]int, entryCount)
+	for i := range entryCount {
+		key, err := readString(r)
+		if err != nil {
+			return nil, fmt.Errorf("reading eof count key %d: %w", i, err)
+		}
+		value, err := readInt64(r)
+		if err != nil {
+			return nil, fmt.Errorf("reading eof count value for key %q: %w", key, err)
+		}
+		counts[broker.KeyType(key)] = int(value)
+	}
+	return counts, nil
 }
 
 // --- batch framing ---

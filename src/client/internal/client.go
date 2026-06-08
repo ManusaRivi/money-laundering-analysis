@@ -117,11 +117,11 @@ func (c *Client) Start() error {
 
 	go c.receiver.Listen()
 
-	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
+	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
 		return err
 	}
 
-	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
+	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
 		return err
 	}
 

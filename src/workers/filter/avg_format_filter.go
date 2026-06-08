@@ -23,13 +23,13 @@ type AvgFormatFilter struct {
 	prevWorkers   int
 	avgMultiplier float64
 
-	mu            sync.Mutex
-	avgByClient   map[uuid.UUID]map[string]float64
-	avgEofByClient map[uuid.UUID]int
-	avgDoneByClient map[uuid.UUID]bool
-	txCacheByClient map[uuid.UUID]map[string][]domain.Transaction
-	txEOFByClient   map[uuid.UUID]bool
-	pendingEOFCounts map[uuid.UUID]map[broker.KeyType]int
+	mu                  sync.Mutex
+	avgByClient         map[uuid.UUID]map[string]float64
+	avgEofByClient      map[uuid.UUID]int
+	avgDoneByClient     map[uuid.UUID]bool
+	txCacheByClient     map[uuid.UUID]map[string][]domain.Transaction
+	txEOFByClient       map[uuid.UUID]bool
+	pendingEOFCounts    map[uuid.UUID]map[broker.KeyType]int
 	syncStartedByClient map[uuid.UUID]bool
 
 	syncEOFController *eof.SyncEOFController
@@ -45,19 +45,19 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 	}
 
 	return &AvgFormatFilter{
-		cfg:           cfg,
-		avgBroker:     avgBroker,
-		txBroker:      txBroker,
-		prevWorkers:   cfg.PrevWorkerAmount,
-		avgMultiplier: multiplier,
-		avgByClient:   make(map[uuid.UUID]map[string]float64),
-		avgEofByClient: make(map[uuid.UUID]int),
-		avgDoneByClient: make(map[uuid.UUID]bool),
-		txCacheByClient: make(map[uuid.UUID]map[string][]domain.Transaction),
-		txEOFByClient: make(map[uuid.UUID]bool),
-		pendingEOFCounts: make(map[uuid.UUID]map[broker.KeyType]int),
+		cfg:                 cfg,
+		avgBroker:           avgBroker,
+		txBroker:            txBroker,
+		prevWorkers:         cfg.PrevWorkerAmount,
+		avgMultiplier:       multiplier,
+		avgByClient:         make(map[uuid.UUID]map[string]float64),
+		avgEofByClient:      make(map[uuid.UUID]int),
+		avgDoneByClient:     make(map[uuid.UUID]bool),
+		txCacheByClient:     make(map[uuid.UUID]map[string][]domain.Transaction),
+		txEOFByClient:       make(map[uuid.UUID]bool),
+		pendingEOFCounts:    make(map[uuid.UUID]map[broker.KeyType]int),
 		syncStartedByClient: make(map[uuid.UUID]bool),
-		syncEOFKey:    eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
+		syncEOFKey:          eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
 	}, nil
 }
 
@@ -209,7 +209,7 @@ func (f *AvgFormatFilter) handleTransaction(pkt *inner.Packet) error {
 	if tx.Format == "" {
 		return fmt.Errorf("transaction missing format field")
 	}
-	f.syncEOFController.MessageReceived(pkt.ClientID)
+	f.syncEOFController.MessageReceived(pkt.ClientID, 1)
 
 	f.mu.Lock()
 	avg := f.avgByClient[pkt.ClientID][tx.Format]
@@ -262,7 +262,7 @@ func (f *AvgFormatFilter) processTransaction(clientID uuid.UUID, tx domain.Trans
 	if err := f.txBroker.Send(*msg); err != nil {
 		return err
 	}
-	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil)
+	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, 1)
 	return nil
 }
 

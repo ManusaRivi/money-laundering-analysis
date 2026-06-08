@@ -3,7 +3,7 @@
 broker:
   type: e-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q345_cleaner
+  input: e_q345_filter
   output: q_q5_format_filter
   exchange_type: topic
   input_keys:

@@ -133,8 +133,8 @@ func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
 		"client_id", pkt.ClientID,
 		"input_key", msg.RoutingKey,
 	)
-	c.syncEOFController.MessageReceived(pkt.ClientID)
-	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil)
+	c.syncEOFController.MessageReceived(pkt.ClientID, 1)
+	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil, 1)
 
 	return nil
 }

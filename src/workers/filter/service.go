@@ -4,22 +4,17 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 )
 
-func filterTransactionByAmount(tx domain.Transaction, operator string, value float64) bool {
-	money := tx.Paid
-	if money == nil {
-		slog.Error("Transaction has no amount", "transaction", tx)
-		return false
-	}
+func filterTransactionByAmount(tx external.Transaction, operator string, value float64) bool {
 	switch operator {
 	case ">":
-		return money.Amount > value
+		return tx.AmountPaid > value
 	case "<":
-		return money.Amount < value
+		return tx.AmountPaid < value
 	case "==":
-		return money.Amount == value
+		return tx.AmountPaid == value
 	default:
 		slog.Error("Invalid operator for amount filter", "operator", operator)
 		return false
@@ -29,12 +24,12 @@ func filterTransactionByAmount(tx domain.Transaction, operator string, value flo
 // filterTransactionByFormat returns true when the transaction's format matches
 // the configured set of accepted values. Operator "==" means "format is in the
 // set"; "!=" means "format is not in the set".
-func filterTransactionByFormat(tx domain.Transaction, operator string, values []string) bool {
-	if tx.Format == "" {
+func filterTransactionByFormat(tx external.Transaction, operator string, values []string) bool {
+	if tx.PaymentFormat == "" {
 		slog.Error("Transaction has no format", "transaction", tx)
 		return false
 	}
-	matched := slices.Contains(values, tx.Format)
+	matched := slices.Contains(values, tx.PaymentFormat)
 	switch operator {
 	case "==":
 		return matched
@@ -46,13 +41,12 @@ func filterTransactionByFormat(tx domain.Transaction, operator string, values []
 	}
 }
 
-func filterTransaction(tx domain.Transaction, filterType string, operator string, floatValue float64, stringValues []string) bool {
+func filterTransaction(tx external.Transaction, filterType string, operator string, floatValue float64, stringValues []string) bool {
 	switch filterType {
 	case "amount":
 		return filterTransactionByAmount(tx, operator, floatValue)
 	case "format":
 		return filterTransactionByFormat(tx, operator, stringValues)
-	// TODO: handle other types of filters (date range...?)
 	default:
 		slog.Error("Invalid filter type", "filterType", filterType)
 		return false

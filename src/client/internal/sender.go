@@ -28,6 +28,7 @@ func NewSender(conn *network.Connection, codec codec.Codec) *Sender {
 }
 
 func (s *Sender) StreamDataset(ds DatasetStream) error {
+	slog.Debug("Started streaming dataset batches", "dataset", ds.Name())
 	for {
 		payload, err := ds.GetNextBatch()
 		if err != nil {
@@ -37,7 +38,7 @@ func (s *Sender) StreamDataset(ds DatasetStream) error {
 			return fmt.Errorf("reading %s batch: %w", ds.Name(), err)
 		}
 
-		envelope, err := s.codec.EncodeEnvelope(external.Envelope{
+		envelope, err := s.codec.EncodeExternalEnvelope(external.ExternalEnvelope{
 			MsgType: ds.BatchMsgType(),
 			Payload: payload,
 		})
@@ -52,7 +53,7 @@ func (s *Sender) StreamDataset(ds DatasetStream) error {
 
 	slog.Debug("Finished streaming dataset batches", "dataset", ds.Name())
 
-	eof, err := s.codec.EncodeEnvelope(external.Envelope{
+	eof, err := s.codec.EncodeExternalEnvelope(external.ExternalEnvelope{
 		MsgType: ds.EOFMsgType(),
 		Payload: nil,
 	})

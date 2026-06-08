@@ -14,20 +14,20 @@ import (
 )
 
 const (
-	WorkerTypeFilter          = "SyncFilter"
-	WorkerTypeQ5Filter        = "Q5Filter"
-	WorkerTypeCleaner         = "Cleaner"
-	WorkerTypeJoin            = "Join"
-	WorkerTypeRouter          = "Router"
-	WorkerTypeAggregator      = "Aggregator"
-	WorkerTypeConverter       = "Converter"
-	WorkerTypeDateRangeFilter = "DateRangeFilter"
-	WorkerTypeAvgFormatFilter = "AvgFormatFilter"
-	WorkerTypeSpliter         = "Spliter"
-	WorkerTypeScatterAndGather = "ScatterAndGather"
-	WorkerTypeScatterGather = "ScatterGather"
+	WorkerTypeFilter              = "SyncFilter"
+	WorkerTypeQ5Filter            = "Q5Filter"
+	WorkerTypeCleaner             = "Cleaner"
+	WorkerTypeJoin                = "Join"
+	WorkerTypeRouter              = "Router"
+	WorkerTypeAggregator          = "Aggregator"
+	WorkerTypeConverter           = "Converter"
+	WorkerTypeDateRangeFilter     = "DateRangeFilter"
+	WorkerTypeAvgFormatFilter     = "AvgFormatFilter"
+	WorkerTypeSpliter             = "Spliter"
+	WorkerTypeScatterAndGather    = "ScatterAndGather"
+	WorkerTypeScatterGather       = "ScatterGather"
 	WorkerTypeScatterGatherFilter = "ScatterGatherFilter"
-	WorkerTypeJoinQuery4 = "JoinQuery4"
+	WorkerTypeJoinQuery4          = "JoinQuery4"
 )
 
 // TODO: Define worker types as constants

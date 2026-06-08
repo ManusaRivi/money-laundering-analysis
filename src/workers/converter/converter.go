@@ -7,10 +7,12 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/google/uuid"
 )
+
+const Dollar = "US Dollar"
 
 // Converter consumes non-USD transactions and republishes them with Paid
 // converted to USD using historical FX rates from the Frankfurter API.
@@ -20,6 +22,7 @@ import (
 type Converter struct {
 	cfg                       config.WorkerConfig
 	Broker                    broker.Broker
+	codec                     codec.Codec
 	txProcessedCountForClient map[uuid.UUID]int
 
 	rates *rateClient
@@ -29,6 +32,7 @@ func NewConverter(cfg config.WorkerConfig, broker broker.Broker) *Converter {
 	return &Converter{
 		cfg:                       cfg,
 		Broker:                    broker,
+		codec:                     codec.New(),
 		txProcessedCountForClient: make(map[uuid.UUID]int),
 		rates:                     newRateClient(),
 	}
@@ -50,92 +54,115 @@ func (c *Converter) Stop() {}
 
 // Private methods
 
-func (c *Converter) handleTransactionMessage(pkt inner.Packet) error {
-	var tx domain.Transaction
-	if err := pkt.UnmarshalData(&tx); err != nil {
-		slog.Error("Error unmarshalling transaction data", "error", err)
-		return err
-	}
-
-	if tx.Paid == nil {
-		slog.Warn("Skipping transaction without Paid amount", "clientID", pkt.ClientID)
-		return nil
-	}
-
-	// USD transactions shouldn't reach this stage given the upstream routing,
-	// but pass them through unchanged if they do.
-	if tx.IsUSDTransaction() {
-		return c.forward(pkt.ClientID, tx)
-	}
-
-	date, err := transactionDate(tx.Timestamp)
+func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []external.Transaction) error {
+	transactionsBytes, err := c.codec.EncodeTransactionBatch(transactions)
 	if err != nil {
-		slog.Warn("Skipping transaction with unparseable timestamp",
-			"clientID", pkt.ClientID, "timestamp", tx.Timestamp, "error", err)
-		return nil
+		slog.Error("Error encoding converted transactions batch", "error", err)
+		return err
 	}
-
-	usdAmount, err := c.rates.convertToUSD(date, tx.Paid.Currency, tx.Paid.Amount)
+	envelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  external.MsgTransactionsBatch,
+		ClientId: clientID,
+		Payload:  transactionsBytes,
+	})
 	if err != nil {
-		if errors.Is(err, ErrUnsupportedCurrency) {
-			slog.Warn("Skipping transaction in unsupported currency",
-				"clientID", pkt.ClientID, "currency", tx.Paid.Currency)
-			return nil
-		}
-		slog.Error("Failed to convert transaction to USD",
-			"clientID", pkt.ClientID, "currency", tx.Paid.Currency, "date", date, "error", err)
+		slog.Error("Error encoding converted transactions envelope", "error", err)
 		return err
 	}
-
-	tx.Paid = &domain.Money{Amount: usdAmount, Currency: "US Dollar"}
-	return c.forward(pkt.ClientID, tx)
-}
-
-func (c *Converter) forward(clientID uuid.UUID, tx domain.Transaction) error {
-	msg, err := inner.MarshalTransactionPacket(clientID, broker.KeyDollarTransaction, tx)
-	if err != nil {
-		slog.Error("Error marshalling converted transaction packet", "error", err)
+	if err := c.Broker.Send(broker.Message{
+		RoutingKey:  broker.KeyDollarTransaction,
+		Body:        envelope,
+		ContentType: broker.ContentTypeBinary,
+	}); err != nil {
+		slog.Error("Error sending converted transactions batch to broker", "error", err)
 		return err
 	}
-	if err := c.Broker.Send(*msg); err != nil {
-		slog.Error("Error sending converted transaction to broker", "error", err)
-		return err
-	}
-	c.txProcessedCountForClient[clientID]++
+	c.txProcessedCountForClient[clientID] += len(transactions)
 	return nil
 }
 
-func (c *Converter) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, forwarding...")
-
-	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
-		Counts: map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[pkt.ClientID]},
-	})
+func (c *Converter) handleTransactionMessage(envelope external.InternalEnvelope) error {
+	transactions, err := c.codec.DecodeTransactionBatch(envelope.Payload)
+	clientID := envelope.ClientId
 	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
+		slog.Error("Error decoding transactions batch", "error", err)
 		return err
 	}
-	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", pkt.ClientID, "msg_sent", c.txProcessedCountForClient[pkt.ClientID])
-	if err := c.Broker.Send(*eofMsg); err != nil {
+
+	results := make([]external.Transaction, 0, len(transactions))
+
+	for _, tx := range transactions {
+		if tx.PaymentCurrency == Dollar {
+			results = append(results, tx)
+			continue
+		}
+		date, err := transactionDate(tx.Timestamp)
+		if err != nil {
+			slog.Warn("Skipping transaction with unparseable timestamp",
+				"clientID", clientID, "timestamp", tx.Timestamp, "error", err)
+			return nil
+		}
+
+		usdAmount, err := c.rates.convertToUSD(date, tx.PaymentCurrency, tx.AmountPaid)
+		if err != nil {
+			if errors.Is(err, ErrUnsupportedCurrency) {
+				slog.Warn("Skipping transaction in unsupported currency",
+					"clientID", clientID, "currency", tx.PaymentCurrency)
+				return nil
+			}
+			slog.Error("Failed to convert transaction to USD",
+				"clientID", clientID, "currency", tx.PaymentCurrency, "date", date, "error", err)
+			return err
+		}
+		tx.AmountPaid = usdAmount
+		tx.PaymentCurrency = Dollar
+		results = append(results, tx)
+	}
+	return c.sendTransactionBatch(clientID, results)
+}
+
+func (c *Converter) handleEOFMessage(envelope external.InternalEnvelope) error {
+	clientID := envelope.ClientId
+	slog.Debug("Forwarding EOF to next worker...", "clientID", clientID)
+	counts, err := c.codec.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[clientID]})
+	if err != nil {
+		slog.Error("Error encoding EOF counts", "error", err)
+		return err
+	}
+	eofEnvelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  external.MsgTransactionsEOF,
+		ClientId: clientID,
+		Payload:  counts,
+	})
+	if err != nil {
+		slog.Error("Error encoding EOF envelope", "error", err)
+		return err
+	}
+	if err := c.Broker.Send(broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		Body:        eofEnvelope,
+		ContentType: broker.ContentTypeBinary,
+	}); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}
+	slog.Debug("Sent EOF packet after processing conversion results", "clientID", clientID, "msg_sent", c.txProcessedCountForClient[clientID])
 	return nil
 }
 
 func (c *Converter) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
+	envelope, err := c.codec.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
-		slog.Error("Error unmarshalling packet", "error", err)
+		slog.Error("Error decoding message", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTransaction:
-		return c.handleTransactionMessage(*pkt)
-	case inner.TypeEOF:
-		return c.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTransactionsBatch:
+		return c.handleTransactionMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return c.handleEOFMessage(envelope)
 	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
+		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
 	}
 }

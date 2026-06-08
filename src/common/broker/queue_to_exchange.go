@@ -153,7 +153,7 @@ func (qb *queueToExchangeBroker) StartConsuming(callbackFunc func(msg Message, a
 	qb.mu.Unlock()
 
 	for d := range msgs {
-		callbackFunc(Message{Body: d.Body}, func() { d.Ack(false) }, func() { d.Nack(false, true) })
+		callbackFunc(Message{Body: d.Body, ContentType: d.ContentType}, func() { d.Ack(false) }, func() { d.Nack(false, true) })
 	}
 
 	qb.mu.Lock()
@@ -209,7 +209,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 		false,
 		false,
 		amqp.Publishing{
-			ContentType: "application/json",
+			ContentType: msg.contentTypeOrDefault(),
 			Body:        msg.Body,
 		},
 	); err != nil {

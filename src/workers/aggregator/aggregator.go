@@ -4,34 +4,20 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/google/uuid"
 )
-
-type aggOp string
-
-const (
-	opMax   aggOp = "max"
-	opMin   aggOp = "min"
-	opSum   aggOp = "sum"
-	opCount aggOp = "count"
-	opAvg   aggOp = "avg"
-)
-
-type avgState struct {
-	sum    float64
-	count  int
-	sample domain.Transaction
-}
 
 type Aggregator struct {
 	cfg    config.WorkerConfig
 	Broker broker.Broker
+	codec  codec.Codec
 
-	op          aggOp
+	aggFunction aggFunction
 	field       string // field used for aggregation comparison (e.g., "Amount")
 	grouped     bool   // false => single-bucket aggregation across all received transactions
 	groupSource string // "origin" or "dest" (only meaningful when grouped)
@@ -40,18 +26,18 @@ type Aggregator struct {
 	// countState is the running counter for the ungrouped count aggregation.
 	// Indexed by clientID so concurrent clients each accumulate independently.
 	countState map[uuid.UUID]int
-	state      map[uuid.UUID]map[string]domain.Transaction
+	state      map[uuid.UUID]map[string]external.Transaction
 	avgState   map[uuid.UUID]map[string]avgState
 }
 
 func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error) {
-	op, field, grouped, groupSource, groupField, err := parseParams(cfg.Params)
+	function, field, grouped, groupSource, groupField, err := parseParams(cfg.Params)
 	if err != nil {
 		return nil, err
 	}
 
 	slog.Debug("Aggregator created",
-		"op", op,
+		"aggFunction", function,
 		"field", field,
 		"grouped", grouped,
 		"group_source", groupSource,
@@ -62,12 +48,13 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 	return &Aggregator{
 		cfg:         cfg,
 		Broker:      b,
-		op:          op,
+		codec:       codec.New(),
+		aggFunction: function,
 		field:       field,
 		grouped:     grouped,
 		groupSource: groupSource,
 		groupField:  groupField,
-		state:       make(map[uuid.UUID]map[string]domain.Transaction),
+		state:       make(map[uuid.UUID]map[string]external.Transaction),
 		countState:  make(map[uuid.UUID]int),
 		avgState:    make(map[uuid.UUID]map[string]avgState),
 	}, nil
@@ -90,134 +77,153 @@ func (a *Aggregator) Stop() {}
 
 // Private Methods
 
-func (a *Aggregator) handleTransactionMessage(pkt inner.Packet) error {
-	if !a.grouped {
-		// Ungrouped path. Only "count" needs no payload inspection; for any
-		// other ungrouped op we'd still need to unmarshal the transaction.
-		if a.op == opCount {
-			a.countState[pkt.ClientID]++
-			return nil
-		}
-	}
-
-	var tx domain.Transaction
-	if err := pkt.UnmarshalData(&tx); err != nil {
-		slog.Error("Error unmarshalling transaction data", "error", err)
-		return err
-	}
-
-	key, err := a.extractGroupKey(tx)
+func (a *Aggregator) sendMessageToBroker(clientID uuid.UUID, msgType external.MsgType, payload []byte, routingKey broker.KeyType) error {
+	envelope, err := a.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  msgType,
+		ClientId: clientID,
+		Payload:  payload,
+	})
 	if err != nil {
-		slog.Error("Error extracting group key", "error", err)
+		slog.Error("Error encoding internal envelope for query 5 EOF", "error", err)
 		return err
 	}
-	if a.op == opAvg {
-		if _, exists := a.avgState[pkt.ClientID]; !exists {
-			a.avgState[pkt.ClientID] = make(map[string]avgState)
-		}
-		current := a.avgState[pkt.ClientID][key]
-		amount := a.fieldValue(tx)
-		current.sum += amount
-		current.count++
-		if current.count == 1 {
-			current.sample = tx
-		}
-		a.avgState[pkt.ClientID][key] = current
-		return nil
+	if err := a.Broker.Send(broker.Message{
+		RoutingKey:  routingKey,
+		Body:        envelope,
+		ContentType: broker.ContentTypeBinary,
+	}); err != nil {
+		slog.Error("Error sending count EOF", "error", err)
+		return err
 	}
-
-	if _, exists := a.state[pkt.ClientID]; !exists {
-		a.state[pkt.ClientID] = make(map[string]domain.Transaction)
-	}
-	current, exists := a.state[pkt.ClientID][key]
-	a.state[pkt.ClientID][key] = a.combine(current, tx, exists)
-
+	slog.Debug("Message sent to broker", "msgType", msgType, "clientID", clientID, "query", a.cfg.Query)
 	return nil
 }
 
-func (a *Aggregator) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, processing aggregation results", "clientID", pkt.ClientID)
-
-	if !a.grouped && a.op == opCount {
-		return a.emitUngroupedCount(pkt.ClientID)
-	}
-
-	// groups := a.state[pkt.ClientID]
-	msgSent := 0
-	if a.op == opAvg {
-		groups := a.avgState[pkt.ClientID]
-		for key, st := range groups {
-			avg := 0.0
-			if st.count > 0 {
-				avg = st.sum / float64(st.count)
-			}
-			out := st.sample
-			if out.Paid == nil {
-				out.Paid = &domain.Money{}
-			}
-			out.Paid.Amount = avg
-			out.Format = key
-			msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, out)
-			if err != nil {
-				slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
-				return err
-			}
-			slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
-			if err := a.Broker.Send(*msg); err != nil {
-				slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
-				return err
-			}
-			msgSent++
-		}
-		delete(a.avgState, pkt.ClientID)
-	} else {
-		groups := a.state[pkt.ClientID]
-		for key, tx := range groups {
-			msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
-			if err != nil {
-				slog.Error("Error marshalling aggregated transaction", "error", err, "group_key", key)
-				return err
-			}
-			slog.Debug("Sending aggregated transaction", "clientID", pkt.ClientID, "group_key", key)
-			if err := a.Broker.Send(*msg); err != nil {
-				slog.Error("Error sending aggregated transaction", "error", err, "group_key", key)
-				return err
-			}
-			msgSent++
-		}
-		delete(a.state, pkt.ClientID)
-	}
-
-	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
-		Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
-	})
+func (a *Aggregator) handleTransactionMessage(envelope external.InternalEnvelope) error {
+	slog.Debug("Handling transaction batch message", "clientID", envelope.ClientId)
+	transactions, err := a.codec.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
+		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", pkt.ClientID, "msg_sent", msgSent)
-	if err := a.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending EOF packet", "error", err)
-		return err
+	if a.aggFunction == opCount {
+		a.countState[envelope.ClientId] += len(transactions)
+		return nil
+	}
+	for _, tx := range transactions {
+		key, err := a.extractGroupKey(tx)
+		if err != nil {
+			slog.Error("Error extracting group key", "error", err)
+			return err
+		}
+		if a.aggFunction == opAvg {
+			if _, exists := a.avgState[envelope.ClientId]; !exists {
+				a.avgState[envelope.ClientId] = make(map[string]avgState)
+			}
+			current := a.avgState[envelope.ClientId][key]
+			amount := a.fieldValue(tx)
+			current.sum += amount
+			current.count++
+			if current.count == 1 {
+				current.sample = tx
+			}
+			a.avgState[envelope.ClientId][key] = current
+			continue
+		}
+
+		if _, exists := a.state[envelope.ClientId]; !exists {
+			a.state[envelope.ClientId] = make(map[string]external.Transaction)
+		}
+		current, exists := a.state[envelope.ClientId][key]
+		a.state[envelope.ClientId][key] = a.combine(current, tx, exists)
 	}
 	return nil
+}
+
+const flushBatchSize = batch.DefaultSize
+
+func (a *Aggregator) handleEOFMessage(envelope external.InternalEnvelope) error {
+	clientID := envelope.ClientId
+	slog.Debug("Received EOF packet, processing aggregation results", "clientID", clientID)
+
+	if !a.grouped && a.aggFunction == opCount {
+		return a.emitUngroupedCount(clientID)
+	}
+
+	results := a.collectResults(clientID)
+	sentCount, err := a.sendTransactionBatches(clientID, results)
+	if err != nil {
+		slog.Error("Error sending aggregated results", "error", err, "clientID", clientID)
+		return err
+	}
+	slog.Debug("Flushed aggregation results", "clientID", clientID, "groups", len(results), "sent", sentCount)
+	return a.sendTransactionsEOF(clientID, sentCount)
+}
+
+func (a *Aggregator) collectResults(clientID uuid.UUID) []external.Transaction {
+	if a.aggFunction == opAvg {
+		groups := a.avgState[clientID]
+		results := make([]external.Transaction, 0, len(groups))
+		for _, st := range groups {
+			out := st.sample
+			if st.count > 0 {
+				out.AmountPaid = st.sum / float64(st.count)
+			}
+			results = append(results, out)
+		}
+		delete(a.avgState, clientID)
+		return results
+	}
+
+	groups := a.state[clientID]
+	results := make([]external.Transaction, 0, len(groups))
+	for _, tx := range groups {
+		results = append(results, tx)
+	}
+	delete(a.state, clientID)
+	return results
+}
+
+func (a *Aggregator) sendTransactionBatches(clientID uuid.UUID, results []external.Transaction) (int, error) {
+	sent := 0
+	for start := 0; start < len(results); start += flushBatchSize {
+		chunk := results[start:min(start+flushBatchSize, len(results))]
+		payload, err := a.codec.EncodeTransactionBatch(chunk)
+		if err != nil {
+			return sent, fmt.Errorf("encoding aggregated batch: %w", err)
+		}
+		if err := a.sendMessageToBroker(clientID, external.MsgTransactionsBatch, payload, broker.KeyNil); err != nil {
+			return sent, fmt.Errorf("sending aggregated batch: %w", err)
+		}
+		sent += len(chunk)
+	}
+	return sent, nil
+}
+
+func (a *Aggregator) sendTransactionsEOF(clientID uuid.UUID, sent int) error {
+	counts, err := a.codec.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: sent})
+	if err != nil {
+		return fmt.Errorf("encoding eof counts: %w", err)
+	}
+	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", clientID, "msg_sent", sent)
+	return a.sendMessageToBroker(clientID, external.MsgTransactionsEOF, counts, broker.KeyControlEOF)
 }
 
 func (a *Aggregator) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
+	envelope, err := a.codec.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
 		slog.Error("Error unmarshalling message", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTransaction:
-		return a.handleTransactionMessage(*pkt)
-	case inner.TypeEOF:
-		return a.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTransactionsBatch:
+		return a.handleTransactionMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return a.handleEOFMessage(envelope)
 	default:
-		slog.Warn("Received message with unknown type", "type", pkt.Type)
-		return fmt.Errorf("unknown packet type: %v", pkt.Type)
+		slog.Warn("Received message with unknown type", "type", envelope.MsgType)
+		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
 	}
 }
 
@@ -229,176 +235,16 @@ func (a *Aggregator) emitUngroupedCount(clientID uuid.UUID) error {
 	count := a.countState[clientID]
 	delete(a.countState, clientID)
 
-	resultMsg, err := a.marshalCountResult(clientID, count)
+	resultMsg, err := a.codec.EncodeQuery5Result(external.Query5Result{Count: int64(count)})
 	if err != nil {
-		slog.Error("Error marshalling count result", "error", err, "query", a.cfg.Query)
+		slog.Error("Error encoding query 5 result", "error", err)
 		return err
 	}
-	if err := a.Broker.Send(*resultMsg); err != nil {
+	err = a.sendMessageToBroker(clientID, external.MsgQuery5Result, resultMsg, broker.KeyNil)
+	if err != nil {
 		slog.Error("Error sending count result", "error", err)
 		return err
 	}
 	slog.Debug("Sent count result", "clientID", clientID, "count", count, "query", a.cfg.Query)
-
-	eofMsg, err := a.marshalCountEOF(clientID)
-	if err != nil {
-		slog.Error("Error marshalling count EOF", "error", err, "query", a.cfg.Query)
-		return err
-	}
-	if err := a.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending count EOF", "error", err)
-		return err
-	}
-	return nil
-}
-
-func (a *Aggregator) marshalCountResult(clientID uuid.UUID, count int) (*broker.Message, error) {
-	switch a.cfg.Query {
-	case 5:
-		return inner.MarshalQuery5ResultPacket(clientID, domain.Query5Result{Count: count})
-	default:
-		return nil, fmt.Errorf("ungrouped count aggregation not wired for query %d", a.cfg.Query)
-	}
-}
-
-func (a *Aggregator) marshalCountEOF(clientID uuid.UUID) (*broker.Message, error) {
-	switch a.cfg.Query {
-	case 5:
-		return inner.MarshalQuery5EOFPacket(clientID)
-	default:
-		return nil, fmt.Errorf("ungrouped count EOF not wired for query %d", a.cfg.Query)
-	}
-}
-
-// combine merges the incoming transaction into the stored aggregate for its group.
-// If no prior entry exists, the incoming tx becomes the seed.
-func (a *Aggregator) combine(current, incoming domain.Transaction, hasCurrent bool) domain.Transaction {
-	if !hasCurrent {
-		switch a.op {
-		case opCount:
-			seed := incoming
-			if seed.Paid == nil {
-				seed.Paid = &domain.Money{}
-			}
-			seed.Paid.Amount = 1
-			return seed
-		case opSum:
-			seed := incoming
-			if seed.Paid == nil {
-				seed.Paid = &domain.Money{}
-			}
-			return seed
-		default:
-			return incoming
-		}
-	}
-
-	switch a.op {
-	case opMax:
-		if a.fieldValue(incoming) > a.fieldValue(current) {
-			return incoming
-		}
-		return current
-	case opMin:
-		if a.fieldValue(incoming) < a.fieldValue(current) {
-			return incoming
-		}
-		return current
-	case opSum:
-		current.Paid.Amount += a.fieldValue(incoming)
-		return current
-	case opCount:
-		current.Paid.Amount++
-		return current
-	default:
-		return current
-	}
-}
-
-func (a *Aggregator) fieldValue(tx domain.Transaction) float64 {
-	switch a.field {
-	case "Amount":
-		if tx.Paid == nil {
-			return 0
-		}
-		return tx.Paid.Amount
-	default:
-		return 0
-	}
-}
-
-func (a *Aggregator) extractGroupKey(tx domain.Transaction) (string, error) {
-	var acct *domain.Account
-	switch a.groupSource {
-	case "origin":
-		acct = tx.Origin
-	case "dest":
-		acct = tx.Dest
-	case "format":
-		if tx.Format == "" {
-			return "", fmt.Errorf("Transaction missing format")
-		}
-		return tx.Format, nil
-	default:
-		return "", fmt.Errorf("Invalid group source: %q", a.groupSource)
-	}
-	if acct == nil {
-		return "", fmt.Errorf("Transaction missing %q account", a.groupSource)
-	}
-	switch a.groupField {
-	case "BankID":
-		if acct.BankID == "" {
-			return "", fmt.Errorf("Account missing BankID")
-		}
-		return acct.BankID, nil
-	case "ID":
-		if acct.ID == "" {
-			return "", fmt.Errorf("Account missing ID")
-		}
-		return acct.ID, nil
-	default:
-		return "", fmt.Errorf("Invalid group field: %q", a.groupField)
-	}
-}
-
-func parseParams(params map[string]any) (aggOp, string, bool, string, string, error) {
-	rawType, ok := params["type"].(string)
-	if !ok {
-		return "", "", false, "", "", fmt.Errorf("aggregator params: missing or invalid 'type'")
-	}
-	op := aggOp(rawType)
-	switch op {
-	case opMax, opMin, opSum, opCount, opAvg:
-	default:
-		return "", "", false, "", "", fmt.Errorf("aggregator params: unsupported type %q", rawType)
-	}
-
-	field, _ := params["field"].(string)
-	if field == "" && op != opCount {
-		return "", "", false, "", "", fmt.Errorf("aggregator params: 'field' is required for op %q", op)
-	}
-
-	// 'group' is optional. When absent we aggregate over a single bucket per
-	// clientID; today this is only meaningful for 'count' (used by query 5).
-	groupRaw, hasGroup := params["group"].(map[string]any)
-	if !hasGroup || len(groupRaw) == 0 {
-		if op != opCount {
-			return "", "", false, "", "", fmt.Errorf("aggregator params: ungrouped aggregation only supported for op %q (got %q)", opCount, op)
-		}
-		return op, field, false, "", "", nil
-	}
-	if len(groupRaw) > 1 {
-		return "", "", false, "", "", fmt.Errorf("aggregator params: 'group' supports a single source")
-	}
-	var groupSource, groupField string
-	for k, v := range groupRaw {
-		groupSource = k
-		s, ok := v.(string)
-		if !ok {
-			return "", "", false, "", "", fmt.Errorf("aggregator params: group value must be a string")
-		}
-		groupField = s
-	}
-
-	return op, field, true, groupSource, groupField, nil
+	return a.sendMessageToBroker(clientID, external.MsgQuery5ResultEOF, nil, broker.KeyNil)
 }

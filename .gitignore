@@ -4,3 +4,5 @@ docker-compose-dev.yaml
 
 .venv/
 __pycache__/
+# Cached expected query results (verify_output.py)
+.expected_cache/

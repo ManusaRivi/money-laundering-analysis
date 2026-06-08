@@ -2,22 +2,22 @@ package router
 
 import (
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"os"
 	"strconv"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/google/uuid"
 )
 
 type Router struct {
 	cfg               config.WorkerConfig
 	Broker            broker.Broker
+	codec             codec.Codec
 	syncEOFController *eof.SyncEOFController
 	sectionToRouteBy  string
 	fieldToRouteBy    string
@@ -44,32 +44,13 @@ func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
 	return &Router{
 		cfg:               cfg,
 		Broker:            broker,
+		codec:             codec.New(),
 		syncEOFController: nil,
 		sectionToRouteBy:  section,
 		fieldToRouteBy:    field,
 		nextWorkerAmount:  nextWorkerAmountInt,
 		syncEOFKey:        syncEOFKey,
 	}, nil
-}
-
-// parseRouteField reads params["field"] expecting `{ <section>: <field> }`
-// (e.g. { origin: "BankID" } or { paid: "Currency" }) and returns the
-// section and field name.
-func parseRouteField(params map[string]any) (string, string) {
-	field, ok := params["field"]
-	if !ok {
-		return "", ""
-	}
-	fieldMap, ok := field.(map[string]any)
-	if !ok {
-		return "", ""
-	}
-	for section, v := range fieldMap {
-		if str, ok := v.(string); ok {
-			return section, str
-		}
-	}
-	return "", ""
 }
 
 func (r *Router) Run() error {
@@ -100,141 +81,126 @@ func (r *Router) Run() error {
 	})
 }
 
+func (r *Router) Stop() {}
+
+// Private methods
+
+func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType external.MsgType, payload []byte, routingKey broker.KeyType, batchLength int) error {
+	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
+	envelope, err := r.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  msgType,
+		ClientId: clientID,
+		Payload:  payload,
+	})
+	if err != nil {
+		return fmt.Errorf("encoding internal envelope: %w", err)
+	}
+	err = r.Broker.Send(broker.Message{
+		RoutingKey:  routingKey,
+		Body:        envelope,
+		ContentType: broker.ContentTypeBinary,
+	})
+	if err != nil {
+		return fmt.Errorf("sending message to broker: %w", err)
+	}
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
+	return nil
+}
+
+// parseRouteField reads params["field"] expecting `{ <section>: <field> }`
+// (e.g. { origin: "BankID" } or { paid: "Currency" }) and returns the
+// section and field name.
+func parseRouteField(params map[string]any) (string, string) {
+	field, ok := params["field"]
+	if !ok {
+		return "", ""
+	}
+	fieldMap, ok := field.(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	for section, v := range fieldMap {
+		if str, ok := v.(string); ok {
+			return section, str
+		}
+	}
+	return "", ""
+}
+
 func (r *Router) onflush(clientID uuid.UUID) error {
 	return nil
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	eofCounts := domain.EOFCounts{
-		Counts: finalSent,
-	}
-	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
+	slog.Debug("Forwarding EOF to next worker...", "clientId", clientID)
+	eofCounts, err := r.codec.EncodeEOFCounts(finalSent)
 	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
+		slog.Error("Error marshalling EOF counts", "error", err)
 		return err
 	}
-	slog.Debug("Forwarding EOF to next worker...")
-	if err := r.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending EOF packet to broker", "error", err)
-		return err
-	}
-	// limpieza adicional si es necesaria
-	return nil
+	return r.encodeAndSendBatch(clientID, external.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0)
 }
 
 func (r *Router) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (r *Router) Stop() {}
-
-// Private methods
-
-func (r *Router) shardByField(tx domain.Transaction) string {
-	value := r.extractFieldValue(tx)
-	h := fnv.New32a()
-	h.Write([]byte(value))
-	index := int(h.Sum32()) % r.nextWorkerAmount
-	if index < 0 {
-		index += r.nextWorkerAmount
-	}
-	return fmt.Sprintf("%s_%d", r.cfg.NextWorkerPrefix, index)
-}
-
-func (r *Router) extractFieldValue(tx domain.Transaction) string {
-	switch r.sectionToRouteBy {
-	case "origin":
-		return accountField(tx.Origin, r.fieldToRouteBy)
-	case "dest":
-		return accountField(tx.Dest, r.fieldToRouteBy)
-	case "paid":
-		return moneyField(tx.Paid, r.fieldToRouteBy)
-	case "format":
-		return tx.Format
-	default:
-		return ""
-	}
-}
-
-func accountField(a *domain.Account, field string) string {
-	if a == nil {
-		return ""
-	}
-	switch field {
-	case "BankID":
-		return a.BankID
-	case "ID":
-		return a.ID
-	default:
-		return ""
-	}
-}
-
-func moneyField(m *domain.Money, field string) string {
-	if m == nil {
-		return ""
-	}
-	switch field {
-	case "Currency":
-		return m.Currency
-	default:
-		return ""
-	}
-}
-
-func (r *Router) handleTransactionMessage(pkt inner.Packet) error {
-	var tx domain.Transaction
-	err := pkt.UnmarshalData(&tx)
+func (r *Router) handleTransactionMessage(envelope external.InternalEnvelope) error {
+	txBatch, err := r.codec.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
-		slog.Error("Error unmarshalling transaction data", "error", err)
+		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-
-	routingKey := r.shardByField(tx)
-
-	slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
-
-	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyType(routingKey), tx)
-
-	if err != nil {
-		slog.Error("Error marshalling transaction packet", "error", err)
-		return err
+	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
+	r.syncEOFController.MessageReceived(envelope.ClientId, len(txBatch))
+	transactionsPerRoutingKey := make(map[string][]external.Transaction)
+	for _, tx := range txBatch {
+		routingKey := r.shardByField(tx)
+		transactionsPerRoutingKey[routingKey] = append(transactionsPerRoutingKey[routingKey], tx)
 	}
 
-	if err := r.Broker.Send(*msg); err != nil {
-		slog.Error("Error sending message to broker", "error", err)
-		return err
-	}
-	r.syncEOFController.MessageReceived(pkt.ClientID)
-	r.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyType(routingKey))
+	for routingKey, transactions := range transactionsPerRoutingKey {
+		transactionBytes, err := r.codec.EncodeTransactionBatch(transactions)
+		if err != nil {
+			slog.Error("Error encoding transaction batch", "error", err)
+			return err
+		}
 
+		slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
+		// Encode and send batch
+		routingKey := broker.KeyType(routingKey)
+		if err := r.encodeAndSendBatch(envelope.ClientId, external.MsgTransactionsBatch, transactionBytes, routingKey, len(transactions)); err != nil {
+			return err
+		}
+		r.syncEOFController.MessageSentWithKey(envelope.ClientId, routingKey, len(txBatch))
+	}
 	return nil
 }
 
-func (r *Router) handleEOFMessage(pkt inner.Packet) error {
-	var eofCounts domain.EOFCounts
-	if err := pkt.UnmarshalData(&eofCounts); err != nil {
-		slog.Error("Error unmarshalling EOF counts", "error", err)
+func (r *Router) handleEOFMessage(envelope external.InternalEnvelope) error {
+	slog.Debug("Received EOF packet, beginning syncing...", "clientId", envelope.ClientId)
+	counts, err := r.codec.DecodeEOFCounts(envelope.Payload)
+	if err != nil {
+		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
-	r.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, r.syncEOFKey)
+	r.syncEOFController.SyncEof(envelope.ClientId, counts, r.syncEOFKey)
 	return nil
 }
 
 func (r *Router) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
-
+	envelope, err := r.codec.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
-		slog.Error("Error unmarshalling message", "error", err)
+		slog.Error("Error decoding message", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTransaction:
-		return r.handleTransactionMessage(*pkt)
-	case inner.TypeEOF:
-		return r.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTransactionsBatch:
+		return r.handleTransactionMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return r.handleEOFMessage(envelope)
 	default:
-		return fmt.Errorf("unknown packet type: %v", pkt.Type)
+		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
 	}
 }

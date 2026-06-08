@@ -1,5 +1,7 @@
 package external
 
+import "github.com/google/uuid"
+
 type MsgType uint8
 
 const (
@@ -22,9 +24,15 @@ const (
 	MsgQuery5ResultEOF MsgType = 14
 )
 
-type Envelope struct {
+type ExternalEnvelope struct {
 	MsgType MsgType
 	Payload []byte
+}
+
+type InternalEnvelope struct {
+	MsgType  MsgType
+	ClientId uuid.UUID
+	Payload  []byte
 }
 
 type Transaction struct {

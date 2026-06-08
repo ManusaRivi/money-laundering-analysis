@@ -17,7 +17,7 @@ type Spliter struct {
 	cfg               config.WorkerConfig
 	Broker            broker.Broker
 	syncEOFController *eof.SyncEOFController
-	fieldsToRouteBy    []string
+	fieldsToRouteBy   []string
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
 }
@@ -42,7 +42,7 @@ func NewSpliter(cfg config.WorkerConfig, broker broker.Broker) (*Spliter, error)
 		cfg:               cfg,
 		Broker:            broker,
 		syncEOFController: nil,
-		fieldsToRouteBy:    fieldsToRouteBy,
+		fieldsToRouteBy:   fieldsToRouteBy,
 		nextWorkerAmount:  cfg.NextWorkerAmount,
 		syncEOFKey:        syncEOFKey,
 	}, nil
@@ -135,10 +135,9 @@ func (r *Spliter) routeByField(field string, tx domain.Transaction, clientID uui
 		slog.Error("Error sending message to broker", "error", err)
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, broker.KeyType(routingKey))
+	r.syncEOFController.MessageSentWithKey(clientID, broker.KeyType(routingKey), 1)
 	return nil
 }
-
 
 func (r *Spliter) shardByValue(value string) string {
 	h := fnv.New32a()
@@ -149,7 +148,6 @@ func (r *Spliter) shardByValue(value string) string {
 	}
 	return fmt.Sprintf("%s_%d", r.cfg.NextWorkerPrefix, index)
 }
-
 
 func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
 	var tx domain.Transaction
@@ -164,11 +162,10 @@ func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
 			return err
 		}
 	}
-	r.syncEOFController.MessageReceived(pkt.ClientID)
+	r.syncEOFController.MessageReceived(pkt.ClientID, 1)
 
 	return nil
 }
-
 
 func (r *Spliter) handleEOFMessage(pkt inner.Packet) error {
 	var eofCounts domain.EOFCounts

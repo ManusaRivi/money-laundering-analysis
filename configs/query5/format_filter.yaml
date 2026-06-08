@@ -1,11 +1,14 @@
 # e-e example (exchange -> exchange)
 
 broker:
-  type: q-q
+  type: e-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q5_format_filter
+  input: e_q345_filter
+  input_queue: q_q5_format_filter
   output: q_q5_router
-  exchange_type: direct
+  exchange_type: topic
+  input_keys:
+    - tx.*
   # El routing key de salida lo decide el worker (RoutingKey en el broker.Message)
   prefetch: 300
   durable: true

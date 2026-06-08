@@ -45,19 +45,21 @@ func (r *Receiver) Listen() {
 	pendingEOFs := len(data.GetQueryResultData())
 
 	for pendingEOFs > 0 {
-		header, err := r.conn.Receive(codec.HeaderSize)
+		header, err := r.conn.Receive(codec.ExternalHeaderSize)
 		if err != nil {
 			slog.Info("Receiver stopping", "err", err)
 			return
 		}
 
-		msgType, payloadSize := codec.DecodeHeader(header)
+		msgType, payloadSize := codec.DecodeExternalHeader(header)
 
 		payload, err := r.conn.Receive(int(payloadSize))
 		if err != nil {
 			slog.Info("Receiver stopping", "err", err)
 			return
 		}
+
+		slog.Debug("Received message", "msgType", msgType, "payloadSize", payloadSize)
 
 		switch msgType {
 		case external.MsgQuery1Result:
@@ -117,13 +119,13 @@ func (r *Receiver) Listen() {
 			}
 			pendingEOFs--
 		case external.MsgQuery5Result:
-			results, err := r.codec.DecodeQuery5ResultBatch(payload)
+			result, err := r.codec.DecodeQuery5Result(payload)
 			if err != nil {
 				r.closeWriter(external.MsgQuery5Result)
 				slog.Warn("Failed to decode query 5 result", "err", err)
 				continue
 			}
-			r.writeRows(external.MsgQuery5Result, query5RowsToString(results))
+			r.writeRows(external.MsgQuery5Result, query5RowsToString(result))
 		case external.MsgQuery5ResultEOF:
 			slog.Info("Received Query 5 EOF")
 			if w, ok := r.writers[external.MsgQuery5Result]; ok {
@@ -219,10 +221,8 @@ func query4RowsToString(results []external.Query4Result) [][]string {
 	return rows
 }
 
-func query5RowsToString(results []external.Query5Result) [][]string {
-	rows := make([][]string, 0, len(results))
-	for _, res := range results {
-		rows = append(rows, []string{strconv.FormatInt(res.Count, 10)})
-	}
+func query5RowsToString(result external.Query5Result) [][]string {
+	rows := make([][]string, 0, 1)
+	rows = append(rows, []string{strconv.FormatInt(result.Count, 10)})
 	return rows
 }

@@ -11,21 +11,21 @@ import (
 )
 
 type nodeInfo struct {
-	rcvResponse      int  // amount rcv reportado
+	rcvResponse int // amount rcv reportado
 
 	sentcountByKeyResponse map[broker.KeyType]int // amount sent reportado por key type
 
-	flushResponse    bool // flush ack
+	flushResponse bool // flush ack
 }
 type client struct {
-	clientID      uuid.UUID
-	msgRcvCount   int // cantidad de mensajes que recibio este nodo
+	clientID    uuid.UUID
+	msgRcvCount int // cantidad de mensajes que recibio este nodo
 	// msgSntCount   int // cantidad de mensajes que envio este nodo al siguiente stage
 	msgSentCountByKey map[broker.KeyType]int // cantidad de mensajes enviados según key type
-	expectedTotal int // total_messages que espera recibir el cluster para flushear
-	retryCount    int // cantidad de reintentos de amount request
+	expectedTotal     int                    // total_messages que espera recibir el cluster para flushear
+	retryCount        int                    // cantidad de reintentos de amount request
 
-	nodesInfo map[int]nodeInfo // senderID -> nodeInfo
+	nodesInfo         map[int]nodeInfo // senderID -> nodeInfo
 	flushExpectedSent map[broker.KeyType]int
 }
 
@@ -55,9 +55,9 @@ type SyncEOFController struct {
 
 func NewClient(clientID uuid.UUID) *client {
 	return &client{
-		clientID:       clientID,
+		clientID:          clientID,
 		msgSentCountByKey: make(map[broker.KeyType]int),
-		nodesInfo:          make(map[int]nodeInfo),
+		nodesInfo:         make(map[int]nodeInfo),
 		flushExpectedSent: make(map[broker.KeyType]int),
 	}
 }
@@ -109,7 +109,7 @@ func (c *SyncEOFController) Start() error {
 
 // MessageReceived incrementa el contador de mensajes recibidos para un cliente dado.
 // Se llama cada vez que este nodo recibe un mensaje de ese cliente.
-func (c *SyncEOFController) MessageReceived(clientID uuid.UUID) {
+func (c *SyncEOFController) MessageReceived(clientID uuid.UUID, processedCount int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -118,18 +118,18 @@ func (c *SyncEOFController) MessageReceived(clientID uuid.UUID) {
 		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
 	}
 
-	c.clients[clientID].msgRcvCount++
+	c.clients[clientID].msgRcvCount += processedCount
 	// slog.Debug("[SyncEOFController] Message received",
 	// 	"client_id", clientID,
 	// 	"received_count", c.clients[clientID].msgRcvCount,
 	// )
 }
 
-func (c *SyncEOFController) MessageSent(clientID uuid.UUID) {
-	c.MessageSentWithKey(clientID, broker.KeyNil)
+func (c *SyncEOFController) MessageSent(clientID uuid.UUID, sentCount int) {
+	c.MessageSentWithKey(clientID, broker.KeyNil, sentCount)
 }
 
-func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broker.KeyType) {
+func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broker.KeyType, sentCount int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -140,10 +140,10 @@ func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broke
 	// c.clients[clientID].msgSntCount++
 	client := c.clients[clientID]
 	if keyType == broker.KeyNil {
-		client.msgSentCountByKey[broker.KeyNil]++
+		client.msgSentCountByKey[broker.KeyNil] += sentCount
 	} else {
-		client.msgSentCountByKey[keyType]++
-		client.msgSentCountByKey[broker.KeyNil]++
+		client.msgSentCountByKey[keyType] += sentCount
+		client.msgSentCountByKey[broker.KeyNil] += sentCount
 	}
 	// slog.Debug("[SyncEOFController] Message sent",
 	// 	"client_id", clientID,
@@ -192,9 +192,9 @@ func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSntByKey map
 		"total_sent", totalSntByKey,
 	)
 	msg := ControlMessage{
-		Type:        MsgTypeFlush,
-		ClientID:    clientID,
-		RequesterID: c.nodeID,
+		Type:           MsgTypeFlush,
+		ClientID:       clientID,
+		RequesterID:    c.nodeID,
 		SentCountByKey: totalSntByKey,
 	}
 	c.sendControlMessage(msg)
@@ -253,11 +253,11 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 	)
 
 	resp := ControlMessage{
-		Type:          MsgTypeAmountResponse,
-		ClientID:      msg.ClientID,
-		RequesterID:   msg.RequesterID,
-		SenderID:      c.nodeID,
-		ReceivedCount: rcvAmount,
+		Type:           MsgTypeAmountResponse,
+		ClientID:       msg.ClientID,
+		RequesterID:    msg.RequesterID,
+		SenderID:       c.nodeID,
+		ReceivedCount:  rcvAmount,
 		SentCountByKey: sntAmountByKey,
 	}
 	c.sendControlMessage(resp)

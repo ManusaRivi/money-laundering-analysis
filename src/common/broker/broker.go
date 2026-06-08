@@ -15,9 +15,27 @@ var (
 	ErrBrokerClose        = errors.New("Broker: close error")
 )
 
+const (
+	// ContentTypeJSON marca mensajes del protocolo inner legado (JSON).
+	ContentTypeJSON = "application/json"
+	// ContentTypeBinary marca mensajes con framing binario
+	// ([16B client UUID][external envelope]) que el gateway reenvía sin decodificar.
+	ContentTypeBinary = "application/octet-stream"
+)
+
 type Message struct {
-	RoutingKey KeyType // Para ruteo dinámico (opcional)
-	Body       []byte
+	RoutingKey  KeyType // Para ruteo dinámico (opcional)
+	Body        []byte
+	ContentType string // Vacío => ContentTypeJSON (legado)
+}
+
+// contentTypeOrDefault resuelve el content type AMQP a publicar, manteniendo
+// retrocompatibilidad con los productores que no setean el campo.
+func (m Message) contentTypeOrDefault() string {
+	if m.ContentType == "" {
+		return ContentTypeJSON
+	}
+	return m.ContentType
 }
 
 type ConnSettings struct {
