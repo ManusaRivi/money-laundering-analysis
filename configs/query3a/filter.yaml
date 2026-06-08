@@ -1,11 +1,27 @@
+# broker:
+#   type: q-q
+#   url: amqp://guest:guest@rabbitmq:5672/
+#   input: q_q3_date_filter
+#   output: q_q3_amount_filter
+#   exchange_type: direct
+#   input_keys:
+#     - tx.*
+#   prefetch: 300 
+#   durable: true
+#   auto_delete: false
+#   exclusive: false
+#   no_wait: false
+#   internal: false
+
 broker:
-  type: q-q
+  type: e-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q3_date_filter
+  input: e_entry
+  input_queue: q_q3_date_filter
   output: q_q3_amount_filter
-  exchange_type: direct
+  exchange_type: topic
   input_keys:
-    - tx.*
+    - tx.usd
   prefetch: 300 
   durable: true
   auto_delete: false

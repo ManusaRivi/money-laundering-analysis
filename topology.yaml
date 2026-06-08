@@ -8,13 +8,13 @@ clients:
 
 pipelines:
   query1:
-    - name: cleaner
-      amount: 2
+#    - name: cleaner
+#      amount: 2
     - name: filter
       amount: 2
   query2:
-    - name: cleaner
-      amount: 2
+#    - name: cleaner
+#      amount: 2
     - name: router
       amount: 2
     - name: aggregator
@@ -27,24 +27,24 @@ pipelines:
         ACCOUNTS_CONFIG_PATH: /app/config_2.yaml
   query345:
     - name: filter
-      amount: 2
+      amount: 3
   query3a:
-    - name: cleaner
-      amount: 1
+#    - name: cleaner
+#      amount: 3
     - name: filter
-      amount: 1
+      amount: 3
   query3b:
-    - name: cleaner
-      amount: 1
+#    - name: cleaner
+#      amount: 3
     - name: router
-      amount: 1
+      amount: 3
     - name: aggregator
-      amount: 1
+      amount: 3
     - name: filter
-      amount: 1
+      amount: 3
   query4:
-    - name: cleaner
-      amount: 1
+#    - name: cleaner
+#      amount: 1
     - name: router
       amount: 1
     - name: aggregator
@@ -56,8 +56,8 @@ pipelines:
     - name: join
       amount: 1
   query5:
-    - name: cleaner
-      amount: 1
+#    - name: cleaner
+#      amount: 1
     - name: format_filter
       amount: 1
     - name: router
