@@ -189,8 +189,6 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 		}
 	}
 
-	f.syncEOFController.MessageReceived(envelope.ClientId, len(avgTransactions))
-
 	updatedFormats := make(map[string]struct{}, len(avgTransactions))
 	f.mu.Lock()
 	if f.avgByClient[envelope.ClientId] == nil {

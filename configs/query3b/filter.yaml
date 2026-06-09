@@ -2,7 +2,6 @@ avg_broker:
   type: e-q
   url: amqp://guest:guest@rabbitmq:5672/
   input: e_q3_avg
-  input_queue: q_q3_avg_filter_avg
   output: q_q3_avg_filter_sink
   exchange_type: fanout
   input_keys:
