@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
@@ -28,13 +29,15 @@ type AvgFormatFilter struct {
 	avgByClient         map[uuid.UUID]map[string]float64
 	avgEofByClient      map[uuid.UUID]int
 	avgDoneByClient     map[uuid.UUID]bool
+	avgDoneChByClient   map[uuid.UUID]chan struct{}
+	avgExpectedByClient map[uuid.UUID]int
+	avgReceivedByClient map[uuid.UUID]int
 	txCacheByClient     map[uuid.UUID]map[string][]external.Transaction
-	txEOFByClient       map[uuid.UUID]bool
-	pendingEOFCounts    map[uuid.UUID]map[broker.KeyType]int
-	syncStartedByClient map[uuid.UUID]bool
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
+
+	q3Buffer *batch.Buffer[external.Query3Result]
 }
 
 func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBroker broker.Broker) (*AvgFormatFilter, error) {
@@ -45,7 +48,7 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		}
 	}
 
-	return &AvgFormatFilter{
+	f := &AvgFormatFilter{
 		cfg:                 cfg,
 		avgBroker:           avgBroker,
 		txBroker:            txBroker,
@@ -55,12 +58,14 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		avgByClient:         make(map[uuid.UUID]map[string]float64),
 		avgEofByClient:      make(map[uuid.UUID]int),
 		avgDoneByClient:     make(map[uuid.UUID]bool),
+		avgDoneChByClient:   make(map[uuid.UUID]chan struct{}),
+		avgExpectedByClient: make(map[uuid.UUID]int),
+		avgReceivedByClient: make(map[uuid.UUID]int),
 		txCacheByClient:     make(map[uuid.UUID]map[string][]external.Transaction),
-		txEOFByClient:       make(map[uuid.UUID]bool),
-		pendingEOFCounts:    make(map[uuid.UUID]map[broker.KeyType]int),
-		syncStartedByClient: make(map[uuid.UUID]bool),
 		syncEOFKey:          eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
-	}, nil
+	}
+	f.q3Buffer = batch.NewBuffer(batch.DefaultSize, f.flushQuery3Results)
+	return f, nil
 }
 
 func (f *AvgFormatFilter) Run() error {
@@ -130,6 +135,29 @@ func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) error {
 }
 
 func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
+	f.mu.Lock()
+	done := f.avgDoneByClient[clientID]
+	var ch chan struct{}
+	if !done {
+		var exists bool
+		ch, exists = f.avgDoneChByClient[clientID]
+		if !exists {
+			ch = make(chan struct{})
+			f.avgDoneChByClient[clientID] = ch
+		}
+	}
+	f.mu.Unlock()
+
+	if !done {
+		<-ch
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.q3Buffer.FlushClient(clientID); err != nil {
+		slog.Error("Error flushing query3 buffer", "error", err)
+		return err
+	}
 	return nil
 }
 
@@ -139,6 +167,7 @@ func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
 
 func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Handling leader flush", "client_id", clientID, "final_sent", finalSent)
+
 	eofMsg, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
 		MsgType:  external.MsgQuery3ResultEOF,
 		ClientId: clientID,
@@ -183,11 +212,6 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 	if err != nil {
 		return err
 	}
-	for _, tx := range avgTransactions {
-		if tx.PaymentFormat == "" {
-			return fmt.Errorf("avg transaction missing payment format field")
-		}
-	}
 
 	updatedFormats := make(map[string]struct{}, len(avgTransactions))
 	f.mu.Lock()
@@ -195,9 +219,16 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 		f.avgByClient[envelope.ClientId] = make(map[string]float64)
 	}
 	for _, tx := range avgTransactions {
+		if tx.PaymentFormat == "" {
+			slog.Warn("Skipping avg transaction without payment format", "client_id", envelope.ClientId)
+			continue
+		}
 		f.avgByClient[envelope.ClientId][tx.PaymentFormat] = tx.AmountPaid
 		updatedFormats[tx.PaymentFormat] = struct{}{}
 	}
+
+	f.avgReceivedByClient[envelope.ClientId] += len(avgTransactions)
+
 	cached := make([]external.Transaction, 0)
 	if f.txCacheByClient[envelope.ClientId] != nil {
 		for format := range updatedFormats {
@@ -208,24 +239,33 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 			delete(f.txCacheByClient, envelope.ClientId)
 		}
 	}
-	f.mu.Unlock()
+
+	f.checkAvgDoneLocked(envelope.ClientId)
 
 	if len(cached) == 0 {
+		f.mu.Unlock()
 		return nil
 	}
 
-	results := make([]external.Query3Result, 0, len(cached))
 	for _, tx := range cached {
-		avg, ok := f.lookupAvg(envelope.ClientId, tx.PaymentFormat)
+		byFormat := f.avgByClient[envelope.ClientId]
+		if byFormat == nil {
+			continue
+		}
+		avg, ok := byFormat[tx.PaymentFormat]
 		if !ok {
 			continue
 		}
 		if result, ok := f.evaluateTransaction(tx, avg); ok {
-			results = append(results, result)
+			if err := f.q3Buffer.Add(envelope.ClientId, broker.KeyNil, result); err != nil {
+				f.mu.Unlock()
+				return err
+			}
 		}
 	}
+	f.mu.Unlock()
 
-	return f.sendQuery3Results(envelope.ClientId, results)
+	return nil
 }
 
 func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvelope) error {
@@ -233,27 +273,16 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvel
 	if err != nil {
 		return err
 	}
-	for _, tx := range transactions {
-		if tx.FromBank == "" {
-			return fmt.Errorf("transaction missing from bank field")
-		}
-		if tx.FromAccount == "" {
-			return fmt.Errorf("transaction missing from account field")
-		}
-		if tx.PaymentFormat == "" {
-			return fmt.Errorf("transaction missing payment format field")
-		}
-	}
-
-	f.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
-
-	results := make([]external.Query3Result, 0, len(transactions))
 
 	f.mu.Lock()
 	if f.txCacheByClient[envelope.ClientId] == nil {
 		f.txCacheByClient[envelope.ClientId] = make(map[string][]external.Transaction)
 	}
 	for _, tx := range transactions {
+		if tx.PaymentFormat == "" {
+			continue
+		}
+
 		avg, ok := f.avgByClient[envelope.ClientId][tx.PaymentFormat]
 		if !ok {
 			if f.avgDoneByClient[envelope.ClientId] {
@@ -264,12 +293,16 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvel
 		}
 
 		if result, ok := f.evaluateTransaction(tx, avg); ok {
-			results = append(results, result)
+			if err := f.q3Buffer.Add(envelope.ClientId, broker.KeyNil, result); err != nil {
+				f.mu.Unlock()
+				return err
+			}
 		}
 	}
 	f.mu.Unlock()
 
-	return f.sendQuery3Results(envelope.ClientId, results)
+	f.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	return nil
 }
 
 func (f *AvgFormatFilter) evaluateTransaction(tx external.Transaction, avg float64) (external.Query3Result, bool) {
@@ -284,23 +317,8 @@ func (f *AvgFormatFilter) evaluateTransaction(tx external.Transaction, avg float
 	}, true
 }
 
-func (f *AvgFormatFilter) lookupAvg(clientID uuid.UUID, format string) (float64, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	byFormat := f.avgByClient[clientID]
-	if byFormat == nil {
-		return 0, false
-	}
-	avg, ok := byFormat[format]
-	return avg, ok
-}
-
-func (f *AvgFormatFilter) sendQuery3Results(clientID uuid.UUID, results []external.Query3Result) error {
-	if len(results) == 0 {
-		return nil
-	}
-
-	payload, err := f.codec.EncodeQuery3ResultBatch(results)
+func (f *AvgFormatFilter) flushQuery3Results(clientID uuid.UUID, key broker.KeyType, items []external.Query3Result) error {
+	payload, err := f.codec.EncodeQuery3ResultBatch(items)
 	if err != nil {
 		return err
 	}
@@ -313,31 +331,48 @@ func (f *AvgFormatFilter) sendQuery3Results(clientID uuid.UUID, results []extern
 		return err
 	}
 	if err := f.txBroker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
+		RoutingKey:  key,
 		ContentType: broker.ContentTypeBinary,
 		Body:        envelope,
 	}); err != nil {
 		return err
 	}
-	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, len(results))
+	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, len(items))
 	return nil
 }
 
 func (f *AvgFormatFilter) handleAvgEOF(envelope external.InternalEnvelope) error {
-	if _, err := f.codec.DecodeEOFCounts(envelope.Payload); err != nil {
+	counts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+	if err != nil {
 		return err
 	}
 
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.avgEofByClient[envelope.ClientId]++
-	if f.avgEofByClient[envelope.ClientId] >= f.prevWorkers {
-		f.avgDoneByClient[envelope.ClientId] = true
-		f.dropUnresolvedCachedLocked(envelope.ClientId)
-	}
-	f.mu.Unlock()
 
-	f.tryStartSyncEOF(envelope.ClientId)
+	var expected int
+	for _, c := range counts {
+		expected += c
+	}
+	f.avgExpectedByClient[envelope.ClientId] += expected
+
+	f.checkAvgDoneLocked(envelope.ClientId)
 	return nil
+}
+
+func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID) {
+	if f.avgDoneByClient[clientID] {
+		return
+	}
+	if f.avgEofByClient[clientID] >= f.prevWorkers && f.avgReceivedByClient[clientID] >= f.avgExpectedByClient[clientID] {
+		f.avgDoneByClient[clientID] = true
+		f.dropUnresolvedCachedLocked(clientID)
+		if ch, exists := f.avgDoneChByClient[clientID]; exists {
+			close(ch)
+			delete(f.avgDoneChByClient, clientID)
+		}
+	}
 }
 
 func (f *AvgFormatFilter) handleEOF(envelope external.InternalEnvelope) error {
@@ -346,11 +381,9 @@ func (f *AvgFormatFilter) handleEOF(envelope external.InternalEnvelope) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
-	f.mu.Lock()
-	f.txEOFByClient[envelope.ClientId] = true
-	f.pendingEOFCounts[envelope.ClientId] = eofCounts
-	f.mu.Unlock()
-	f.tryStartSyncEOF(envelope.ClientId)
+
+	// Start syncing transactions immediately.
+	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
 	return nil
 }
 
@@ -371,21 +404,4 @@ func (f *AvgFormatFilter) dropUnresolvedCachedLocked(clientID uuid.UUID) {
 	if len(f.txCacheByClient[clientID]) == 0 {
 		delete(f.txCacheByClient, clientID)
 	}
-}
-
-func (f *AvgFormatFilter) tryStartSyncEOF(clientID uuid.UUID) {
-	f.mu.Lock()
-	if f.syncStartedByClient[clientID] {
-		f.mu.Unlock()
-		return
-	}
-	if !f.txEOFByClient[clientID] || !f.avgDoneByClient[clientID] {
-		f.mu.Unlock()
-		return
-	}
-	counts := f.pendingEOFCounts[clientID]
-	f.syncStartedByClient[clientID] = true
-	f.mu.Unlock()
-
-	f.syncEOFController.SyncEof(clientID, counts, f.syncEOFKey)
 }

@@ -3,7 +3,6 @@ package filter
 import (
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
@@ -13,7 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const timeTxFormat = "2006/01/02 15:04"
 const Dollar = "US Dollar"
 
 type DateRange struct {
@@ -21,8 +19,8 @@ type DateRange struct {
 	Broker   broker.Broker
 	codec    codec.Codec
 	Type     string
-	fromTime time.Time
-	toTime   time.Time
+	fromDate string
+	toDate   string
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
@@ -47,16 +45,6 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 		return nil, fmt.Errorf("both 'from' and 'to' are required for DateRangeFilter")
 	}
 
-	fromTime, err := time.Parse(timeTxFormat, fromDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid from date %q: %w", fromDate, err)
-	}
-
-	toTime, err := time.Parse(timeTxFormat, toDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid to date %q: %w", toDate, err)
-	}
-
 	syncEOFKey := eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys)
 
 	return &DateRange{
@@ -64,8 +52,8 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 		Broker:            b,
 		codec:             codec.New(),
 		Type:              typeVal,
-		fromTime:          fromTime,
-		toTime:            toTime,
+		fromDate:          fromDate,
+		toDate:            toDate,
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
 	}, nil
@@ -155,12 +143,7 @@ func (f *DateRange) filterTransactionByDate(tx external.Transaction) bool {
 		return false
 	}
 
-	txTime, err := time.Parse(timeTxFormat, tx.Timestamp)
-	if err != nil {
-		slog.Error("Transaction has invalid timestamp", "timestamp", tx.Timestamp, "error", err)
-		return false
-	}
-	if txTime.Before(f.fromTime) || txTime.After(f.toTime) {
+	if tx.Timestamp < f.fromDate || tx.Timestamp > f.toDate {
 		return false
 	}
 	return true
@@ -211,7 +194,6 @@ func (f *DateRange) handleTransactionMessage(envelope external.InternalEnvelope)
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-	f.syncEOFController.MessageReceived(clientId, len(transactions))
 	slog.Debug("Received transaction batch, applying date range filter", "clientId", clientId)
 	dollarTx := make([]external.Transaction, 0)
 	nonDollarTx := make([]external.Transaction, 0)
@@ -230,6 +212,7 @@ func (f *DateRange) handleTransactionMessage(envelope external.InternalEnvelope)
 	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction) {
 		return fmt.Errorf("error sending non-dollar transaction batch to broker")
 	}
+	f.syncEOFController.MessageReceived(clientId, len(transactions))
 	return nil
 }
 
