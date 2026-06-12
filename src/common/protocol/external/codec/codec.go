@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
 	"github.com/google/uuid"
 )
@@ -316,6 +317,258 @@ func decodeTransaction(r *bytes.Reader) (external.Transaction, error) {
 	return t, nil
 }
 
+
+
+// ====================
+// =====   txQ4   =====
+// ====================
+
+// type TxQ4PhaseOne struct {
+// 	Type		TypeTxQ4
+// 	// Transaction *Transaction
+// 	Transaction *external.Transaction
+// }
+func encodeTxQ4PhaseOne(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseOne) error {
+	if err := writeString(buf, string(txQ4.Type)); err != nil {
+		return err
+	}
+	// TODO: This tx will not have all the fields of a normal transaction
+	if err := encodeTransaction(buf, *txQ4.Transaction); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *BinaryCodec) EncodeTxQ4PhaseOneEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseOne) ([]byte, error) {
+	buf := bytes.Buffer{}
+	err := encodeTxQ4PhaseOne(&buf, txQ4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode TxQ4PhaseOne: %w", err)
+	}
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgTxQ4,
+		ClientId: clientId,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (p *BinaryCodec) DecodeTxQ4PhaseOneEnvelope(payload []byte) (domain.TxQ4PhaseOne, error) {
+	r := bytes.NewReader(payload)
+	txQ4TypeStr, err := readString(r)
+	if err != nil {
+		return domain.TxQ4PhaseOne{}, fmt.Errorf("failed to read TxQ4 type: %w", err)
+	}
+	txQ4Type := domain.TypeTxQ4(txQ4TypeStr)
+
+	tx, err := decodeTransaction(r)
+	if err != nil {
+		return domain.TxQ4PhaseOne{}, fmt.Errorf("failed to decode transaction in TxQ4PhaseOne: %w", err)
+	}
+
+	return domain.TxQ4PhaseOne{
+		Type:        txQ4Type,
+		Transaction: &tx,
+	}, nil
+}
+// type TxQ4PairKey struct {
+// 	Src, Dst string
+// }
+// type TxQ4PhaseTwo struct {
+// 	Key        TxQ4PairKey 
+// 	Count      int         
+// 	SrcAccount *Account    
+// 	DstAccount *Account    
+// }
+func encodeTxQ4PhaseTwo(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseTwo) error {
+	if err := encodeTransactionAccount(buf, txQ4.SrcAccount.BankID, txQ4.SrcAccount.ID); err != nil {
+		return err
+	}
+	if err := encodeTransactionAccount(buf, txQ4.DstAccount.BankID, txQ4.DstAccount.ID); err != nil {
+		return err
+	}
+	if err := writeString(buf, txQ4.Key.Src); err != nil {
+		return err
+	}
+	if err := writeString(buf, txQ4.Key.Dst); err != nil {
+		return err
+	}
+	writeInt64(buf, int64(txQ4.Count))
+	return nil
+}
+
+func (p *BinaryCodec) EncodeTxQ4PhaseTwoEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseTwo) ([]byte, error) {
+	buf := bytes.Buffer{}
+	err := encodeTxQ4PhaseTwo(&buf, txQ4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode TxQ4PhaseTwo: %w", err)
+	}
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgTxQ4,
+		ClientId: clientId,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (p *BinaryCodec) DecodeTxQ4PhaseTwoEnvelope(payload []byte) (domain.TxQ4PhaseTwo, error) {
+	r := bytes.NewReader(payload)
+
+	srcBank, srcAccountId, err := decodeTransactionAccount(r)
+	if err != nil {
+		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to decode source account in TxQ4PhaseTwo: %w", err)
+	}
+	dstBank, dstAccountId, err := decodeTransactionAccount(r)
+	if err != nil {
+		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to decode destination account in TxQ4PhaseTwo: %w", err)
+	}
+	srcAccount := &domain.Account{BankID: srcBank, ID: srcAccountId}
+	dstAccount := &domain.Account{BankID: dstBank, ID: dstAccountId}
+
+	src, err := readString(r)
+	if err != nil {
+		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read source in TxQ4PhaseTwo: %w", err)
+	}
+	dst, err := readString(r)
+	if err != nil {
+		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read destination in TxQ4PhaseTwo: %w", err)
+	}
+	count, err := readInt64(r)
+	if err != nil {
+		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read count in TxQ4PhaseTwo: %w", err)
+	}
+
+	return domain.TxQ4PhaseTwo{
+		Key:        domain.TxQ4PairKey{Src: src, Dst: dst},
+		Count:      int(count),
+		SrcAccount: srcAccount,
+		DstAccount: dstAccount,
+	}, nil
+}
+// type TxQ4PairEntry struct {
+// 	Count      int
+// 	SrcAccount Account
+// 	DstAccount Account
+// }
+// type TxQ4PhaseThree struct {
+// 	ScatterGather map[string]*TxQ4PairEntry
+// }
+func encodeTxQ4PhaseThree(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseThree) error {
+	keys := make([]string, 0, len(txQ4.ScatterGather))
+	for k := range txQ4.ScatterGather {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	writeInt64(buf, int64(len(keys)))
+	for _, k := range keys {
+		entry := txQ4.ScatterGather[k]
+		if err := writeString(buf, k); err != nil {
+			return err
+		}
+		writeInt64(buf, int64(entry.Count))
+		if err := encodeTransactionAccount(buf, entry.SrcAccount.BankID, entry.SrcAccount.ID); err != nil {
+			return err
+		}
+		if err := encodeTransactionAccount(buf, entry.DstAccount.BankID, entry.DstAccount.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *BinaryCodec) EncodeTxQ4PhaseThreeEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseThree) ([]byte, error) {
+	buf := bytes.Buffer{}
+	err := encodeTxQ4PhaseThree(&buf, txQ4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode TxQ4PhaseThree: %w", err)
+	}
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgTxQ4,
+		ClientId: clientId,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (p *BinaryCodec) DecodeTxQ4PhaseThreeEnvelope(payload []byte) (domain.TxQ4PhaseThree, error) {
+	r := bytes.NewReader(payload)
+	count, err := readInt64(r)
+	if err != nil {
+		return domain.TxQ4PhaseThree{}, fmt.Errorf("failed to read count in TxQ4PhaseThree: %w", err)
+	}
+
+	scatterGather := make(map[string]*domain.TxQ4PairEntry, count)
+	for i := int64(0); i < count; i++ {
+		key, err := readString(r)
+		if err != nil {
+			return domain.TxQ4PhaseThree{}, fmt.Errorf("failed to read key of entry %d in TxQ4PhaseThree: %w", i, err)
+		}
+		entryCount, err := readInt64(r)
+		if err != nil {
+			return domain.TxQ4PhaseThree{}, fmt.Errorf("failed to read count of entry %d in TxQ4PhaseThree: %w", i, err)
+		}
+		srcBank, srcAccountId, err := decodeTransactionAccount(r)
+		if err != nil {
+			return domain.TxQ4PhaseThree{}, fmt.Errorf("failed to decode source account of entry %d in TxQ4PhaseThree: %w", i, err)
+		}
+		dstBank, dstAccountId, err := decodeTransactionAccount(r)
+		if err != nil {
+			return domain.TxQ4PhaseThree{}, fmt.Errorf("failed to decode destination account of entry %d in TxQ4PhaseThree: %w", i, err)
+		}
+		scatterGather[key] = &domain.TxQ4PairEntry{
+			Count: int(entryCount),
+			SrcAccount: domain.Account{
+				BankID: srcBank,
+				ID:     srcAccountId,
+			},
+			DstAccount: domain.Account{
+				BankID: dstBank,
+				ID:     dstAccountId,
+			},
+		}
+	}
+
+	return domain.TxQ4PhaseThree{
+		ScatterGather: scatterGather,
+	}, nil
+}
+
+// type Account struct {
+// 	BankID string
+// 	ID     string
+// }
+func (p *BinaryCodec) EncodeAccountsEnvelope(clientID uuid.UUID, accounts []domain.Account) ([]byte, error) {
+	buf := bytes.Buffer{}
+	for _, account := range accounts {
+		if err := encodeTransactionAccount(&buf, account.BankID, account.ID); err != nil {
+			return nil, fmt.Errorf("encoding account %s-%s: %w", account.BankID, account.ID, err)
+		}
+	}
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgTxAccounts,
+		ClientId: clientID,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (p *BinaryCodec) DecodeAccountsEnvelope(payload []byte) ([]domain.Account, error) {
+	r := bytes.NewReader(payload)
+	accounts := []domain.Account{}
+	for r.Len() > 0 {
+		bankID, accountID, err := decodeTransactionAccount(r)
+		if err != nil {
+			return nil, fmt.Errorf("decoding account: %w", err)
+		}
+		accounts = append(accounts, domain.Account{
+			BankID: bankID,
+			ID:     accountID,
+		})
+	}
+	return accounts, nil
+}
+
 // ====================
 // ===== Query  1 =====
 // ====================
@@ -475,7 +728,7 @@ func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Res
 // ===== Query  4 =====
 // ====================
 
-func encodeQuery4Result(buf *bytes.Buffer, r external.Query4Result) error {
+func encodeQuery4Result(buf *bytes.Buffer, r domain.Account) error {
 	if err := writeString(buf, r.BankID); err != nil {
 		return err
 	}
@@ -494,13 +747,14 @@ func decodeQuery4Result(r *bytes.Reader) (external.Query4Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery4ResultBatch(results []external.Query4Result) ([]byte, error) {
+func (p *BinaryCodec) EncodeQuery4ResultEnvelope(clientId uuid.UUID, results map[domain.Account]struct{}) ([]byte, error) {
 	var batch bytes.Buffer
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
 	batch.Write(count[:])
 
-	for i, r := range results {
+	i := 0
+	for r := range results {
 		var resBuf bytes.Buffer
 		if err := encodeQuery4Result(&resBuf, r); err != nil {
 			return nil, fmt.Errorf("encoding result %d: %w", i, err)
@@ -512,11 +766,17 @@ func (BinaryCodec) EncodeQuery4ResultBatch(results []external.Query4Result) ([]b
 		binary.BigEndian.PutUint16(length[:], uint16(resBuf.Len()))
 		batch.Write(length[:])
 		batch.Write(resBuf.Bytes())
+		i++
 	}
-	return batch.Bytes(), nil
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgQuery4Result,
+		ClientId: clientId,
+		Payload:  batch.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
 }
 
-func (BinaryCodec) DecodeQuery4ResultBatch(payload []byte) ([]external.Query4Result, error) {
+func (BinaryCodec) DecodeQuery4ResultPayload(payload []byte) ([]external.Query4Result, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -604,6 +864,19 @@ func (BinaryCodec) EncodeEOFCounts(counts map[broker.KeyType]int) ([]byte, error
 		writeInt64(&buf, int64(counts[broker.KeyType(key)]))
 	}
 	return buf.Bytes(), nil
+}
+
+func (p *BinaryCodec) EncodeEOFCountsEnvelope(clientId uuid.UUID, counts map[broker.KeyType]int) ([]byte, error) {
+	payload, err := p.EncodeEOFCounts(counts)
+	if err != nil {
+		return nil, fmt.Errorf("encoding EOF counts: %w", err)
+	}
+	envelope := external.InternalEnvelope{
+		MsgType:  external.MsgTransactionsEOF,
+		ClientId: clientId,
+		Payload:  payload,
+	}
+	return p.EncodeInternalEnvelope(envelope)
 }
 
 // DecodeEOFCounts is the inverse of EncodeEOFCounts. It always returns a

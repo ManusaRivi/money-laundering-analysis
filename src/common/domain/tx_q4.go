@@ -1,5 +1,7 @@
 package domain
 
+import "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+
 type TypeTxQ4 string
 
 const (
@@ -22,32 +24,24 @@ func (e *TxQ4PairEntry) Merge(other *TxQ4PairEntry) {
 }
 
 type TxQ4PhaseOne struct {
-	Type		TypeTxQ4 `json:"type"`
-	Transaction *Transaction `json:"transaction"`
+	Type		TypeTxQ4
+	// Transaction *Transaction
+	Transaction *external.Transaction
 }
 
 type TxQ4PhaseTwo struct {
-	Key        TxQ4PairKey `json:"key"`
-	Count      int         `json:"count"`
-	SrcAccount *Account    `json:"src_account"`
-	DstAccount *Account    `json:"dst_account"`
-	// Entry	  TxQ4PairEntry `json:"entry"`
+	Key        TxQ4PairKey 
+	Count      int         
+	SrcAccount *Account    
+	DstAccount *Account    
 }
 
 type TxQ4PhaseThree struct {
-	ScatterGather map[string]*TxQ4PairEntry `json:"scatter_gather"`
+	ScatterGather map[string]*TxQ4PairEntry
 }
 
 func (k TxQ4PairKey) Key() string {
 	return k.Src + "::" + k.Dst
-}
-
-func MakePhaseThree(gather map[TxQ4PairKey]*TxQ4PairEntry) TxQ4PhaseThree {
-	out := make(map[string]*TxQ4PairEntry, len(gather))
-	for k, v := range gather {
-		out[k.Key()] = v
-	}
-	return TxQ4PhaseThree{ScatterGather: out}
 }
 
 

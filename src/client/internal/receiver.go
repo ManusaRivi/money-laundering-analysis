@@ -105,12 +105,14 @@ func (r *Receiver) Listen() {
 			}
 			pendingEOFs--
 		case external.MsgQuery4Result:
-			results, err := r.codec.DecodeQuery4ResultBatch(payload)
+			slog.Debug("Decoding Query 4 result")
+			results, err := r.codec.DecodeQuery4ResultPayload(payload)
 			if err != nil {
 				r.closeWriter(external.MsgQuery4Result)
 				slog.Warn("Failed to decode query 4 result", "err", err)
 				continue
 			}
+			slog.Debug("Decoded Query 4 result", "numResults", len(results))
 			r.writeRows(external.MsgQuery4Result, query4RowsToString(results))
 		case external.MsgQuery4ResultEOF:
 			slog.Info("Received Query 4 EOF")
