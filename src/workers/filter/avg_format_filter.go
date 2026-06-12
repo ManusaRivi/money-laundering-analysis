@@ -232,7 +232,9 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 	cached := make([]external.Transaction, 0)
 	if f.txCacheByClient[envelope.ClientId] != nil {
 		for format := range updatedFormats {
-			cached = append(cached, f.txCacheByClient[envelope.ClientId][format]...)
+			for _, tx := range f.txCacheByClient[envelope.ClientId][format] {
+				cached = append(cached, tx)
+			}
 			delete(f.txCacheByClient[envelope.ClientId], format)
 		}
 		if len(f.txCacheByClient[envelope.ClientId]) == 0 {
@@ -306,7 +308,7 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvel
 }
 
 func (f *AvgFormatFilter) evaluateTransaction(tx external.Transaction, avg float64) (external.Query3Result, bool) {
-	if tx.AmountPaid >= avg*f.avgMultiplier {
+	if tx.AmountPaid >= avg * f.avgMultiplier {
 		return external.Query3Result{}, false
 	}
 	return external.Query3Result{
@@ -358,6 +360,9 @@ func (f *AvgFormatFilter) handleAvgEOF(envelope external.InternalEnvelope) error
 	f.avgExpectedByClient[envelope.ClientId] += expected
 
 	f.checkAvgDoneLocked(envelope.ClientId)
+
+	slog.Debug("Handled avg EOF", "client_id", envelope.ClientId, "eof_count", f.avgEofByClient[envelope.ClientId], "expected", f.avgExpectedByClient[envelope.ClientId], "received", f.avgReceivedByClient[envelope.ClientId])
+	
 	return nil
 }
 
@@ -365,7 +370,7 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID) {
 	if f.avgDoneByClient[clientID] {
 		return
 	}
-	if f.avgEofByClient[clientID] >= f.prevWorkers && f.avgReceivedByClient[clientID] >= f.avgExpectedByClient[clientID] {
+	if f.avgEofByClient[clientID] == f.prevWorkers && f.avgReceivedByClient[clientID] == f.avgExpectedByClient[clientID] {
 		f.avgDoneByClient[clientID] = true
 		f.dropUnresolvedCachedLocked(clientID)
 		if ch, exists := f.avgDoneChByClient[clientID]; exists {
