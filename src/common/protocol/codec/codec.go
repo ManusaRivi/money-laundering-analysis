@@ -10,7 +10,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/google/uuid"
 )
 
@@ -23,14 +23,14 @@ const (
 	PayloadSizeHeaderBytes = 4
 )
 
-func DecodeExternalHeader(header []byte) (external.MsgType, uint32) {
-	msgType := external.MsgType(header[0])
+func DecodeExternalHeader(header []byte) (protocol.MsgType, uint32) {
+	msgType := protocol.MsgType(header[0])
 	payloadLen := binary.BigEndian.Uint32(header[MsgTypeHeaderBytes : MsgTypeHeaderBytes+PayloadSizeHeaderBytes])
 	return msgType, payloadLen
 }
 
-func DecodeInternalHeader(header []byte) (external.MsgType, uuid.UUID, uint32) {
-	msgType := external.MsgType(header[0])
+func DecodeInternalHeader(header []byte) (protocol.MsgType, uuid.UUID, uint32) {
+	msgType := protocol.MsgType(header[0])
 	clientId, err := uuid.FromBytes(header[MsgTypeHeaderBytes : MsgTypeHeaderBytes+ClientIDHeaderBytes])
 	if err != nil {
 		return msgType, uuid.Nil, 0
@@ -47,7 +47,7 @@ func New() *BinaryCodec { return &BinaryCodec{} }
 
 // TODO: Client ID: FIrst item in Internal header
 
-func (BinaryCodec) EncodeExternalEnvelope(envelope external.ExternalEnvelope) ([]byte, error) {
+func (BinaryCodec) EncodeExternalEnvelope(envelope protocol.ExternalEnvelope) ([]byte, error) {
 	buffer := make([]byte, MsgTypeHeaderBytes+PayloadSizeHeaderBytes+len(envelope.Payload))
 	buffer[0] = byte(envelope.MsgType)
 	binary.BigEndian.PutUint32(buffer[MsgTypeHeaderBytes:MsgTypeHeaderBytes+PayloadSizeHeaderBytes], uint32(len(envelope.Payload)))
@@ -55,7 +55,7 @@ func (BinaryCodec) EncodeExternalEnvelope(envelope external.ExternalEnvelope) ([
 	return buffer, nil
 }
 
-func (BinaryCodec) EncodeInternalEnvelope(envelope external.InternalEnvelope) ([]byte, error) {
+func (BinaryCodec) EncodeInternalEnvelope(envelope protocol.InternalEnvelope) ([]byte, error) {
 	buffer := make([]byte, MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes+len(envelope.Payload))
 	buffer[0] = byte(envelope.MsgType)
 	copy(buffer[MsgTypeHeaderBytes:MsgTypeHeaderBytes+ClientIDHeaderBytes], envelope.ClientId[:])
@@ -64,13 +64,13 @@ func (BinaryCodec) EncodeInternalEnvelope(envelope external.InternalEnvelope) ([
 	return buffer, nil
 }
 
-func (BinaryCodec) DecodeInternalEnvelope(message []byte) (external.InternalEnvelope, error) {
+func (BinaryCodec) DecodeInternalEnvelope(message []byte) (protocol.InternalEnvelope, error) {
 	msgType, ClientId, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
 	if uint32(len(message)-InternalHeaderSize) < payloadLen {
-		return external.InternalEnvelope{}, fmt.Errorf("payload length mismatch: header says %d bytes but only %d bytes remain", payloadLen, len(message)-InternalHeaderSize)
+		return protocol.InternalEnvelope{}, fmt.Errorf("payload length mismatch: header says %d bytes but only %d bytes remain", payloadLen, len(message)-InternalHeaderSize)
 	}
 	payload := message[InternalHeaderSize : InternalHeaderSize+payloadLen]
-	return external.InternalEnvelope{
+	return protocol.InternalEnvelope{
 		MsgType:  msgType,
 		ClientId: ClientId,
 		Payload:  payload,
@@ -81,7 +81,7 @@ func (BinaryCodec) DecodeInternalEnvelope(message []byte) (external.InternalEnve
 // ===== Accounts =====
 // ====================
 
-func (BinaryCodec) EncodeAccountBatch(accounts []external.AccountData) ([]byte, error) {
+func (BinaryCodec) EncodeAccountBatch(accounts []protocol.AccountData) ([]byte, error) {
 	var batch bytes.Buffer
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(accounts)))
@@ -103,7 +103,7 @@ func (BinaryCodec) EncodeAccountBatch(accounts []external.AccountData) ([]byte, 
 	return batch.Bytes(), nil
 }
 
-func (BinaryCodec) DecodeAccountBatch(payload []byte) ([]external.AccountData, error) {
+func (BinaryCodec) DecodeAccountBatch(payload []byte) ([]protocol.AccountData, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -111,7 +111,7 @@ func (BinaryCodec) DecodeAccountBatch(payload []byte) ([]external.AccountData, e
 	}
 	count := binary.BigEndian.Uint32(countBytes[:])
 
-	accounts := make([]external.AccountData, 0, count)
+	accounts := make([]protocol.AccountData, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var lengthBytes [2]byte
 		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
@@ -139,7 +139,7 @@ func (BinaryCodec) DecodeAccountBatch(payload []byte) ([]external.AccountData, e
 // === Transactions ===
 // ====================
 
-func (BinaryCodec) EncodeTransactionBatch(transactions []external.Transaction) ([]byte, error) {
+func (BinaryCodec) EncodeTransactionBatch(transactions []protocol.Transaction) ([]byte, error) {
 	var batch bytes.Buffer
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(transactions)))
@@ -161,7 +161,7 @@ func (BinaryCodec) EncodeTransactionBatch(transactions []external.Transaction) (
 	return batch.Bytes(), nil
 }
 
-func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]external.Transaction, error) {
+func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]protocol.Transaction, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -169,7 +169,7 @@ func (BinaryCodec) DecodeTransactionBatch(payload []byte) ([]external.Transactio
 	}
 	count := binary.BigEndian.Uint32(countBytes[:])
 
-	txs := make([]external.Transaction, 0, count)
+	txs := make([]protocol.Transaction, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var lengthBytes [2]byte
 		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
@@ -206,8 +206,8 @@ func encodeAccountData(buf *bytes.Buffer, bankName, bankID, accountNumber, entit
 	return writeString(buf, entityName)
 }
 
-func decodeAccountData(r *bytes.Reader) (external.AccountData, error) {
-	var a external.AccountData
+func decodeAccountData(r *bytes.Reader) (protocol.AccountData, error) {
+	var a protocol.AccountData
 	var err error
 	if a.BankName, err = readString(r); err != nil {
 		return a, fmt.Errorf("bank name: %w", err)
@@ -263,7 +263,7 @@ func decodeMoney(r *bytes.Reader) (float64, string, error) {
 	return amount, currency, nil
 }
 
-func encodeTransaction(buf *bytes.Buffer, t external.Transaction) error {
+func encodeTransaction(buf *bytes.Buffer, t protocol.Transaction) error {
 	if err := writeString(buf, t.Timestamp); err != nil {
 		return err
 	}
@@ -290,8 +290,8 @@ func encodeTransaction(buf *bytes.Buffer, t external.Transaction) error {
 	return nil
 }
 
-func decodeTransaction(r *bytes.Reader) (external.Transaction, error) {
-	var t external.Transaction
+func decodeTransaction(r *bytes.Reader) (protocol.Transaction, error) {
+	var t protocol.Transaction
 	var err error
 	if t.Timestamp, err = readString(r); err != nil {
 		return t, err
@@ -317,17 +317,15 @@ func decodeTransaction(r *bytes.Reader) (external.Transaction, error) {
 	return t, nil
 }
 
-
-
 // ====================
 // =====   txQ4   =====
 // ====================
 
-// type TxQ4PhaseOne struct {
-// 	Type		TypeTxQ4
-// 	// Transaction *Transaction
-// 	Transaction *external.Transaction
-// }
+//	type TxQ4PhaseOne struct {
+//		Type		TypeTxQ4
+//		// Transaction *Transaction
+//		Transaction *protocol.Transaction
+//	}
 func encodeTxQ4PhaseOne(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseOne) error {
 	if err := writeString(buf, string(txQ4.Type)); err != nil {
 		return err
@@ -345,8 +343,8 @@ func (p *BinaryCodec) EncodeTxQ4PhaseOneEnvelope(clientId uuid.UUID, txQ4 domain
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode TxQ4PhaseOne: %w", err)
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgTxQ4,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTxQ4,
 		ClientId: clientId,
 		Payload:  buf.Bytes(),
 	}
@@ -371,15 +369,17 @@ func (p *BinaryCodec) DecodeTxQ4PhaseOneEnvelope(payload []byte) (domain.TxQ4Pha
 		Transaction: &tx,
 	}, nil
 }
-// type TxQ4PairKey struct {
-// 	Src, Dst string
-// }
-// type TxQ4PhaseTwo struct {
-// 	Key        TxQ4PairKey 
-// 	Count      int         
-// 	SrcAccount *Account    
-// 	DstAccount *Account    
-// }
+
+//	type TxQ4PairKey struct {
+//		Src, Dst string
+//	}
+//
+//	type TxQ4PhaseTwo struct {
+//		Key        TxQ4PairKey
+//		Count      int
+//		SrcAccount *Account
+//		DstAccount *Account
+//	}
 func encodeTxQ4PhaseTwo(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseTwo) error {
 	if err := encodeTransactionAccount(buf, txQ4.SrcAccount.BankID, txQ4.SrcAccount.ID); err != nil {
 		return err
@@ -403,8 +403,8 @@ func (p *BinaryCodec) EncodeTxQ4PhaseTwoEnvelope(clientId uuid.UUID, txQ4 domain
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode TxQ4PhaseTwo: %w", err)
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgTxQ4,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTxQ4,
 		ClientId: clientId,
 		Payload:  buf.Bytes(),
 	}
@@ -445,14 +445,16 @@ func (p *BinaryCodec) DecodeTxQ4PhaseTwoEnvelope(payload []byte) (domain.TxQ4Pha
 		DstAccount: dstAccount,
 	}, nil
 }
-// type TxQ4PairEntry struct {
-// 	Count      int
-// 	SrcAccount Account
-// 	DstAccount Account
-// }
-// type TxQ4PhaseThree struct {
-// 	ScatterGather map[string]*TxQ4PairEntry
-// }
+
+//	type TxQ4PairEntry struct {
+//		Count      int
+//		SrcAccount Account
+//		DstAccount Account
+//	}
+//
+//	type TxQ4PhaseThree struct {
+//		ScatterGather map[string]*TxQ4PairEntry
+//	}
 func encodeTxQ4PhaseThree(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseThree) error {
 	keys := make([]string, 0, len(txQ4.ScatterGather))
 	for k := range txQ4.ScatterGather {
@@ -483,8 +485,8 @@ func (p *BinaryCodec) EncodeTxQ4PhaseThreeEnvelope(clientId uuid.UUID, txQ4 doma
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode TxQ4PhaseThree: %w", err)
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgTxQ4,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTxQ4,
 		ClientId: clientId,
 		Payload:  buf.Bytes(),
 	}
@@ -534,10 +536,10 @@ func (p *BinaryCodec) DecodeTxQ4PhaseThreeEnvelope(payload []byte) (domain.TxQ4P
 	}, nil
 }
 
-// type Account struct {
-// 	BankID string
-// 	ID     string
-// }
+//	type Account struct {
+//		BankID string
+//		ID     string
+//	}
 func (p *BinaryCodec) EncodeAccountsEnvelope(clientID uuid.UUID, accounts []domain.Account) ([]byte, error) {
 	buf := bytes.Buffer{}
 	for _, account := range accounts {
@@ -545,8 +547,8 @@ func (p *BinaryCodec) EncodeAccountsEnvelope(clientID uuid.UUID, accounts []doma
 			return nil, fmt.Errorf("encoding account %s-%s: %w", account.BankID, account.ID, err)
 		}
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgTxAccounts,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTxAccounts,
 		ClientId: clientID,
 		Payload:  buf.Bytes(),
 	}
@@ -573,7 +575,7 @@ func (p *BinaryCodec) DecodeAccountsEnvelope(payload []byte) ([]domain.Account, 
 // ===== Query  1 =====
 // ====================
 
-func encodeQuery1Result(buf *bytes.Buffer, r external.Query1Result) error {
+func encodeQuery1Result(buf *bytes.Buffer, r protocol.Query1Result) error {
 	if err := encodeTransactionAccount(buf, r.FromBank, r.FromAccount); err != nil {
 		return err
 	}
@@ -584,8 +586,8 @@ func encodeQuery1Result(buf *bytes.Buffer, r external.Query1Result) error {
 	return nil
 }
 
-func decodeQuery1Result(r *bytes.Reader) (external.Query1Result, error) {
-	var res external.Query1Result
+func decodeQuery1Result(r *bytes.Reader) (protocol.Query1Result, error) {
+	var res protocol.Query1Result
 	var err error
 	if res.FromBank, res.FromAccount, err = decodeTransactionAccount(r); err != nil {
 		return res, fmt.Errorf("from account: %w", err)
@@ -599,11 +601,11 @@ func decodeQuery1Result(r *bytes.Reader) (external.Query1Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery1ResultBatch(results []external.Query1Result) ([]byte, error) {
+func (BinaryCodec) EncodeQuery1ResultBatch(results []protocol.Query1Result) ([]byte, error) {
 	return encodeBatch(results, encodeQuery1Result)
 }
 
-func (BinaryCodec) DecodeQuery1ResultBatch(payload []byte) ([]external.Query1Result, error) {
+func (BinaryCodec) DecodeQuery1ResultBatch(payload []byte) ([]protocol.Query1Result, error) {
 	return decodeBatch(payload, decodeQuery1Result)
 }
 
@@ -611,7 +613,7 @@ func (BinaryCodec) DecodeQuery1ResultBatch(payload []byte) ([]external.Query1Res
 // ===== Query  2 =====
 // ====================
 
-func encodeQuery2Result(buf *bytes.Buffer, r external.Query2Result) error {
+func encodeQuery2Result(buf *bytes.Buffer, r protocol.Query2Result) error {
 	if err := encodeTransactionAccount(buf, r.FromBank, r.FromAccount); err != nil {
 		return err
 	}
@@ -620,8 +622,8 @@ func encodeQuery2Result(buf *bytes.Buffer, r external.Query2Result) error {
 	return nil
 }
 
-func decodeQuery2Result(r *bytes.Reader) (external.Query2Result, error) {
-	var res external.Query2Result
+func decodeQuery2Result(r *bytes.Reader) (protocol.Query2Result, error) {
+	var res protocol.Query2Result
 	var err error
 	if res.FromBank, res.FromAccount, err = decodeTransactionAccount(r); err != nil {
 		return res, fmt.Errorf("from account: %w", err)
@@ -635,18 +637,18 @@ func decodeQuery2Result(r *bytes.Reader) (external.Query2Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery2ResultBatch(results []external.Query2Result) ([]byte, error) {
+func (BinaryCodec) EncodeQuery2ResultBatch(results []protocol.Query2Result) ([]byte, error) {
 	return encodeBatch(results, encodeQuery2Result)
 }
 
-func (BinaryCodec) DecodeQuery2ResultBatch(payload []byte) ([]external.Query2Result, error) {
+func (BinaryCodec) DecodeQuery2ResultBatch(payload []byte) ([]protocol.Query2Result, error) {
 	return decodeBatch(payload, decodeQuery2Result)
 }
 
 // ====================
 // ===== Query  3 =====
 // ====================
-func encodeQuery3Result(buf *bytes.Buffer, r external.Query3Result) error {
+func encodeQuery3Result(buf *bytes.Buffer, r protocol.Query3Result) error {
 	if err := encodeTransactionAccount(buf, r.FromBank, r.FromAccount); err != nil {
 		return err
 	}
@@ -658,8 +660,8 @@ func encodeQuery3Result(buf *bytes.Buffer, r external.Query3Result) error {
 
 }
 
-func decodeQuery3Result(r *bytes.Reader) (external.Query3Result, error) {
-	var res external.Query3Result
+func decodeQuery3Result(r *bytes.Reader) (protocol.Query3Result, error) {
+	var res protocol.Query3Result
 	var err error
 	if res.FromBank, res.FromAccount, err = decodeTransactionAccount(r); err != nil {
 		return res, fmt.Errorf("from account: %w", err)
@@ -673,7 +675,7 @@ func decodeQuery3Result(r *bytes.Reader) (external.Query3Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery3ResultBatch(results []external.Query3Result) ([]byte, error) {
+func (BinaryCodec) EncodeQuery3ResultBatch(results []protocol.Query3Result) ([]byte, error) {
 	var batch bytes.Buffer
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(results)))
@@ -695,7 +697,7 @@ func (BinaryCodec) EncodeQuery3ResultBatch(results []external.Query3Result) ([]b
 	return batch.Bytes(), nil
 }
 
-func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Result, error) {
+func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]protocol.Query3Result, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -703,7 +705,7 @@ func (BinaryCodec) DecodeQuery3ResultBatch(payload []byte) ([]external.Query3Res
 	}
 	count := binary.BigEndian.Uint32(countBytes[:])
 
-	results := make([]external.Query3Result, 0, count)
+	results := make([]protocol.Query3Result, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var lengthBytes [2]byte
 		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
@@ -735,8 +737,8 @@ func encodeQuery4Result(buf *bytes.Buffer, r domain.Account) error {
 	return writeString(buf, r.ID)
 }
 
-func decodeQuery4Result(r *bytes.Reader) (external.Query4Result, error) {
-	var res external.Query4Result
+func decodeQuery4Result(r *bytes.Reader) (protocol.Query4Result, error) {
+	var res protocol.Query4Result
 	var err error
 	if res.BankID, err = readString(r); err != nil {
 		return res, fmt.Errorf("bank id: %w", err)
@@ -768,15 +770,15 @@ func (p *BinaryCodec) EncodeQuery4ResultEnvelope(clientId uuid.UUID, results map
 		batch.Write(resBuf.Bytes())
 		i++
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgQuery4Result,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgQuery4Result,
 		ClientId: clientId,
 		Payload:  batch.Bytes(),
 	}
 	return p.EncodeInternalEnvelope(envelope)
 }
 
-func (BinaryCodec) DecodeQuery4ResultPayload(payload []byte) ([]external.Query4Result, error) {
+func (BinaryCodec) DecodeQuery4ResultPayload(payload []byte) ([]protocol.Query4Result, error) {
 	r := bytes.NewReader(payload)
 	var countBytes [4]byte
 	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
@@ -784,7 +786,7 @@ func (BinaryCodec) DecodeQuery4ResultPayload(payload []byte) ([]external.Query4R
 	}
 	count := binary.BigEndian.Uint32(countBytes[:])
 
-	results := make([]external.Query4Result, 0, count)
+	results := make([]protocol.Query4Result, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var lengthBytes [2]byte
 		if _, err := io.ReadFull(r, lengthBytes[:]); err != nil {
@@ -809,13 +811,13 @@ func (BinaryCodec) DecodeQuery4ResultPayload(payload []byte) ([]external.Query4R
 // ===== Query  5 =====
 // ====================
 
-func encodeQuery5Result(buf *bytes.Buffer, r external.Query5Result) error {
+func encodeQuery5Result(buf *bytes.Buffer, r protocol.Query5Result) error {
 	writeInt64(buf, r.Count)
 	return nil
 }
 
-func decodeQuery5Result(r *bytes.Reader) (external.Query5Result, error) {
-	var res external.Query5Result
+func decodeQuery5Result(r *bytes.Reader) (protocol.Query5Result, error) {
+	var res protocol.Query5Result
 	count, err := readInt64(r)
 	if err != nil {
 		return res, fmt.Errorf("count: %w", err)
@@ -824,11 +826,11 @@ func decodeQuery5Result(r *bytes.Reader) (external.Query5Result, error) {
 	return res, nil
 }
 
-func (BinaryCodec) EncodeQuery5Result(result external.Query5Result) ([]byte, error) {
-	return encodeBatch([]external.Query5Result{result}, encodeQuery5Result)
+func (BinaryCodec) EncodeQuery5Result(result protocol.Query5Result) ([]byte, error) {
+	return encodeBatch([]protocol.Query5Result{result}, encodeQuery5Result)
 }
 
-func (BinaryCodec) DecodeQuery5Result(payload []byte) (external.Query5Result, error) {
+func (BinaryCodec) DecodeQuery5Result(payload []byte) (protocol.Query5Result, error) {
 	result, err := decodeBatch(payload, decodeQuery5Result)
 	return result[0], err
 }
@@ -871,8 +873,8 @@ func (p *BinaryCodec) EncodeEOFCountsEnvelope(clientId uuid.UUID, counts map[bro
 	if err != nil {
 		return nil, fmt.Errorf("encoding EOF counts: %w", err)
 	}
-	envelope := external.InternalEnvelope{
-		MsgType:  external.MsgTransactionsEOF,
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTransactionsEOF,
 		ClientId: clientId,
 		Payload:  payload,
 	}

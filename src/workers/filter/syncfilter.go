@@ -8,8 +8,9 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
 
@@ -31,8 +32,8 @@ type SyncFilter struct {
 
 	// Query 1: los resultados se acumulan y publican como lotes binarios del
 	// protocolo external, que el gateway reenvía al cliente sin decodificar.
-	codec    codec.Codec
-	q1Buffer *batch.Buffer[external.Query1Result]
+	pub      *messaging.Publisher
+	q1Buffer *batch.Buffer[protocol.Query1Result]
 }
 
 func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, error) {
@@ -72,7 +73,7 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 		ValueStrings:      valueStrings,
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
-		codec:             codec.New(),
+		pub:               messaging.New(codec.New(), broker),
 	}, nil
 }
 
@@ -122,12 +123,12 @@ func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
 
 func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Sending EOF to next worker...")
-	eofMsg, err := f.resolveEOFMessage(clientID, finalSent)
+	msgType, key, payload, err := f.resolveEOFMessage(finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
-	if err := f.Broker.Send(*eofMsg); err != nil {
+	if err := f.pub.PublishInternal(clientID, msgType, key, payload); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -162,66 +163,28 @@ func parseValueStrings(raw any) ([]string, error) {
 	}
 }
 
-func (f *SyncFilter) resolveEOFMessage(clientID uuid.UUID, finalSent map[broker.KeyType]int) (*broker.Message, error) {
+func (f *SyncFilter) resolveEOFMessage(finalSent map[broker.KeyType]int) (protocol.MsgType, broker.KeyType, []byte, error) {
 	if f.cfg.Query == Query1 {
-		envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-			MsgType:  external.MsgQuery1ResultEOF,
-			ClientId: clientID,
-			Payload:  nil,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("encoding query 1 EOF envelope: %w", err)
-		}
-		return &broker.Message{
-			RoutingKey:  broker.KeyNil,
-			Body:        envelope,
-			ContentType: broker.ContentTypeBinary,
-		}, nil
-	} else {
-		eofPayload, err := f.codec.EncodeEOFCounts(finalSent)
-		if err != nil {
-			return nil, fmt.Errorf("encoding EOF counts for EOF envelope: %w", err)
-		}
-		envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-			MsgType:  external.MsgTransactionsEOF,
-			ClientId: clientID,
-			Payload:  eofPayload,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("encoding transaction EOF envelope: %w", err)
-		}
-		return &broker.Message{
-			RoutingKey:  broker.KeyControlEOF,
-			Body:        envelope,
-			ContentType: broker.ContentTypeBinary,
-		}, nil
+		return protocol.MsgQuery1ResultEOF, broker.KeyNil, nil, nil
 	}
+	eofPayload, err := f.pub.EncodeEOFCounts(finalSent)
+	if err != nil {
+		return 0, broker.KeyNil, nil, fmt.Errorf("encoding EOF counts for EOF envelope: %w", err)
+	}
+	return protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, nil
 }
 
-func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType external.MsgType, payload []byte, batchLength int) error {
+func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: clientID,
-		Payload:  payload,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding internal envelope: %w", err)
-	}
-	err = f.Broker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	})
-	if err != nil {
-		return fmt.Errorf("sending message to broker: %w", err)
+	if err := f.pub.PublishInternal(clientID, msgType, broker.KeyNil, payload); err != nil {
+		return err
 	}
 	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, batchLength)
 	return nil
 }
 
-func (f *SyncFilter) forwardTransactionBatchMessage(transactions []external.Transaction, clientID uuid.UUID) error {
-	filteredTx := make([]external.Transaction, 0, len(transactions))
+func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID) error {
+	filteredTx := make([]protocol.Transaction, 0, len(transactions))
 	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
@@ -232,19 +195,19 @@ func (f *SyncFilter) forwardTransactionBatchMessage(transactions []external.Tran
 		slog.Debug("No transactions passed the filter", "clientId", clientID)
 		return nil
 	}
-	filteredTxBytes, err := f.codec.EncodeTransactionBatch(filteredTx)
+	filteredTxBytes, err := f.pub.EncodeTransactionBatch(filteredTx)
 	if err != nil {
 		return fmt.Errorf("encoding filtered transaction batch: %w", err)
 	}
-	return f.encodeAndSendBatch(clientID, external.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
+	return f.encodeAndSendBatch(clientID, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
 }
 
-func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []external.Transaction, clientID uuid.UUID) error {
-	results := make([]external.Query1Result, 0)
+func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID) error {
+	results := make([]protocol.Query1Result, 0)
 	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
-			results = append(results, external.Query1Result{
+			results = append(results, protocol.Query1Result{
 				FromBank:    tx.FromBank,
 				FromAccount: tx.FromAccount,
 				ToBank:      tx.ToBank,
@@ -257,17 +220,17 @@ func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []external.Tra
 		slog.Debug("No transactions passed the filter for Query 1", "clientId", clientID)
 		return nil
 	}
-	resultsBytes, err := f.codec.EncodeQuery1ResultBatch(results)
+	resultsBytes, err := f.pub.EncodeQuery1ResultBatch(results)
 	if err != nil {
 		return fmt.Errorf("encoding query1 result batch: %w", err)
 	}
-	return f.encodeAndSendBatch(clientID, external.MsgQuery1Result, resultsBytes, len(results))
+	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results))
 }
 
-func (f *SyncFilter) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	// El filtro sincronizado no necesita hacer nada especial con los mensajes EOF, simplemente los propaga usando el EOFBroker.
 	slog.Debug("Received EOF packet, beginning syncing...")
-	counts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
@@ -276,38 +239,31 @@ func (f *SyncFilter) handleEOFMessage(envelope external.InternalEnvelope) error 
 	return nil
 }
 
+func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
+	txBatch, err := f.pub.DecodeTransactionBatch(envelope.Payload)
+	if err != nil {
+		return fmt.Errorf("decoding transaction batch: %w", err)
+	}
+	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
+	if f.cfg.Query == Query1 {
+		if err := f.forwardQuery1ResultBatchMessage(txBatch, envelope.ClientId); err != nil {
+			return fmt.Errorf("forwarding query1 result batch: %w", err)
+		}
+	} else {
+		if err := f.forwardTransactionBatchMessage(txBatch, envelope.ClientId); err != nil {
+			return fmt.Errorf("forwarding transaction batch: %w", err)
+		}
+	}
+	return nil
+}
+
 func (f *SyncFilter) handleMessage(msg broker.Message) error {
 	if msg.ContentType != broker.ContentTypeBinary {
 		return fmt.Errorf("unexpected content type: %v", msg.ContentType)
 	}
 
-	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		return fmt.Errorf("decoding internal envelope: %w", err)
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		txBatch, err := f.codec.DecodeTransactionBatch(envelope.Payload)
-		if err != nil {
-			return fmt.Errorf("decoding transaction batch: %w", err)
-		}
-		slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
-		if f.cfg.Query == Query1 {
-			err := f.forwardQuery1ResultBatchMessage(txBatch, envelope.ClientId)
-			if err != nil {
-				return fmt.Errorf("forwarding query1 result batch: %w", err)
-			}
-		} else {
-			err := f.forwardTransactionBatchMessage(txBatch, envelope.ClientId)
-			if err != nil {
-				return fmt.Errorf("forwarding transaction batch: %w", err)
-			}
-		}
-	case external.MsgTransactionsEOF:
-		f.handleEOFMessage(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
-	return nil
+	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
+		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
+	})
 }

@@ -7,8 +7,9 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +18,7 @@ const Dollar = "US Dollar"
 type DateRange struct {
 	cfg      config.WorkerConfig
 	Broker   broker.Broker
-	codec    codec.Codec
+	pub      *messaging.Publisher
 	Type     string
 	fromDate string
 	toDate   string
@@ -50,7 +51,7 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 	return &DateRange{
 		cfg:               cfg,
 		Broker:            b,
-		codec:             codec.New(),
+		pub:               messaging.New(codec.New(), b),
 		Type:              typeVal,
 		fromDate:          fromDate,
 		toDate:            toDate,
@@ -103,27 +104,12 @@ func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
 
 func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Forwarding EOF to next worker...")
-	eofPayload, err := f.codec.EncodeEOFCounts(finalSent)
+	eofPayload, err := f.pub.EncodeEOFCounts(finalSent)
 	if err != nil {
 		slog.Error("Error encoding EOF counts", "error", err)
 		return err
 	}
-	envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgTransactionsEOF,
-		ClientId: clientID,
-		Payload:  eofPayload,
-	})
-	if err != nil {
-		slog.Error("Error encoding internal envelope for EOF packet", "error", err)
-		return err
-	}
-	brokerMsg := broker.Message{
-		RoutingKey:  broker.KeyControlEOF,
-		ContentType: broker.ContentTypeBinary,
-		Body:        envelope,
-	}
-	err = f.Broker.Send(brokerMsg)
-	if err != nil {
+	if err := f.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -137,7 +123,7 @@ func (f *DateRange) Stop() {
 
 // Private methods
 
-func (f *DateRange) filterTransactionByDate(tx external.Transaction) bool {
+func (f *DateRange) filterTransactionByDate(tx protocol.Transaction) bool {
 	if tx.Timestamp == "" {
 		slog.Error("Transaction has no timestamp", "transaction", tx)
 		return false
@@ -149,24 +135,8 @@ func (f *DateRange) filterTransactionByDate(tx external.Transaction) bool {
 	return true
 }
 
-func (f *DateRange) sendMessageToBroker(msgType external.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType, payloadLen int) bool {
-	envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: clientId,
-		Payload:  payload,
-	})
-	if err != nil {
-		slog.Error("Error encoding internal envelope", "error", err)
-		return false
-	}
-	brokerMsg := broker.Message{
-		RoutingKey:  routingKey,
-		ContentType: broker.ContentTypeBinary,
-		Body:        envelope,
-	}
-
-	err = f.Broker.Send(brokerMsg)
-	if err != nil {
+func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType, payloadLen int) bool {
+	if err := f.pub.PublishInternal(clientId, msgType, routingKey, payload); err != nil {
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
@@ -174,29 +144,29 @@ func (f *DateRange) sendMessageToBroker(msgType external.MsgType, clientId uuid.
 	return true
 }
 
-func (f *DateRange) sendTransactionBatch(transactions []external.Transaction, clientId uuid.UUID, routingKey broker.KeyType) bool {
+func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, clientId uuid.UUID, routingKey broker.KeyType) bool {
 	if len(transactions) == 0 {
 		return true
 	}
 	slog.Debug("Sending transactions batch to broker", "batchSize", len(transactions), "routingKey", routingKey)
-	txPayload, err := f.codec.EncodeTransactionBatch(transactions)
+	txPayload, err := f.pub.EncodeTransactionBatch(transactions)
 	if err != nil {
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return false
 	}
-	return f.sendMessageToBroker(external.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions))
+	return f.sendMessageToBroker(protocol.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions))
 }
 
-func (f *DateRange) handleTransactionsBatchMessage(envelope external.InternalEnvelope) error {
+func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
-	transactions, err := f.codec.DecodeTransactionBatch(envelope.Payload)
+	transactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
 	slog.Debug("Received transaction batch, applying date range filter", "clientId", clientId)
-	dollarTx := make([]external.Transaction, 0)
-	nonDollarTx := make([]external.Transaction, 0)
+	dollarTx := make([]protocol.Transaction, 0)
+	nonDollarTx := make([]protocol.Transaction, 0)
 	for _, tx := range transactions {
 		if f.filterTransactionByDate(tx) {
 			if tx.PaymentCurrency == Dollar {
@@ -216,10 +186,10 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope external.InternalEnv
 	return nil
 }
 
-func (f *DateRange) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	// El filtro sincronizado no necesita hacer nada especial con los mensajes EOF, simplemente los propaga usando el EOFBroker.
 	slog.Debug("Received EOF packet, beginning syncing...", "clientID", envelope.ClientId)
-	eofCounts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+	eofCounts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
@@ -230,23 +200,8 @@ func (f *DateRange) handleEOFMessage(envelope external.InternalEnvelope) error {
 }
 
 func (f *DateRange) handleMessage(msg broker.Message) error {
-	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding envelope", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		if err := f.handleTransactionsBatchMessage(envelope); err != nil {
-			return err
-		}
-	case external.MsgTransactionsEOF:
-		if err := f.handleEOFMessage(envelope); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
-	return nil
+	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
+		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
+	})
 }

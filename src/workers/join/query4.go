@@ -9,34 +9,35 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 )
 
 const BATCH_SIZE = 1000
+
 type Query4Client struct {
 	accountsSet map[domain.Account]struct{}
 }
 
 type Query4 struct {
-	codec codec.Codec
-	clients map[uuid.UUID]*Query4Client 
-	
-	broker  broker.Broker
-	
+	pub     *messaging.Publisher
+	clients map[uuid.UUID]*Query4Client
+
+	broker broker.Broker
+
 	prevWorkerAmount int
 	eofCounters      map[uuid.UUID]int
-
 }
 
 func NewQuery4(cfg config.WorkerConfig, b broker.Broker) (*Query4, error) {
 	return &Query4{
-		codec:           codec.New(),
-		clients:         make(map[uuid.UUID]*Query4Client),
-		broker:          b,
+		pub:              messaging.New(codec.New(), b),
+		clients:          make(map[uuid.UUID]*Query4Client),
+		broker:           b,
 		prevWorkerAmount: cfg.PrevWorkerAmount,
-		eofCounters:     make(map[uuid.UUID]int),
+		eofCounters:      make(map[uuid.UUID]int),
 	}, nil
 }
 
@@ -60,13 +61,13 @@ func (j *Query4) Stop() {
 	j.broker.Close()
 }
 
-func (j *Query4) handleAccountsMessage(envelope external.InternalEnvelope) error {
+func (j *Query4) handleAccountsMessage(envelope protocol.InternalEnvelope) error {
 	// var accounts []domain.Account
 	// if err := pkt.UnmarshalData(&accounts); err != nil {
 	// 	return fmt.Errorf("error unmarshalling accounts data: %w", err)
 	// }
 	clientId := envelope.ClientId
-	accounts, err := j.codec.DecodeAccountsEnvelope(envelope.Payload)
+	accounts, err := j.pub.DecodeAccountsEnvelope(envelope.Payload)
 	if err != nil {
 		return fmt.Errorf("error decoding accounts: %w", err)
 	}
@@ -86,7 +87,7 @@ func (j *Query4) handleAccountsMessage(envelope external.InternalEnvelope) error
 
 }
 
-func (j *Query4) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
 	j.eofCounters[clientId]++
 	if j.eofCounters[clientId] < j.prevWorkerAmount {
@@ -102,7 +103,7 @@ func (j *Query4) handleEOFMessage(envelope external.InternalEnvelope) error {
 		// 	return fmt.Errorf("error marshalling Query4 EOF: %w", err)
 		// }
 		// return j.broker.Send(*eof)
-		return j.sendQuery4EOFMessage(clientId)
+		return j.pub.PublishInternal(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil)
 	}
 
 	// accounts := make([]domain.Account, 0, len(client.accountsSet))
@@ -151,7 +152,7 @@ func (j *Query4) handleEOFMessage(envelope external.InternalEnvelope) error {
 	delete(j.eofCounters, clientId)
 
 	// eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
-	err := j.sendQuery4EOFMessage(clientId)
+	err := j.pub.PublishInternal(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil)
 	if err != nil {
 		return err
 	}
@@ -160,55 +161,19 @@ func (j *Query4) handleEOFMessage(envelope external.InternalEnvelope) error {
 }
 
 func (j *Query4) handleMessage(msg broker.Message) error {
-	// pkt, err := inner.UnmarshalPacket(msg)
-	envelope, err := j.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding packet", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTxAccounts:
-		return j.handleAccountsMessage(envelope)
-	case external.MsgTransactionsEOF:
-		return j.handleEOFMessage(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
+	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTxAccounts:      j.handleAccountsMessage,
+		protocol.MsgTransactionsEOF: j.handleEOFMessage,
+	})
 }
 
 func (j *Query4) sendQuery4ResultEnvelope(clientId uuid.UUID, subset map[domain.Account]struct{}) error {
-	envelope, err := j.codec.EncodeQuery4ResultEnvelope(clientId, subset)
+	envelope, err := j.pub.EncodeQuery4ResultEnvelope(clientId, subset)
 	if err != nil {
 		return fmt.Errorf("error encoding query4 result envelope: %w", err)
 	}
-	msg := broker.Message{
-		RoutingKey:  broker.KeyNil,
-		ContentType: broker.ContentTypeBinary,
-		Body:        envelope,
-	}
-	if err := j.broker.Send(msg); err != nil {
+	if err := j.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
 		return fmt.Errorf("error sending query4 result envelope: %w", err)
-	}
-	return nil
-}
-
-func (j *Query4) sendQuery4EOFMessage(clientId uuid.UUID) error {
-	eofEnvelope, err := j.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgQuery4ResultEOF,
-		ClientId: clientId,
-		Payload:  nil,
-	})
-	if err != nil {
-		return fmt.Errorf("error encoding Query4 EOF: %w", err)
-	}
-	eofMsg := broker.Message{
-		RoutingKey:  broker.KeyControlEOF,
-		ContentType: broker.ContentTypeBinary,
-		Body:        eofEnvelope,
-	}
-	if err := j.broker.Send(eofMsg); err != nil {
-		return fmt.Errorf("error sending Query4 EOF: %w", err)
 	}
 	return nil
 }

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 )
 
 const resultChannelBuffer = 16
@@ -12,7 +12,7 @@ const resultChannelBuffer = 16
 type QueryResultData struct {
 	filename string
 	header   []string
-	eofType  external.MsgType
+	eofType  protocol.MsgType
 }
 
 type QueryWriter struct {
@@ -38,32 +38,32 @@ func (qw *QueryWriter) WriteRows(rows [][]string) {
 	}
 }
 
-func GetQueryResultData() map[external.MsgType]QueryResultData {
-	return map[external.MsgType]QueryResultData{
-		external.MsgQuery1Result: {
+func GetQueryResultData() map[protocol.MsgType]QueryResultData {
+	return map[protocol.MsgType]QueryResultData{
+		protocol.MsgQuery1Result: {
 			filename: "query1.csv",
 			header:   []string{"from_bank", "from_account", "to_bank", "to_account", "total_amount"},
-			eofType:  external.MsgQuery1ResultEOF,
+			eofType:  protocol.MsgQuery1ResultEOF,
 		},
-		external.MsgQuery2Result: {
+		protocol.MsgQuery2Result: {
 			filename: "query2.csv",
 			header:   []string{"from_bank", "from_account", "bank_name", "amount_paid"},
-			eofType:  external.MsgQuery2ResultEOF,
+			eofType:  protocol.MsgQuery2ResultEOF,
 		},
-		external.MsgQuery3Result: {
+		protocol.MsgQuery3Result: {
 			filename: "query3.csv",
 			header:   []string{"from_bank", "from_account", "payment_format", "amount_paid"},
-			eofType:  external.MsgQuery3ResultEOF,
+			eofType:  protocol.MsgQuery3ResultEOF,
 		},
-		/*external.MsgQuery4Result: {
+		protocol.MsgQuery4Result: {
 			filename: "query4.csv",
 			header:   []string{"bank_id", "account_id"},
-			eofType:  external.MsgQuery4ResultEOF,
+			eofType:  protocol.MsgQuery4ResultEOF,
 		},
-		external.MsgQuery5Result: {
+		protocol.MsgQuery5Result: {
 			filename: "query5.csv",
 			header:   []string{"count"},
-			eofType:  external.MsgQuery5ResultEOF,
+			eofType:  protocol.MsgQuery5ResultEOF,
 		},
 	}
 }

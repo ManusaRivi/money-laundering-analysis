@@ -5,10 +5,10 @@ import (
 	"hash/fnv"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 )
 
-func (r *Router) shardByField(tx external.Transaction) string {
+func (r *Router) shardByField(tx protocol.Transaction) string {
 	value := r.extractFieldValue(tx)
 	h := fnv.New32a()
 	h.Write([]byte(value))
@@ -19,7 +19,7 @@ func (r *Router) shardByField(tx external.Transaction) string {
 	return fmt.Sprintf("%s_%d", r.cfg.NextWorkerPrefix, index)
 }
 
-func (r *Router) extractFieldValue(tx external.Transaction) string {
+func (r *Router) extractFieldValue(tx protocol.Transaction) string {
 	switch r.sectionToRouteBy {
 	case "origin":
 		return accountField(&domain.Account{

@@ -1,12 +1,12 @@
 package domain
 
-import "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+import "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 
 type TypeTxQ4 string
 
 const (
 	TxQ4Scatter TypeTxQ4 = "scatter"
-	TxQ4Gather TypeTxQ4 = "gather"
+	TxQ4Gather  TypeTxQ4 = "gather"
 )
 
 type TxQ4PairKey struct {
@@ -24,16 +24,16 @@ func (e *TxQ4PairEntry) Merge(other *TxQ4PairEntry) {
 }
 
 type TxQ4PhaseOne struct {
-	Type		TypeTxQ4
+	Type TypeTxQ4
 	// Transaction *Transaction
-	Transaction *external.Transaction
+	Transaction *protocol.Transaction
 }
 
 type TxQ4PhaseTwo struct {
-	Key        TxQ4PairKey 
-	Count      int         
-	SrcAccount *Account    
-	DstAccount *Account    
+	Key        TxQ4PairKey
+	Count      int
+	SrcAccount *Account
+	DstAccount *Account
 }
 
 type TxQ4PhaseThree struct {
@@ -44,9 +44,8 @@ func (k TxQ4PairKey) Key() string {
 	return k.Src + "::" + k.Dst
 }
 
-
 func GetTypeTxQ4ByField(field string) TypeTxQ4 {
-	switch (TxFieldOptions(field)) {
+	switch TxFieldOptions(field) {
 	case TxFieldOrigin:
 		return TxQ4Scatter
 	case TxFieldDest:

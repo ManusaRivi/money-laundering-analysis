@@ -7,14 +7,14 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
 type DatasetStream interface {
 	GetNextBatch() ([]byte, error)
-	BatchMsgType() external.MsgType
-	EOFMsgType() external.MsgType
+	BatchMsgType() protocol.MsgType
+	EOFMsgType() protocol.MsgType
 	Name() string
 }
 
@@ -38,7 +38,7 @@ func (s *Sender) StreamDataset(ds DatasetStream) error {
 			return fmt.Errorf("reading %s batch: %w", ds.Name(), err)
 		}
 
-		envelope, err := s.codec.EncodeExternalEnvelope(external.ExternalEnvelope{
+		envelope, err := s.codec.EncodeExternalEnvelope(protocol.ExternalEnvelope{
 			MsgType: ds.BatchMsgType(),
 			Payload: payload,
 		})
@@ -53,7 +53,7 @@ func (s *Sender) StreamDataset(ds DatasetStream) error {
 
 	slog.Debug("Finished streaming dataset batches", "dataset", ds.Name())
 
-	eof, err := s.codec.EncodeExternalEnvelope(external.ExternalEnvelope{
+	eof, err := s.codec.EncodeExternalEnvelope(protocol.ExternalEnvelope{
 		MsgType: ds.EOFMsgType(),
 		Payload: nil,
 	})

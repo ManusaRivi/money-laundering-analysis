@@ -9,8 +9,8 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientconnection"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/clientmanagement/clientregistry"
@@ -135,19 +135,19 @@ func (gateway *Gateway) HandleClientRequest(c *clientconnection.ClientConnection
 		}
 
 		switch msgType {
-		case external.MsgAccountsBatch:
+		case protocol.MsgAccountsBatch:
 			if !gateway.handleAccountsBatch(c, payload) {
 				return false
 			}
-		case external.MsgAccountsEOF:
+		case protocol.MsgAccountsEOF:
 			if !gateway.handleAccountsEOF(c) {
 				return false
 			}
-		case external.MsgTransactionsBatch:
+		case protocol.MsgTransactionsBatch:
 			if !gateway.handleTransactionsBatch(c, payload) {
 				return false
 			}
-		case external.MsgTransactionsEOF:
+		case protocol.MsgTransactionsEOF:
 			return gateway.handleTransactionsEOF(c)
 		default:
 			slog.Warn("Unknown message type received", "msgType", msgType)
@@ -167,8 +167,8 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
-func (gateway *Gateway) sendMessageToBroker(msgType external.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType) bool {
-	envelope, err := gateway.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+func (gateway *Gateway) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType) bool {
+	envelope, err := gateway.codec.EncodeInternalEnvelope(protocol.InternalEnvelope{
 		MsgType:  msgType,
 		ClientId: clientId,
 		Payload:  payload,
@@ -182,7 +182,7 @@ func (gateway *Gateway) sendMessageToBroker(msgType external.MsgType, clientId u
 		ContentType: broker.ContentTypeBinary,
 		Body:        envelope,
 	}
-	if msgType == external.MsgAccountsBatch || msgType == external.MsgAccountsEOF {
+	if msgType == protocol.MsgAccountsBatch || msgType == protocol.MsgAccountsEOF {
 		err = gateway.accountsBroker.Send(brokerMsg)
 	} else {
 		err = gateway.broker.Send(brokerMsg)
@@ -196,15 +196,15 @@ func (gateway *Gateway) sendMessageToBroker(msgType external.MsgType, clientId u
 
 func (gateway *Gateway) handleAccountsBatch(c *clientconnection.ClientConnection, payload []byte) bool {
 	slog.Debug("Received accounts batch")
-	return gateway.sendMessageToBroker(external.MsgAccountsBatch, c.ClientId, payload, broker.KeyNil)
+	return gateway.sendMessageToBroker(protocol.MsgAccountsBatch, c.ClientId, payload, broker.KeyNil)
 }
 
 func (gateway *Gateway) handleAccountsEOF(c *clientconnection.ClientConnection) bool {
 	slog.Debug("Received accounts EOF")
-	return gateway.sendMessageToBroker(external.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil)
+	return gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil)
 }
 
-func (gateway *Gateway) sendTransactionBatch(c *clientconnection.ClientConnection, transactions []external.Transaction, routingKey broker.KeyType) bool {
+func (gateway *Gateway) sendTransactionBatch(c *clientconnection.ClientConnection, transactions []protocol.Transaction, routingKey broker.KeyType) bool {
 	if len(transactions) == 0 {
 		return true
 	}
@@ -214,7 +214,7 @@ func (gateway *Gateway) sendTransactionBatch(c *clientconnection.ClientConnectio
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return false
 	}
-	return gateway.sendMessageToBroker(external.MsgTransactionsBatch, c.ClientId, txPayload, routingKey)
+	return gateway.sendMessageToBroker(protocol.MsgTransactionsBatch, c.ClientId, txPayload, routingKey)
 }
 
 func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnection, payload []byte) bool {
@@ -224,8 +224,8 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 		slog.Error("decoding transaction batch", "error", err)
 		return false
 	}
-	dollarTx := make([]external.Transaction, 0)
-	nonDollarTx := make([]external.Transaction, 0)
+	dollarTx := make([]protocol.Transaction, 0)
+	nonDollarTx := make([]protocol.Transaction, 0)
 	for _, transaction := range transactions {
 		if transaction.PaymentCurrency == Dollar {
 			dollarTx = append(dollarTx, transaction)
@@ -261,7 +261,7 @@ func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnecti
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return false
 	}
-	return gateway.sendMessageToBroker(external.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF)
+	return gateway.sendMessageToBroker(protocol.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF)
 }
 
 /*
@@ -293,7 +293,7 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 		return
 	}
 
-	if err := client.ForwardEnvelope(external.ExternalEnvelope{
+	if err := client.ForwardEnvelope(protocol.ExternalEnvelope{
 		MsgType: envelope.MsgType,
 		Payload: envelope.Payload,
 	}); err != nil {

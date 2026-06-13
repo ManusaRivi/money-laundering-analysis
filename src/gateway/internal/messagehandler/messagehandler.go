@@ -4,7 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 )
 
 const TransactionResultBatchSize = 10
@@ -12,7 +12,7 @@ const TransactionResultBatchSize = 10
 type MessageHandler struct {
 	accountsTotal        int
 	transactionsTotal    int
-	filteredTransactions []external.Transaction
+	filteredTransactions []protocol.Transaction
 	nextResultIdx        int
 }
 
@@ -23,7 +23,7 @@ func NewMessageHandler() MessageHandler {
 	}
 }
 
-func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []external.Transaction) {
+func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []protocol.Transaction) {
 	for _, transaction := range transactions {
 		if transaction.PaymentCurrency == "US Dollar" && transaction.AmountPaid < 50 {
 			messageHandler.filteredTransactions = append(messageHandler.filteredTransactions, transaction)
@@ -33,7 +33,7 @@ func (messageHandler *MessageHandler) HandleTransactionsBatch(transactions []ext
 }
 
 // Receiving info from middleware would happen here
-func (messageHandler *MessageHandler) GetTransactionResultBatch() []external.Transaction {
+func (messageHandler *MessageHandler) GetTransactionResultBatch() []protocol.Transaction {
 	remaining := len(messageHandler.filteredTransactions) - messageHandler.nextResultIdx
 	if remaining <= 0 {
 		return nil
@@ -45,7 +45,7 @@ func (messageHandler *MessageHandler) GetTransactionResultBatch() []external.Tra
 	return batch
 }
 
-func (messageHandler *MessageHandler) HandleAccountsBatch(accounts []external.AccountData) {
+func (messageHandler *MessageHandler) HandleAccountsBatch(accounts []protocol.AccountData) {
 	messageHandler.accountsTotal += len(accounts)
 }
 

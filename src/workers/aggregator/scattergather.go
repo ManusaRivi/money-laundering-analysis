@@ -1,14 +1,15 @@
 package aggregator
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
+
 	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
@@ -22,14 +23,14 @@ import (
 // Al recibir EOF de etapa anterior envian accumulator
 
 const BATCH_SIZE = 1000
+
 type clientScattergather struct {
-	ID uuid.UUID
+	ID          uuid.UUID
 	accumulator map[domain.TxQ4PairKey]*domain.TxQ4PairEntry
 }
 
-
 type ScatterGather struct {
-	codec codec.Codec
+	pub    *messaging.Publisher
 	cfg    config.WorkerConfig
 	broker broker.Broker
 
@@ -43,7 +44,7 @@ func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGather,
 	slog.Debug("ScatterGather created", "prevWorkerAmount", cfg.PrevWorkerAmount)
 
 	return &ScatterGather{
-		codec:            codec.New(),
+		pub:              messaging.New(codec.New(), b),
 		cfg:              cfg,
 		broker:           b,
 		clients:          make(map[uuid.UUID]*clientScattergather),
@@ -78,7 +79,7 @@ func (a *ScatterGather) getClient(clientID uuid.UUID) *clientScattergather {
 		return c
 	}
 	c := &clientScattergather{
-		ID: clientID,
+		ID:          clientID,
 		accumulator: make(map[domain.TxQ4PairKey]*domain.TxQ4PairEntry),
 	}
 	a.clients[clientID] = c
@@ -89,13 +90,13 @@ func (a *ScatterGather) deleteClient(clientID uuid.UUID) {
 	delete(a.clients, clientID)
 }
 
-func (a *ScatterGather) handleTxQ4Message(envelope external.InternalEnvelope) error {
+func (a *ScatterGather) handleTxQ4Message(envelope protocol.InternalEnvelope) error {
 	// var txQ4 domain.TxQ4PhaseTwo
 	// if err := envelope.UnmarshalData(&txQ4); err != nil {
 	// 	slog.Error("Error unmarshalling TxQ4 data", "error", err)
 	// 	return err
 	// }
-	txQ4, err := a.codec.DecodeTxQ4PhaseTwoEnvelope(envelope.Payload)
+	txQ4, err := a.pub.DecodeTxQ4PhaseTwoEnvelope(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding TxQ4 envelope", "error", err)
 		return err
@@ -117,7 +118,7 @@ func (a *ScatterGather) handleTxQ4Message(envelope external.InternalEnvelope) er
 
 }
 
-func (a *ScatterGather) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	a.eofCounters[clientID]++
 	slog.Debug("Received EOF packet", "clientID", clientID, "counter", a.eofCounters[clientID], "target", a.prevWorkerAmount)
@@ -131,24 +132,18 @@ func (a *ScatterGather) handleEOFMessage(envelope external.InternalEnvelope) err
 	if len(scatterGather) > 0 {
 		slog.Debug("Sending Scatter-Gather to phase three", "clientID", clientID, "scatter_gather_count", len(scatterGather))
 
-
 		batch := make(map[string]*domain.TxQ4PairEntry, BATCH_SIZE)
 		for pk, entry := range scatterGather {
 			batch[pk.Key()] = entry
 			if len(batch) >= BATCH_SIZE {
 				txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
 				// msg, err := inner.MarshalTxQ4PhaseThreePacket(clientID, broker.KeyNil, txQ4PhaseThree)
-				envelope, err := a.codec.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
+				envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
 				if err != nil {
 					slog.Error("Error encoding Scatter-Gather batch", "error", err)
 					return err
 				}
-				msg := broker.Message{
-					RoutingKey:  broker.KeyNil,
-					ContentType: broker.ContentTypeBinary,
-					Body:        envelope,
-				}
-				if err := a.broker.Send(msg); err != nil {
+				if err := a.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
 					slog.Error("Error sending Scatter-Gather batch", "error", err)
 					return err
 				}
@@ -158,17 +153,12 @@ func (a *ScatterGather) handleEOFMessage(envelope external.InternalEnvelope) err
 		}
 		if len(batch) > 0 {
 			txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
-			envelope, err := a.codec.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
+			envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
 			if err != nil {
 				slog.Error("Error encoding Scatter-Gather final batch", "error", err)
 				return err
 			}
-			msg := broker.Message{
-				RoutingKey:  broker.KeyNil,
-				ContentType: broker.ContentTypeBinary,
-				Body:        envelope,
-			}
-			if err := a.broker.Send(msg); err != nil {
+			if err := a.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
 				slog.Error("Error sending Scatter-Gather final batch", "error", err)
 				return err
 			}
@@ -181,18 +171,13 @@ func (a *ScatterGather) handleEOFMessage(envelope external.InternalEnvelope) err
 	// 	Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
 	// })
 	eofCounts := map[broker.KeyType]int{broker.KeyNil: msgSent}
-	eofEnvelope, err := a.codec.EncodeEOFCountsEnvelope(clientID, eofCounts)
+	eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, eofCounts)
 	if err != nil {
 		slog.Error("Error encoding EOF counts envelope", "error", err)
 		return err
 	}
-	eofMsg := broker.Message{
-		RoutingKey:  broker.KeyControlEOF,
-		ContentType: broker.ContentTypeBinary,
-		Body:        eofEnvelope,
-	}
 	slog.Debug("Sending EOF packet after processing scatter and gather", "clientID", clientID, "msg_sent", msgSent)
-	if err := a.broker.Send(eofMsg); err != nil {
+	if err := a.pub.PublishRaw(broker.KeyControlEOF, eofEnvelope); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}
@@ -203,20 +188,8 @@ func (a *ScatterGather) handleEOFMessage(envelope external.InternalEnvelope) err
 }
 
 func (a *ScatterGather) handleMessage(msg broker.Message) error {
-	// pkt, err := inner.UnmarshalPacket(msg)
-	envelope, err := a.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding message", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTxQ4:
-		return a.handleTxQ4Message(envelope)
-	case external.MsgTransactionsEOF:
-		return a.handleEOFMessage(envelope)
-	default:
-		slog.Warn("Received message with unknown type", "type", envelope.MsgType)
-		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
-	}
+	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTxQ4:            a.handleTxQ4Message,
+		protocol.MsgTransactionsEOF: a.handleEOFMessage,
+	})
 }

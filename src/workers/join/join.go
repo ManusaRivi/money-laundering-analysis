@@ -10,8 +10,9 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
 // Join builds Query2Result records by joining max-amount transactions (received
@@ -20,7 +21,7 @@ import (
 type Join struct {
 	resultsBroker  broker.Broker
 	accountsBroker broker.Broker
-	codec          codec.Codec
+	pub            *messaging.Publisher
 
 	previousWorkerAmount int
 
@@ -30,7 +31,7 @@ type Join struct {
 	accountsEofReceived map[uuid.UUID]bool
 	finalized           map[uuid.UUID]bool
 	bankNamesPerCli     map[uuid.UUID]map[string]string
-	txCachePerCl        map[uuid.UUID]map[string][]external.Transaction
+	txCachePerCl        map[uuid.UUID]map[string][]protocol.Transaction
 }
 
 func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error) {
@@ -47,13 +48,13 @@ func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error
 	return &Join{
 		resultsBroker:        resultsBroker,
 		accountsBroker:       accountsBroker,
-		codec:                codec.New(),
+		pub:                  messaging.New(codec.New(), resultsBroker),
 		previousWorkerAmount: cfg.PrevWorkerAmount,
 		workerEofReceived:    make(map[uuid.UUID]int),
 		accountsEofReceived:  make(map[uuid.UUID]bool),
 		finalized:            make(map[uuid.UUID]bool),
 		bankNamesPerCli:      make(map[uuid.UUID]map[string]string),
-		txCachePerCl:         make(map[uuid.UUID]map[string][]external.Transaction),
+		txCachePerCl:         make(map[uuid.UUID]map[string][]protocol.Transaction),
 	}, nil
 }
 
@@ -92,8 +93,8 @@ func (j *Join) Stop() {}
 
 // Private Methods
 
-func toQuery2Result(tx external.Transaction, bankName string) external.Query2Result {
-	return external.Query2Result{
+func toQuery2Result(tx protocol.Transaction, bankName string) protocol.Query2Result {
+	return protocol.Query2Result{
 		FromBank:    tx.FromBank,
 		FromAccount: tx.FromAccount,
 		BankName:    bankName,
@@ -101,8 +102,8 @@ func toQuery2Result(tx external.Transaction, bankName string) external.Query2Res
 	}
 }
 
-func (j *Join) handleAccountsBatch(envelope external.InternalEnvelope) error {
-	accounts, err := j.codec.DecodeAccountBatch(envelope.Payload)
+func (j *Join) handleAccountsBatch(envelope protocol.InternalEnvelope) error {
+	accounts, err := j.pub.DecodeAccountBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding accounts batch", "error", err)
 		return err
@@ -122,7 +123,7 @@ func (j *Join) handleAccountsBatch(envelope external.InternalEnvelope) error {
 		if _, ok := j.bankNamesPerCli[clientID][info.BankID]; !ok {
 			j.bankNamesPerCli[clientID][info.BankID] = info.BankName
 		}
-		var cached []external.Transaction
+		var cached []protocol.Transaction
 		if perBank, ok := j.txCachePerCl[clientID]; ok {
 			cached = perBank[info.BankID]
 			delete(perBank, info.BankID)
@@ -131,7 +132,7 @@ func (j *Join) handleAccountsBatch(envelope external.InternalEnvelope) error {
 		if len(cached) == 0 {
 			continue
 		}
-		results := make([]external.Query2Result, 0, len(cached))
+		results := make([]protocol.Query2Result, 0, len(cached))
 		for _, tx := range cached {
 			results = append(results, toQuery2Result(tx, info.BankName))
 		}
@@ -139,7 +140,7 @@ func (j *Join) handleAccountsBatch(envelope external.InternalEnvelope) error {
 			j.mu.Lock()
 			// Re-cache the whole cached object if sending fails, to retry if the same bank is received.
 			if j.txCachePerCl[clientID] == nil {
-				j.txCachePerCl[clientID] = make(map[string][]external.Transaction)
+				j.txCachePerCl[clientID] = make(map[string][]protocol.Transaction)
 			}
 			j.txCachePerCl[clientID][info.BankID] = cached
 			j.mu.Unlock()
@@ -151,7 +152,7 @@ func (j *Join) handleAccountsBatch(envelope external.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Join) handleAccountsEOF(envelope external.InternalEnvelope) error {
+func (j *Join) handleAccountsEOF(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received accounts EOF for client", "clientID", clientID)
 	j.mu.Lock()
@@ -165,36 +166,26 @@ func (j *Join) handleAccountsEOF(envelope external.InternalEnvelope) error {
 }
 
 func (j *Join) handleAccountsMessage(msg broker.Message) error {
-	envelope, err := j.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error unmarshalling accounts packet", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgAccountsBatch:
-		return j.handleAccountsBatch(envelope)
-	case external.MsgAccountsEOF:
-		return j.handleAccountsEOF(envelope)
-	default:
-		return fmt.Errorf("unexpected accounts packet type: %v", envelope.MsgType)
-	}
+	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgAccountsBatch: j.handleAccountsBatch,
+		protocol.MsgAccountsEOF:   j.handleAccountsEOF,
+	})
 }
 
-func (j *Join) handleTransactionBatch(envelope external.InternalEnvelope) error {
-	transactions, err := j.codec.DecodeTransactionBatch(envelope.Payload)
+func (j *Join) handleTransactionBatch(envelope protocol.InternalEnvelope) error {
+	transactions, err := j.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-	results := make([]external.Query2Result, 0, len(transactions))
+	results := make([]protocol.Query2Result, 0, len(transactions))
 	j.mu.Lock()
 	slog.Debug("Received transaction batch for join", "batchLen", len(transactions), "msgType", envelope.MsgType)
 	for _, tx := range transactions {
 		name, ok := j.bankNamesPerCli[envelope.ClientId][tx.FromBank]
 		if !ok {
 			if j.txCachePerCl[envelope.ClientId] == nil {
-				j.txCachePerCl[envelope.ClientId] = make(map[string][]external.Transaction)
+				j.txCachePerCl[envelope.ClientId] = make(map[string][]protocol.Transaction)
 			}
 			slog.Debug("Bank name not found for transaction, caching", "clientID", envelope.ClientId, "bankID", tx.FromBank)
 			j.txCachePerCl[envelope.ClientId][tx.FromBank] = append(j.txCachePerCl[envelope.ClientId][tx.FromBank], tx)
@@ -209,7 +200,7 @@ func (j *Join) handleTransactionBatch(envelope external.InternalEnvelope) error 
 	return j.emitResult(envelope.ClientId, results)
 }
 
-func (j *Join) handleTransactionsEOF(envelope external.InternalEnvelope) error {
+func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Received transaction EOF for client", "clientID", envelope.ClientId)
 	j.mu.Lock()
 	j.workerEofReceived[envelope.ClientId]++
@@ -224,20 +215,10 @@ func (j *Join) handleTransactionsEOF(envelope external.InternalEnvelope) error {
 }
 
 func (j *Join) handleTransactionMessage(msg broker.Message) error {
-	envelope, err := j.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding transaction batch", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		return j.handleTransactionBatch(envelope)
-	case external.MsgTransactionsEOF:
-		return j.handleTransactionsEOF(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
+	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: j.handleTransactionBatch,
+		protocol.MsgTransactionsEOF:   j.handleTransactionsEOF,
+	})
 }
 
 // shouldFinalizeLocked reports whether both the worker-side EOF barrier and the
@@ -280,7 +261,7 @@ func (j *Join) finalizeClient(clientID uuid.UUID) error {
 				"clientID", clientID, "bankID", bankID, "count", len(txs))
 			continue
 		}
-		results := make([]external.Query2Result, 0, len(txs))
+		results := make([]protocol.Query2Result, 0, len(txs))
 		for _, tx := range txs {
 			results = append(results, toQuery2Result(tx, name))
 		}
@@ -291,21 +272,7 @@ func (j *Join) finalizeClient(clientID uuid.UUID) error {
 		}
 	}
 
-	eofEnvelope, err := j.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgQuery2ResultEOF,
-		ClientId: clientID,
-		Payload:  nil,
-	})
-	if err != nil {
-		slog.Error("Error encoding Query2 EOF envelope", "error", err)
-		return err
-	}
-	err = j.resultsBroker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
-		Body:        eofEnvelope,
-		ContentType: broker.ContentTypeBinary,
-	})
-	if err != nil {
+	if err := j.pub.PublishInternal(clientID, protocol.MsgQuery2ResultEOF, broker.KeyNil, nil); err != nil {
 		slog.Error("Error sending Query2 EOF to broker", "error", err)
 		return err
 	}
@@ -313,28 +280,14 @@ func (j *Join) finalizeClient(clientID uuid.UUID) error {
 	return nil
 }
 
-func (j *Join) emitResult(clientID uuid.UUID, results []external.Query2Result) error {
+func (j *Join) emitResult(clientID uuid.UUID, results []protocol.Query2Result) error {
 	slog.Debug("Emitting result for client", "clientID", clientID)
-	resultsBytes, err := j.codec.EncodeQuery2ResultBatch(results)
+	resultsBytes, err := j.pub.EncodeQuery2ResultBatch(results)
 	if err != nil {
 		slog.Error("Error encoding query result batch", "error", err)
 		return err
 	}
-	envelope, err := j.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgQuery2Result,
-		ClientId: clientID,
-		Payload:  resultsBytes,
-	})
-	if err != nil {
-		slog.Error("Error encoding internal envelope", "error", err)
-		return err
-	}
-	err = j.resultsBroker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	})
-	if err != nil {
+	if err := j.pub.PublishInternal(clientID, protocol.MsgQuery2Result, broker.KeyNil, resultsBytes); err != nil {
 		slog.Error("Error sending message to broker", "error", err)
 		return err
 	}

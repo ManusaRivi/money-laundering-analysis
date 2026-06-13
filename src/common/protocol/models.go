@@ -1,13 +1,13 @@
-package external
+package protocol
 
 import "github.com/google/uuid"
 
 type MsgType uint8
 
 const (
-	MsgTypeInvalid       MsgType = iota
-	MsgAccountsBatch    
-	MsgAccountsEOF      
+	MsgTypeInvalid MsgType = iota
+	MsgAccountsBatch
+	MsgAccountsEOF
 	MsgTransactionsBatch
 	MsgTransactionsEOF
 
@@ -127,12 +127,6 @@ type Query4Result struct {
 }
 type Query5Result struct {
 	Count int64
-}
-
-
-func (t *Transaction) IsUSDTransaction() bool {
-	// return t.Paid.Currency == "US Dollar"
-	return t.PaymentCurrency == "US Dollar"
 }
 
 func (t *Transaction) GetOriginId() string {

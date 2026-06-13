@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/internal/messagehandler"
 )
 
@@ -23,19 +23,19 @@ type ClientConnection struct {
 	Conn          network.Connection
 	Handler       *messagehandler.MessageHandler
 	codec         codec.Codec
-	EOFSent       map[external.MsgType]bool
+	EOFSent       map[protocol.MsgType]bool
 	done          chan struct{}
 	closeDoneOnce sync.Once
 }
 
 func NewClientConnection(clientId uuid.UUID, conn net.Conn, codec codec.Codec) *ClientConnection {
 	handler := messagehandler.NewMessageHandler()
-	EOFSent := make(map[external.MsgType]bool)
-	EOFSent[external.MsgQuery1ResultEOF] = false
-	EOFSent[external.MsgQuery2ResultEOF] = false
-	EOFSent[external.MsgQuery3ResultEOF] = false
-	EOFSent[external.MsgQuery4ResultEOF] = false
-	EOFSent[external.MsgQuery5ResultEOF] = false
+	EOFSent := make(map[protocol.MsgType]bool)
+	EOFSent[protocol.MsgQuery1ResultEOF] = false
+	EOFSent[protocol.MsgQuery2ResultEOF] = false
+	EOFSent[protocol.MsgQuery3ResultEOF] = false
+	EOFSent[protocol.MsgQuery4ResultEOF] = false
+	EOFSent[protocol.MsgQuery5ResultEOF] = false
 	return &ClientConnection{
 		ClientId: clientId,
 		Conn:     network.NewConnection(conn),
@@ -52,7 +52,7 @@ func (c *ClientConnection) Done() <-chan struct{} {
 
 // Without decoding the actual payload, creates an external envelope with the given
 // Msg type and forwards it to the client.
-func (c *ClientConnection) ForwardEnvelope(envelope external.ExternalEnvelope) error {
+func (c *ClientConnection) ForwardEnvelope(envelope protocol.ExternalEnvelope) error {
 	envelopeBytes, err := c.codec.EncodeExternalEnvelope(envelope)
 	if err != nil {
 		return fmt.Errorf("encoding envelope of type %v: %w", envelope.MsgType, err)

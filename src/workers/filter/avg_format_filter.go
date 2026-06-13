@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"fmt"
 	"log/slog"
 	"sync"
 
@@ -11,8 +10,9 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
 const defaultAvgMultiplier = 0.01
@@ -23,7 +23,7 @@ type AvgFormatFilter struct {
 	txBroker      broker.Broker
 	prevWorkers   int
 	avgMultiplier float64
-	codec         codec.Codec
+	pub           *messaging.Publisher
 
 	mu                  sync.Mutex
 	avgByClient         map[uuid.UUID]map[string]float64
@@ -32,12 +32,12 @@ type AvgFormatFilter struct {
 	avgDoneChByClient   map[uuid.UUID]chan struct{}
 	avgExpectedByClient map[uuid.UUID]int
 	avgReceivedByClient map[uuid.UUID]int
-	txCacheByClient     map[uuid.UUID]map[string][]external.Transaction
+	txCacheByClient     map[uuid.UUID]map[string][]protocol.Transaction
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
 
-	q3Buffer *batch.Buffer[external.Query3Result]
+	q3Buffer *batch.Buffer[protocol.Query3Result]
 }
 
 func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBroker broker.Broker) (*AvgFormatFilter, error) {
@@ -54,14 +54,14 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		txBroker:            txBroker,
 		prevWorkers:         cfg.PrevWorkerAmount,
 		avgMultiplier:       multiplier,
-		codec:               codec.New(),
+		pub:                 messaging.New(codec.New(), txBroker),
 		avgByClient:         make(map[uuid.UUID]map[string]float64),
 		avgEofByClient:      make(map[uuid.UUID]int),
 		avgDoneByClient:     make(map[uuid.UUID]bool),
 		avgDoneChByClient:   make(map[uuid.UUID]chan struct{}),
 		avgExpectedByClient: make(map[uuid.UUID]int),
 		avgReceivedByClient: make(map[uuid.UUID]int),
-		txCacheByClient:     make(map[uuid.UUID]map[string][]external.Transaction),
+		txCacheByClient:     make(map[uuid.UUID]map[string][]protocol.Transaction),
 		syncEOFKey:          eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
 	}
 	f.q3Buffer = batch.NewBuffer(batch.DefaultSize, f.flushQuery3Results)
@@ -116,22 +116,10 @@ func (f *AvgFormatFilter) Run() error {
 func (f *AvgFormatFilter) Stop() {}
 
 func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) error {
-	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding avg envelope", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		slog.Debug("Received avg batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
-		return f.handleAvgBatch(envelope)
-	case external.MsgTransactionsEOF:
-		slog.Debug("Received avg EOF", "client_id", envelope.ClientId)
-		return f.handleAvgEOF(envelope)
-	default:
-		return fmt.Errorf("unexpected avg packet type: %v", envelope.MsgType)
-	}
+	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: f.handleAvgBatch,
+		protocol.MsgTransactionsEOF:   f.handleAvgEOF,
+	})
 }
 
 func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
@@ -168,20 +156,7 @@ func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
 func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Handling leader flush", "client_id", clientID, "final_sent", finalSent)
 
-	eofMsg, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgQuery3ResultEOF,
-		ClientId: clientID,
-		Payload:  nil,
-	})
-	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
-		return err
-	}
-	if err := f.txBroker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
-		ContentType: broker.ContentTypeBinary,
-		Body:        eofMsg,
-	}); err != nil {
+	if err := f.pub.PublishInternal(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -189,26 +164,15 @@ func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker
 }
 
 func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) error {
-	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding tx envelope", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		slog.Debug("Received transaction batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
-		return f.handleTransactionBatch(envelope)
-	case external.MsgTransactionsEOF:
-		slog.Debug("Received transaction EOF", "client_id", envelope.ClientId)
-		return f.handleEOF(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
+	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: f.handleTransactionBatch,
+		protocol.MsgTransactionsEOF:   f.handleEOF,
+	})
 }
 
-func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) error {
-	avgTransactions, err := f.codec.DecodeTransactionBatch(envelope.Payload)
+func (f *AvgFormatFilter) handleAvgBatch(envelope protocol.InternalEnvelope) error {
+	slog.Debug("Received avg batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
+	avgTransactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		return err
 	}
@@ -229,7 +193,7 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 
 	f.avgReceivedByClient[envelope.ClientId] += len(avgTransactions)
 
-	cached := make([]external.Transaction, 0)
+	cached := make([]protocol.Transaction, 0)
 	if f.txCacheByClient[envelope.ClientId] != nil {
 		for format := range updatedFormats {
 			for _, tx := range f.txCacheByClient[envelope.ClientId][format] {
@@ -270,15 +234,16 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope external.InternalEnvelope) err
 	return nil
 }
 
-func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvelope) error {
-	transactions, err := f.codec.DecodeTransactionBatch(envelope.Payload)
+func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvelope) error {
+	slog.Debug("Received transaction batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
+	transactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	if f.txCacheByClient[envelope.ClientId] == nil {
-		f.txCacheByClient[envelope.ClientId] = make(map[string][]external.Transaction)
+		f.txCacheByClient[envelope.ClientId] = make(map[string][]protocol.Transaction)
 	}
 	for _, tx := range transactions {
 		if tx.PaymentFormat == "" {
@@ -307,11 +272,11 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope external.InternalEnvel
 	return nil
 }
 
-func (f *AvgFormatFilter) evaluateTransaction(tx external.Transaction, avg float64) (external.Query3Result, bool) {
-	if tx.AmountPaid >= avg * f.avgMultiplier {
-		return external.Query3Result{}, false
+func (f *AvgFormatFilter) evaluateTransaction(tx protocol.Transaction, avg float64) (protocol.Query3Result, bool) {
+	if tx.AmountPaid >= avg*f.avgMultiplier {
+		return protocol.Query3Result{}, false
 	}
-	return external.Query3Result{
+	return protocol.Query3Result{
 		FromBank:      tx.FromBank,
 		FromAccount:   tx.FromAccount,
 		PaymentFormat: tx.PaymentFormat,
@@ -319,32 +284,21 @@ func (f *AvgFormatFilter) evaluateTransaction(tx external.Transaction, avg float
 	}, true
 }
 
-func (f *AvgFormatFilter) flushQuery3Results(clientID uuid.UUID, key broker.KeyType, items []external.Query3Result) error {
-	payload, err := f.codec.EncodeQuery3ResultBatch(items)
+func (f *AvgFormatFilter) flushQuery3Results(clientID uuid.UUID, key broker.KeyType, items []protocol.Query3Result) error {
+	payload, err := f.pub.EncodeQuery3ResultBatch(items)
 	if err != nil {
 		return err
 	}
-	envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgQuery3Result,
-		ClientId: clientID,
-		Payload:  payload,
-	})
-	if err != nil {
-		return err
-	}
-	if err := f.txBroker.Send(broker.Message{
-		RoutingKey:  key,
-		ContentType: broker.ContentTypeBinary,
-		Body:        envelope,
-	}); err != nil {
+	if err := f.pub.PublishInternal(clientID, protocol.MsgQuery3Result, key, payload); err != nil {
 		return err
 	}
 	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, len(items))
 	return nil
 }
 
-func (f *AvgFormatFilter) handleAvgEOF(envelope external.InternalEnvelope) error {
-	counts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+func (f *AvgFormatFilter) handleAvgEOF(envelope protocol.InternalEnvelope) error {
+	slog.Debug("Received avg EOF", "client_id", envelope.ClientId)
+	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		return err
 	}
@@ -362,7 +316,7 @@ func (f *AvgFormatFilter) handleAvgEOF(envelope external.InternalEnvelope) error
 	f.checkAvgDoneLocked(envelope.ClientId)
 
 	slog.Debug("Handled avg EOF", "client_id", envelope.ClientId, "eof_count", f.avgEofByClient[envelope.ClientId], "expected", f.avgExpectedByClient[envelope.ClientId], "received", f.avgReceivedByClient[envelope.ClientId])
-	
+
 	return nil
 }
 
@@ -380,8 +334,9 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID) {
 	}
 }
 
-func (f *AvgFormatFilter) handleEOF(envelope external.InternalEnvelope) error {
-	eofCounts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
+	slog.Debug("Received transaction EOF", "client_id", envelope.ClientId)
+	eofCounts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err

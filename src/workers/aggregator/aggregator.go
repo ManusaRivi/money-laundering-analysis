@@ -7,15 +7,16 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
 
 type Aggregator struct {
 	cfg    config.WorkerConfig
 	Broker broker.Broker
-	codec  codec.Codec
+	pub    *messaging.Publisher
 
 	aggFunction aggFunction
 	field       string // field used for aggregation comparison (e.g., "Amount")
@@ -26,7 +27,7 @@ type Aggregator struct {
 	// countState is the running counter for the ungrouped count aggregation.
 	// Indexed by clientID so concurrent clients each accumulate independently.
 	countState map[uuid.UUID]int
-	state      map[uuid.UUID]map[string]external.Transaction
+	state      map[uuid.UUID]map[string]protocol.Transaction
 	avgState   map[uuid.UUID]map[string]avgState
 }
 
@@ -48,13 +49,13 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 	return &Aggregator{
 		cfg:         cfg,
 		Broker:      b,
-		codec:       codec.New(),
+		pub:         messaging.New(codec.New(), b),
 		aggFunction: function,
 		field:       field,
 		grouped:     grouped,
 		groupSource: groupSource,
 		groupField:  groupField,
-		state:       make(map[uuid.UUID]map[string]external.Transaction),
+		state:       make(map[uuid.UUID]map[string]protocol.Transaction),
 		countState:  make(map[uuid.UUID]int),
 		avgState:    make(map[uuid.UUID]map[string]avgState),
 	}, nil
@@ -77,31 +78,9 @@ func (a *Aggregator) Stop() {}
 
 // Private Methods
 
-func (a *Aggregator) sendMessageToBroker(clientID uuid.UUID, msgType external.MsgType, payload []byte, routingKey broker.KeyType) error {
-	envelope, err := a.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: clientID,
-		Payload:  payload,
-	})
-	if err != nil {
-		slog.Error("Error encoding internal envelope for query 5 EOF", "error", err)
-		return err
-	}
-	if err := a.Broker.Send(broker.Message{
-		RoutingKey:  routingKey,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	}); err != nil {
-		slog.Error("Error sending count EOF", "error", err)
-		return err
-	}
-	slog.Debug("Message sent to broker", "msgType", msgType, "clientID", clientID, "query", a.cfg.Query)
-	return nil
-}
-
-func (a *Aggregator) handleTransactionMessage(envelope external.InternalEnvelope) error {
+func (a *Aggregator) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Handling transaction batch message", "clientID", envelope.ClientId)
-	transactions, err := a.codec.DecodeTransactionBatch(envelope.Payload)
+	transactions, err := a.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
@@ -132,7 +111,7 @@ func (a *Aggregator) handleTransactionMessage(envelope external.InternalEnvelope
 		}
 
 		if _, exists := a.state[envelope.ClientId]; !exists {
-			a.state[envelope.ClientId] = make(map[string]external.Transaction)
+			a.state[envelope.ClientId] = make(map[string]protocol.Transaction)
 		}
 		current, exists := a.state[envelope.ClientId][key]
 		a.state[envelope.ClientId][key] = a.combine(current, tx, exists)
@@ -142,7 +121,7 @@ func (a *Aggregator) handleTransactionMessage(envelope external.InternalEnvelope
 
 const flushBatchSize = batch.DefaultSize
 
-func (a *Aggregator) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (a *Aggregator) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received EOF packet, processing aggregation results", "clientID", clientID)
 
@@ -160,10 +139,10 @@ func (a *Aggregator) handleEOFMessage(envelope external.InternalEnvelope) error 
 	return a.sendTransactionsEOF(clientID, sentCount)
 }
 
-func (a *Aggregator) collectResults(clientID uuid.UUID) []external.Transaction {
+func (a *Aggregator) collectResults(clientID uuid.UUID) []protocol.Transaction {
 	if a.aggFunction == opAvg {
 		groups := a.avgState[clientID]
-		results := make([]external.Transaction, 0, len(groups))
+		results := make([]protocol.Transaction, 0, len(groups))
 		for _, st := range groups {
 			out := st.sample
 			if st.count > 0 {
@@ -176,7 +155,7 @@ func (a *Aggregator) collectResults(clientID uuid.UUID) []external.Transaction {
 	}
 
 	groups := a.state[clientID]
-	results := make([]external.Transaction, 0, len(groups))
+	results := make([]protocol.Transaction, 0, len(groups))
 	for _, tx := range groups {
 		results = append(results, tx)
 	}
@@ -184,15 +163,15 @@ func (a *Aggregator) collectResults(clientID uuid.UUID) []external.Transaction {
 	return results
 }
 
-func (a *Aggregator) sendTransactionBatches(clientID uuid.UUID, results []external.Transaction) (int, error) {
+func (a *Aggregator) sendTransactionBatches(clientID uuid.UUID, results []protocol.Transaction) (int, error) {
 	sent := 0
 	for start := 0; start < len(results); start += flushBatchSize {
 		chunk := results[start:min(start+flushBatchSize, len(results))]
-		payload, err := a.codec.EncodeTransactionBatch(chunk)
+		payload, err := a.pub.EncodeTransactionBatch(chunk)
 		if err != nil {
 			return sent, fmt.Errorf("encoding aggregated batch: %w", err)
 		}
-		if err := a.sendMessageToBroker(clientID, external.MsgTransactionsBatch, payload, broker.KeyNil); err != nil {
+		if err := a.pub.PublishInternal(clientID, protocol.MsgTransactionsBatch, broker.KeyNil, payload); err != nil {
 			return sent, fmt.Errorf("sending aggregated batch: %w", err)
 		}
 		sent += len(chunk)
@@ -201,30 +180,19 @@ func (a *Aggregator) sendTransactionBatches(clientID uuid.UUID, results []extern
 }
 
 func (a *Aggregator) sendTransactionsEOF(clientID uuid.UUID, sent int) error {
-	counts, err := a.codec.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: sent})
+	counts, err := a.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: sent})
 	if err != nil {
 		return fmt.Errorf("encoding eof counts: %w", err)
 	}
 	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", clientID, "msg_sent", sent)
-	return a.sendMessageToBroker(clientID, external.MsgTransactionsEOF, counts, broker.KeyControlEOF)
+	return a.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts)
 }
 
 func (a *Aggregator) handleMessage(msg broker.Message) error {
-	envelope, err := a.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error unmarshalling message", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		return a.handleTransactionMessage(envelope)
-	case external.MsgTransactionsEOF:
-		return a.handleEOFMessage(envelope)
-	default:
-		slog.Warn("Received message with unknown type", "type", envelope.MsgType)
-		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
-	}
+	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: a.handleTransactionMessage,
+		protocol.MsgTransactionsEOF:   a.handleEOFMessage,
+	})
 }
 
 // emitUngroupedCount emits the running count for clientID as a query-result
@@ -235,16 +203,16 @@ func (a *Aggregator) emitUngroupedCount(clientID uuid.UUID) error {
 	count := a.countState[clientID]
 	delete(a.countState, clientID)
 
-	resultMsg, err := a.codec.EncodeQuery5Result(external.Query5Result{Count: int64(count)})
+	resultMsg, err := a.pub.EncodeQuery5Result(protocol.Query5Result{Count: int64(count)})
 	if err != nil {
 		slog.Error("Error encoding query 5 result", "error", err)
 		return err
 	}
-	err = a.sendMessageToBroker(clientID, external.MsgQuery5Result, resultMsg, broker.KeyNil)
+	err = a.pub.PublishInternal(clientID, protocol.MsgQuery5Result, broker.KeyNil, resultMsg)
 	if err != nil {
 		slog.Error("Error sending count result", "error", err)
 		return err
 	}
 	slog.Debug("Sent count result", "clientID", clientID, "count", count, "query", a.cfg.Query)
-	return a.sendMessageToBroker(clientID, external.MsgQuery5ResultEOF, nil, broker.KeyNil)
+	return a.pub.PublishInternal(clientID, protocol.MsgQuery5ResultEOF, broker.KeyNil, nil)
 }

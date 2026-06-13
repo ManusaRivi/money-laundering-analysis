@@ -9,15 +9,16 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
 
 type Router struct {
 	cfg               config.WorkerConfig
 	Broker            broker.Broker
-	codec             codec.Codec
+	pub               *messaging.Publisher
 	syncEOFController *eof.SyncEOFController
 	sectionToRouteBy  string
 	fieldToRouteBy    string
@@ -44,7 +45,7 @@ func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
 	return &Router{
 		cfg:               cfg,
 		Broker:            broker,
-		codec:             codec.New(),
+		pub:               messaging.New(codec.New(), broker),
 		syncEOFController: nil,
 		sectionToRouteBy:  section,
 		fieldToRouteBy:    field,
@@ -85,23 +86,10 @@ func (r *Router) Stop() {}
 
 // Private methods
 
-func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType external.MsgType, payload []byte, routingKey broker.KeyType, batchLength int) error {
+func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, routingKey broker.KeyType, batchLength int) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	envelope, err := r.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: clientID,
-		Payload:  payload,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding internal envelope: %w", err)
-	}
-	err = r.Broker.Send(broker.Message{
-		RoutingKey:  routingKey,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	})
-	if err != nil {
-		return fmt.Errorf("sending message to broker: %w", err)
+	if err := r.pub.PublishInternal(clientID, msgType, routingKey, payload); err != nil {
+		return err
 	}
 	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
 	return nil
@@ -133,34 +121,34 @@ func (r *Router) onflush(clientID uuid.UUID) error {
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Forwarding EOF to next worker...", "clientId", clientID)
-	eofCounts, err := r.codec.EncodeEOFCounts(finalSent)
+	eofCounts, err := r.pub.EncodeEOFCounts(finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF counts", "error", err)
 		return err
 	}
-	return r.encodeAndSendBatch(clientID, external.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0)
+	return r.encodeAndSendBatch(clientID, protocol.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0)
 }
 
 func (r *Router) onRetryExceeded(clientID uuid.UUID) error {
 	return nil
 }
 
-func (r *Router) handleTransactionMessage(envelope external.InternalEnvelope) error {
-	txBatch, err := r.codec.DecodeTransactionBatch(envelope.Payload)
+func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
+	txBatch, err := r.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
 	r.syncEOFController.MessageReceived(envelope.ClientId, len(txBatch))
-	transactionsPerRoutingKey := make(map[string][]external.Transaction)
+	transactionsPerRoutingKey := make(map[string][]protocol.Transaction)
 	for _, tx := range txBatch {
 		routingKey := r.shardByField(tx)
 		transactionsPerRoutingKey[routingKey] = append(transactionsPerRoutingKey[routingKey], tx)
 	}
 
 	for routingKey, transactions := range transactionsPerRoutingKey {
-		transactionBytes, err := r.codec.EncodeTransactionBatch(transactions)
+		transactionBytes, err := r.pub.EncodeTransactionBatch(transactions)
 		if err != nil {
 			slog.Error("Error encoding transaction batch", "error", err)
 			return err
@@ -169,7 +157,7 @@ func (r *Router) handleTransactionMessage(envelope external.InternalEnvelope) er
 		slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
 		// Encode and send batch
 		routingKey := broker.KeyType(routingKey)
-		if err := r.encodeAndSendBatch(envelope.ClientId, external.MsgTransactionsBatch, transactionBytes, routingKey, len(transactions)); err != nil {
+		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, routingKey, len(transactions)); err != nil {
 			return err
 		}
 		r.syncEOFController.MessageSentWithKey(envelope.ClientId, routingKey, len(txBatch))
@@ -177,9 +165,9 @@ func (r *Router) handleTransactionMessage(envelope external.InternalEnvelope) er
 	return nil
 }
 
-func (r *Router) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Received EOF packet, beginning syncing...", "clientId", envelope.ClientId)
-	counts, err := r.codec.DecodeEOFCounts(envelope.Payload)
+	counts, err := r.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
@@ -189,18 +177,8 @@ func (r *Router) handleEOFMessage(envelope external.InternalEnvelope) error {
 }
 
 func (r *Router) handleMessage(msg broker.Message) error {
-	envelope, err := r.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding message", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		return r.handleTransactionMessage(envelope)
-	case external.MsgTransactionsEOF:
-		return r.handleEOFMessage(envelope)
-	default:
-		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
-	}
+	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: r.handleTransactionMessage,
+		protocol.MsgTransactionsEOF:   r.handleEOFMessage,
+	})
 }

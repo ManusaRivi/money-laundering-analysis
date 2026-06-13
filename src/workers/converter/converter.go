@@ -2,13 +2,13 @@ package converter
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
 
@@ -22,7 +22,7 @@ const Dollar = "US Dollar"
 type Converter struct {
 	cfg                       config.WorkerConfig
 	Broker                    broker.Broker
-	codec                     codec.Codec
+	pub                       *messaging.Publisher
 	txProcessedCountForClient map[uuid.UUID]int
 
 	rates *rateClient
@@ -32,7 +32,7 @@ func NewConverter(cfg config.WorkerConfig, broker broker.Broker) *Converter {
 	return &Converter{
 		cfg:                       cfg,
 		Broker:                    broker,
-		codec:                     codec.New(),
+		pub:                       messaging.New(codec.New(), broker),
 		txProcessedCountForClient: make(map[uuid.UUID]int),
 		rates:                     newRateClient(),
 	}
@@ -54,26 +54,13 @@ func (c *Converter) Stop() {}
 
 // Private methods
 
-func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []external.Transaction) error {
-	transactionsBytes, err := c.codec.EncodeTransactionBatch(transactions)
+func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []protocol.Transaction) error {
+	transactionsBytes, err := c.pub.EncodeTransactionBatch(transactions)
 	if err != nil {
 		slog.Error("Error encoding converted transactions batch", "error", err)
 		return err
 	}
-	envelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgTransactionsBatch,
-		ClientId: clientID,
-		Payload:  transactionsBytes,
-	})
-	if err != nil {
-		slog.Error("Error encoding converted transactions envelope", "error", err)
-		return err
-	}
-	if err := c.Broker.Send(broker.Message{
-		RoutingKey:  broker.KeyDollarTransaction,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	}); err != nil {
+	if err := c.pub.PublishInternal(clientID, protocol.MsgTransactionsBatch, broker.KeyDollarTransaction, transactionsBytes); err != nil {
 		slog.Error("Error sending converted transactions batch to broker", "error", err)
 		return err
 	}
@@ -81,15 +68,15 @@ func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []exte
 	return nil
 }
 
-func (c *Converter) handleTransactionMessage(envelope external.InternalEnvelope) error {
-	transactions, err := c.codec.DecodeTransactionBatch(envelope.Payload)
+func (c *Converter) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
+	transactions, err := c.pub.DecodeTransactionBatch(envelope.Payload)
 	clientID := envelope.ClientId
 	if err != nil {
 		slog.Error("Error decoding transactions batch", "error", err)
 		return err
 	}
 
-	results := make([]external.Transaction, 0, len(transactions))
+	results := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
 		if tx.PaymentCurrency == Dollar {
@@ -121,28 +108,15 @@ func (c *Converter) handleTransactionMessage(envelope external.InternalEnvelope)
 	return c.sendTransactionBatch(clientID, results)
 }
 
-func (c *Converter) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Forwarding EOF to next worker...", "clientID", clientID)
-	counts, err := c.codec.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[clientID]})
+	counts, err := c.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[clientID]})
 	if err != nil {
 		slog.Error("Error encoding EOF counts", "error", err)
 		return err
 	}
-	eofEnvelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  external.MsgTransactionsEOF,
-		ClientId: clientID,
-		Payload:  counts,
-	})
-	if err != nil {
-		slog.Error("Error encoding EOF envelope", "error", err)
-		return err
-	}
-	if err := c.Broker.Send(broker.Message{
-		RoutingKey:  broker.KeyControlEOF,
-		Body:        eofEnvelope,
-		ContentType: broker.ContentTypeBinary,
-	}); err != nil {
+	if err := c.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}
@@ -151,18 +125,8 @@ func (c *Converter) handleEOFMessage(envelope external.InternalEnvelope) error {
 }
 
 func (c *Converter) handleMessage(msg broker.Message) error {
-	envelope, err := c.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		slog.Error("Error decoding message", "error", err)
-		return err
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		return c.handleTransactionMessage(envelope)
-	case external.MsgTransactionsEOF:
-		return c.handleEOFMessage(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
+	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
+		protocol.MsgTransactionsEOF:   c.handleEOFMessage,
+	})
 }

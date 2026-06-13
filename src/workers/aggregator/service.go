@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 )
 
 type aggFunction string
@@ -20,12 +20,12 @@ const (
 type avgState struct {
 	sum    float64
 	count  int
-	sample external.Transaction
+	sample protocol.Transaction
 }
 
 // combine merges the incoming transaction into the stored aggregate for its group.
 // If no prior entry exists, the incoming tx becomes the seed.
-func (a *Aggregator) combine(current, incoming external.Transaction, hasCurrent bool) external.Transaction {
+func (a *Aggregator) combine(current, incoming protocol.Transaction, hasCurrent bool) protocol.Transaction {
 	if !hasCurrent {
 		switch a.aggFunction {
 		case opCount:
@@ -62,7 +62,7 @@ func (a *Aggregator) combine(current, incoming external.Transaction, hasCurrent 
 	}
 }
 
-func (a *Aggregator) fieldValue(tx external.Transaction) float64 {
+func (a *Aggregator) fieldValue(tx protocol.Transaction) float64 {
 	switch a.field {
 	case "Amount":
 		return tx.AmountPaid
@@ -71,7 +71,7 @@ func (a *Aggregator) fieldValue(tx external.Transaction) float64 {
 	}
 }
 
-func (a *Aggregator) extractGroupKey(tx external.Transaction) (string, error) {
+func (a *Aggregator) extractGroupKey(tx protocol.Transaction) (string, error) {
 	var acct *domain.Account
 	switch a.groupSource {
 	case "origin":

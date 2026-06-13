@@ -3,11 +3,12 @@ package client
 import (
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
 type Receiver struct {
@@ -15,7 +16,7 @@ type Receiver struct {
 	codec     codec.Codec
 	outputDir string
 	done      chan struct{}
-	writers   map[external.MsgType]*data.QueryWriter
+	writers   map[protocol.MsgType]*data.QueryWriter
 }
 
 func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) *Receiver {
@@ -24,7 +25,7 @@ func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) 
 		codec:     codec,
 		outputDir: outputDir,
 		done:      make(chan struct{}),
-		writers:   make(map[external.MsgType]*data.QueryWriter),
+		writers:   make(map[protocol.MsgType]*data.QueryWriter),
 	}
 }
 
@@ -44,6 +45,8 @@ func (r *Receiver) Listen() {
 
 	pendingEOFs := len(data.GetQueryResultData())
 
+	start := time.Now()
+
 	for pendingEOFs > 0 {
 		header, err := r.conn.Receive(codec.ExternalHeaderSize)
 		if err != nil {
@@ -62,78 +65,88 @@ func (r *Receiver) Listen() {
 		slog.Debug("Received message", "msgType", msgType, "payloadSize", payloadSize)
 
 		switch msgType {
-		case external.MsgQuery1Result:
+		case protocol.MsgQuery1Result:
 			results, err := r.codec.DecodeQuery1ResultBatch(payload)
 			if err != nil {
-				r.closeWriter(external.MsgQuery1Result)
+				r.closeWriter(protocol.MsgQuery1Result)
 				slog.Warn("Failed to decode query 1 result", "err", err)
 				continue
 			}
-			r.writeRows(external.MsgQuery1Result, query1RowsToString(results))
-		case external.MsgQuery1ResultEOF:
+			r.writeRows(protocol.MsgQuery1Result, query1RowsToString(results))
+		case protocol.MsgQuery1ResultEOF:
 			slog.Info("Received Query 1 EOF")
-			if w, ok := r.writers[external.MsgQuery1Result]; ok {
+			if w, ok := r.writers[protocol.MsgQuery1Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
-		case external.MsgQuery2Result:
+			eof1Time := time.Since(start)
+			slog.Info("Time to receive Query 1 EOF", "duration", eof1Time)
+		case protocol.MsgQuery2Result:
 			results, err := r.codec.DecodeQuery2ResultBatch(payload)
 			if err != nil {
-				r.closeWriter(external.MsgQuery2Result)
+				r.closeWriter(protocol.MsgQuery2Result)
 				slog.Warn("Failed to decode query 2 result", "err", err)
 				continue
 			}
-			r.writeRows(external.MsgQuery2Result, query2RowsToString(results))
-		case external.MsgQuery2ResultEOF:
+			r.writeRows(protocol.MsgQuery2Result, query2RowsToString(results))
+		case protocol.MsgQuery2ResultEOF:
 			slog.Info("Received Query 2 EOF")
-			if w, ok := r.writers[external.MsgQuery2Result]; ok {
+			if w, ok := r.writers[protocol.MsgQuery2Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
-		case external.MsgQuery3Result:
+			eof2Time := time.Since(start)
+			slog.Info("Time to receive Query 2 EOF", "duration", eof2Time)
+		case protocol.MsgQuery3Result:
 			results, err := r.codec.DecodeQuery3ResultBatch(payload)
 			if err != nil {
-				r.closeWriter(external.MsgQuery3Result)
+				r.closeWriter(protocol.MsgQuery3Result)
 				slog.Warn("Failed to decode query 3 result", "err", err)
 				continue
 			}
-			r.writeRows(external.MsgQuery3Result, query3RowsToString(results))
-		case external.MsgQuery3ResultEOF:
+			r.writeRows(protocol.MsgQuery3Result, query3RowsToString(results))
+		case protocol.MsgQuery3ResultEOF:
 			slog.Info("Received Query 3 EOF")
-			if w, ok := r.writers[external.MsgQuery3Result]; ok {
+			if w, ok := r.writers[protocol.MsgQuery3Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
-		case external.MsgQuery4Result:
+			eof3Time := time.Since(start)
+			slog.Info("Time to receive Query 3 EOF", "duration", eof3Time)
+		case protocol.MsgQuery4Result:
 			slog.Debug("Decoding Query 4 result")
 			results, err := r.codec.DecodeQuery4ResultPayload(payload)
 			if err != nil {
-				r.closeWriter(external.MsgQuery4Result)
+				r.closeWriter(protocol.MsgQuery4Result)
 				slog.Warn("Failed to decode query 4 result", "err", err)
 				continue
 			}
 			slog.Debug("Decoded Query 4 result", "numResults", len(results))
-			r.writeRows(external.MsgQuery4Result, query4RowsToString(results))
-		case external.MsgQuery4ResultEOF:
+			r.writeRows(protocol.MsgQuery4Result, query4RowsToString(results))
+		case protocol.MsgQuery4ResultEOF:
 			slog.Info("Received Query 4 EOF")
-			if w, ok := r.writers[external.MsgQuery4Result]; ok {
+			if w, ok := r.writers[protocol.MsgQuery4Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
-		case external.MsgQuery5Result:
+			eof4Time := time.Since(start)
+			slog.Info("Time to receive Query 4 EOF", "duration", eof4Time)
+		case protocol.MsgQuery5Result:
 			result, err := r.codec.DecodeQuery5Result(payload)
 			if err != nil {
-				r.closeWriter(external.MsgQuery5Result)
+				r.closeWriter(protocol.MsgQuery5Result)
 				slog.Warn("Failed to decode query 5 result", "err", err)
 				continue
 			}
-			r.writeRows(external.MsgQuery5Result, query5RowsToString(result))
-		case external.MsgQuery5ResultEOF:
+			r.writeRows(protocol.MsgQuery5Result, query5RowsToString(result))
+		case protocol.MsgQuery5ResultEOF:
 			slog.Info("Received Query 5 EOF")
-			if w, ok := r.writers[external.MsgQuery5Result]; ok {
+			if w, ok := r.writers[protocol.MsgQuery5Result]; ok {
 				w.Close()
 			}
 			pendingEOFs--
+			eof5Time := time.Since(start)
+			slog.Info("Time to receive Query 5 EOF", "duration", eof5Time)
 		default:
 			slog.Warn("Unknown message type received", "msgType", msgType)
 		}
@@ -158,13 +171,13 @@ func (r *Receiver) shutdownWriters() {
 	}
 }
 
-func (r *Receiver) closeWriter(resultType external.MsgType) {
+func (r *Receiver) closeWriter(resultType protocol.MsgType) {
 	if w, ok := r.writers[resultType]; ok {
 		w.Close()
 	}
 }
 
-func (r *Receiver) writeRows(resultType external.MsgType, rows [][]string) {
+func (r *Receiver) writeRows(resultType protocol.MsgType, rows [][]string) {
 	w, ok := r.writers[resultType]
 	if !ok {
 		return
@@ -172,7 +185,7 @@ func (r *Receiver) writeRows(resultType external.MsgType, rows [][]string) {
 	w.WriteRows(rows)
 }
 
-func query1RowsToString(results []external.Query1Result) [][]string {
+func query1RowsToString(results []protocol.Query1Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
 		rows = append(rows, []string{
@@ -186,7 +199,7 @@ func query1RowsToString(results []external.Query1Result) [][]string {
 	return rows
 }
 
-func query2RowsToString(results []external.Query2Result) [][]string {
+func query2RowsToString(results []protocol.Query2Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
 		rows = append(rows, []string{
@@ -199,7 +212,7 @@ func query2RowsToString(results []external.Query2Result) [][]string {
 	return rows
 }
 
-func query3RowsToString(results []external.Query3Result) [][]string {
+func query3RowsToString(results []protocol.Query3Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
 		rows = append(rows, []string{
@@ -212,7 +225,7 @@ func query3RowsToString(results []external.Query3Result) [][]string {
 	return rows
 }
 
-func query4RowsToString(results []external.Query4Result) [][]string {
+func query4RowsToString(results []protocol.Query4Result) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, res := range results {
 		rows = append(rows, []string{
@@ -223,7 +236,7 @@ func query4RowsToString(results []external.Query4Result) [][]string {
 	return rows
 }
 
-func query5RowsToString(result external.Query5Result) [][]string {
+func query5RowsToString(result protocol.Query5Result) [][]string {
 	rows := make([][]string, 0, 1)
 	rows = append(rows, []string{strconv.FormatInt(result.Count, 10)})
 	return rows

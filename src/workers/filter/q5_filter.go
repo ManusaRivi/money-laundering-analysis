@@ -8,14 +8,15 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
 
 type Q5Filter struct {
 	cfg    config.WorkerConfig
 	Broker broker.Broker
-	codec  codec.Codec
+	pub    *messaging.Publisher
 
 	Type         string
 	Field        string
@@ -61,7 +62,7 @@ func NewQ5Filter(cfg config.WorkerConfig, b broker.Broker) (*Q5Filter, error) {
 	return &Q5Filter{
 		cfg:                   cfg,
 		Broker:                b,
-		codec:                 codec.New(),
+		pub:                   messaging.New(codec.New(), b),
 		Type:                  typeVal,
 		Field:                 field,
 		Operator:              operator,
@@ -92,37 +93,24 @@ func (f *Q5Filter) Stop() {}
 
 // Private methods
 
-func (f *Q5Filter) encodeAndSendBatch(clientID uuid.UUID, msgType external.MsgType, payload []byte, batchLength int) error {
+func (f *Q5Filter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: clientID,
-		Payload:  payload,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding internal envelope: %w", err)
-	}
-	err = f.Broker.Send(broker.Message{
-		RoutingKey:  broker.KeyNil,
-		Body:        envelope,
-		ContentType: broker.ContentTypeBinary,
-	})
-	if err != nil {
-		return fmt.Errorf("sending message to broker: %w", err)
+	if err := f.pub.PublishInternal(clientID, msgType, broker.KeyNil, payload); err != nil {
+		return err
 	}
 	f.sentCount[clientID] += batchLength
 	return nil
 }
 
-func (f *Q5Filter) handleTransactionMessage(envelope external.InternalEnvelope) error {
-	transactions, err := f.codec.DecodeTransactionBatch(envelope.Payload)
+func (f *Q5Filter) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
+	transactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transactions batch", "error", err)
 		return err
 	}
 	slog.Debug("Received transaction batch", "clientId", envelope.ClientId, "batchSize", len(transactions))
 	f.receivedCount[envelope.ClientId] += len(transactions)
-	filteredTx := make([]external.Transaction, 0, len(transactions))
+	filteredTx := make([]protocol.Transaction, 0, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 			filteredTx = append(filteredTx, tx)
@@ -132,16 +120,16 @@ func (f *Q5Filter) handleTransactionMessage(envelope external.InternalEnvelope) 
 		slog.Debug("No transactions passed the filter", "clientId", envelope.ClientId)
 		return nil
 	}
-	filteredTxBytes, err := f.codec.EncodeTransactionBatch(filteredTx)
+	filteredTxBytes, err := f.pub.EncodeTransactionBatch(filteredTx)
 	if err != nil {
 		return fmt.Errorf("encoding filtered transaction batch: %w", err)
 	}
-	return f.encodeAndSendBatch(envelope.ClientId, external.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
+	return f.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
 }
 
-func (f *Q5Filter) handleEOFMessage(envelope external.InternalEnvelope) error {
+func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
-	counts, err := f.codec.DecodeEOFCounts(envelope.Payload)
+	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
@@ -170,24 +158,11 @@ func (f *Q5Filter) handleEOFMessage(envelope external.InternalEnvelope) error {
 		}
 		slog.Debug("Sending EOF packet downstream for client", "clientID", clientID)
 
-		eofPayload, err := f.codec.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: f.sentCount[clientID]})
+		eofPayload, err := f.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: f.sentCount[clientID]})
 		if err != nil {
 			return fmt.Errorf("encoding EOF counts for EOF envelope: %w", err)
 		}
-		envelope, err := f.codec.EncodeInternalEnvelope(external.InternalEnvelope{
-			MsgType:  external.MsgTransactionsEOF,
-			ClientId: clientID,
-			Payload:  eofPayload,
-		})
-		if err != nil {
-			return fmt.Errorf("encoding transaction EOF envelope: %w", err)
-		}
-		err = f.Broker.Send(broker.Message{
-			RoutingKey:  broker.KeyControlEOF,
-			Body:        envelope,
-			ContentType: broker.ContentTypeBinary,
-		})
-		if err != nil {
+		if err := f.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload); err != nil {
 			return fmt.Errorf("sending EOF message to broker: %w", err)
 		}
 		delete(f.workerEofReceived, clientID)
@@ -199,17 +174,8 @@ func (f *Q5Filter) handleEOFMessage(envelope external.InternalEnvelope) error {
 }
 
 func (f *Q5Filter) handleMessage(msg broker.Message) error {
-	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
-	if err != nil {
-		return fmt.Errorf("error decoding internal envelope: %w", err)
-	}
-
-	switch envelope.MsgType {
-	case external.MsgTransactionsBatch:
-		return f.handleTransactionMessage(envelope)
-	case external.MsgTransactionsEOF:
-		return f.handleEOFMessage(envelope)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
-	}
+	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+		protocol.MsgTransactionsBatch: f.handleTransactionMessage,
+		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
+	})
 }
