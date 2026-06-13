@@ -18,8 +18,8 @@ worker:
   type: "DateRangeFilter"
   params:
     type: "date_between"
-    from: "2022/09/01 00:00"
-    to: "2022/09/05 23:59"
+    from: "2022/09/01"
+    to: "2022/09/06"
   sync_eof:
     - retries_base_delay: 0.5
     - retries_step_delay: 0.5

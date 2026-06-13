@@ -55,7 +55,7 @@ func GetQueryResultData() map[external.MsgType]QueryResultData {
 			header:   []string{"from_bank", "from_account", "payment_format", "amount_paid"},
 			eofType:  external.MsgQuery3ResultEOF,
 		},
-		external.MsgQuery4Result: {
+		/*external.MsgQuery4Result: {
 			filename: "query4.csv",
 			header:   []string{"bank_id", "account_id"},
 			eofType:  external.MsgQuery4ResultEOF,

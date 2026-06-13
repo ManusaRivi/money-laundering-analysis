@@ -177,7 +177,7 @@ def expected_query5(trans_df):
 QUERY_BUILDERS = {
     "query1": lambda trans, _: expected_query1(trans),
     "query2": lambda trans, accounts: expected_query2(trans, accounts),
-    # "query3": lambda trans, _: expected_query3(trans),
+    "query3": lambda trans, _: expected_query3(trans),
     # "query4": lambda trans, _: expected_query4_bis(trans),
     "query5": lambda trans, _: expected_query5(trans),
 }
