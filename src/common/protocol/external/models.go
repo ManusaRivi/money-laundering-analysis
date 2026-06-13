@@ -5,24 +5,66 @@ import "github.com/google/uuid"
 type MsgType uint8
 
 const (
-	MsgTypeInvalid       MsgType = 0
-	MsgAccountsBatch     MsgType = 1
-	MsgAccountsEOF       MsgType = 2
-	MsgTransactionsBatch MsgType = 3
-	MsgTransactionsEOF   MsgType = 4
+	MsgTypeInvalid       MsgType = iota
+	MsgAccountsBatch    
+	MsgAccountsEOF      
+	MsgTransactionsBatch
+	MsgTransactionsEOF
 
-	MsgQuery1Result MsgType = 5
-	MsgQuery2Result MsgType = 6
-	MsgQuery3Result MsgType = 7
-	MsgQuery4Result MsgType = 8
-	MsgQuery5Result MsgType = 9
+	MsgTxQ4
+	MsgTxAccounts //for Q4, preguntar a MANU
 
-	MsgQuery1ResultEOF MsgType = 10
-	MsgQuery2ResultEOF MsgType = 11
-	MsgQuery3ResultEOF MsgType = 12
-	MsgQuery4ResultEOF MsgType = 13
-	MsgQuery5ResultEOF MsgType = 14
+	MsgQuery1Result
+	MsgQuery2Result
+	MsgQuery3Result
+	MsgQuery4Result
+	MsgQuery5Result
+
+	MsgQuery1ResultEOF
+	MsgQuery2ResultEOF
+	MsgQuery3ResultEOF
+	MsgQuery4ResultEOF
+	MsgQuery5ResultEOF
 )
+
+func (m MsgType) String() string {
+	switch m {
+	case MsgAccountsBatch:
+		return "MsgAccountsBatch"
+	case MsgAccountsEOF:
+		return "MsgAccountsEOF"
+	case MsgTransactionsBatch:
+		return "MsgTransactionsBatch"
+	case MsgTransactionsEOF:
+		return "MsgTransactionsEOF"
+	case MsgTxQ4:
+		return "MsgTxQ4"
+	case MsgTxAccounts:
+		return "MsgTxAccounts"
+	case MsgQuery1Result:
+		return "MsgQuery1Result"
+	case MsgQuery2Result:
+		return "MsgQuery2Result"
+	case MsgQuery3Result:
+		return "MsgQuery3Result"
+	case MsgQuery4Result:
+		return "MsgQuery4Result"
+	case MsgQuery5Result:
+		return "MsgQuery5Result"
+	case MsgQuery1ResultEOF:
+		return "MsgQuery1ResultEOF"
+	case MsgQuery2ResultEOF:
+		return "MsgQuery2ResultEOF"
+	case MsgQuery3ResultEOF:
+		return "MsgQuery3ResultEOF"
+	case MsgQuery4ResultEOF:
+		return "MsgQuery4ResultEOF"
+	case MsgQuery5ResultEOF:
+		return "MsgQuery5ResultEOF"
+	default:
+		return "MsgTypeInvalid"
+	}
+}
 
 type ExternalEnvelope struct {
 	MsgType MsgType
@@ -85,4 +127,44 @@ type Query4Result struct {
 }
 type Query5Result struct {
 	Count int64
+}
+
+
+func (t *Transaction) IsUSDTransaction() bool {
+	// return t.Paid.Currency == "US Dollar"
+	return t.PaymentCurrency == "US Dollar"
+}
+
+func (t *Transaction) GetOriginId() string {
+	return t.FromAccount + "-" + t.FromBank
+}
+
+func (t *Transaction) GetDestId() string {
+	return t.ToAccount + "-" + t.ToBank
+}
+
+func (t *Transaction) GetTransactionId() string {
+	return t.GetOriginId() + "-" + t.GetDestId() + "-" + t.Timestamp
+}
+
+func (t *Transaction) GetTransactionField(field string) string {
+	switch field {
+	case "origin":
+		if t.FromAccount != "" && t.FromBank != "" {
+			return t.GetOriginId()
+		}
+	case "dest":
+		if t.ToAccount != "" && t.ToBank != "" {
+			return t.GetDestId()
+		}
+	case "BankID":
+		if t.FromBank != "" {
+			return t.FromBank
+		}
+	case "ID":
+		if t.FromAccount != "" {
+			return t.FromAccount
+		}
+	}
+	return ""
 }

@@ -187,7 +187,7 @@ func (f *DateRange) sendTransactionBatch(transactions []external.Transaction, cl
 	return f.sendMessageToBroker(external.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions))
 }
 
-func (f *DateRange) handleTransactionMessage(envelope external.InternalEnvelope) error {
+func (f *DateRange) handleTransactionsBatchMessage(envelope external.InternalEnvelope) error {
 	clientId := envelope.ClientId
 	transactions, err := f.codec.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
@@ -238,7 +238,7 @@ func (f *DateRange) handleMessage(msg broker.Message) error {
 
 	switch envelope.MsgType {
 	case external.MsgTransactionsBatch:
-		if err := f.handleTransactionMessage(envelope); err != nil {
+		if err := f.handleTransactionsBatchMessage(envelope); err != nil {
 			return err
 		}
 	case external.MsgTransactionsEOF:

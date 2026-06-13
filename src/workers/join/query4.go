@@ -9,14 +9,18 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 )
 
+const BATCH_SIZE = 1000
 type Query4Client struct {
 	accountsSet map[domain.Account]struct{}
 }
 
 type Query4 struct {
+	codec codec.Codec
 	clients map[uuid.UUID]*Query4Client 
 	
 	broker  broker.Broker
@@ -28,6 +32,7 @@ type Query4 struct {
 
 func NewQuery4(cfg config.WorkerConfig, b broker.Broker) (*Query4, error) {
 	return &Query4{
+		codec:           codec.New(),
 		clients:         make(map[uuid.UUID]*Query4Client),
 		broker:          b,
 		prevWorkerAmount: cfg.PrevWorkerAmount,
@@ -55,17 +60,22 @@ func (j *Query4) Stop() {
 	j.broker.Close()
 }
 
-func (j *Query4) handleAccountsMessage(pkt inner.Packet) error {
-	var accounts []domain.Account
-	if err := pkt.UnmarshalData(&accounts); err != nil {
-		return fmt.Errorf("error unmarshalling accounts data: %w", err)
+func (j *Query4) handleAccountsMessage(envelope external.InternalEnvelope) error {
+	// var accounts []domain.Account
+	// if err := pkt.UnmarshalData(&accounts); err != nil {
+	// 	return fmt.Errorf("error unmarshalling accounts data: %w", err)
+	// }
+	clientId := envelope.ClientId
+	accounts, err := j.codec.DecodeAccountsEnvelope(envelope.Payload)
+	if err != nil {
+		return fmt.Errorf("error decoding accounts: %w", err)
 	}
-	client := j.clients[pkt.ClientID]
+	client := j.clients[clientId]
 	if client == nil {
 		client = &Query4Client{
 			accountsSet: make(map[domain.Account]struct{}),
 		}
-		j.clients[pkt.ClientID] = client
+		j.clients[clientId] = client
 	}
 
 	for _, account := range accounts {
@@ -76,71 +86,129 @@ func (j *Query4) handleAccountsMessage(pkt inner.Packet) error {
 
 }
 
-func (j *Query4) handleEOFMessage(pkt inner.Packet) error {
-	j.eofCounters[pkt.ClientID]++
-	if j.eofCounters[pkt.ClientID] < j.prevWorkerAmount {
-		slog.Debug("Received EOF from a worker, waiting for more...", "clientID", pkt.ClientID, "count", j.eofCounters[pkt.ClientID])
+func (j *Query4) handleEOFMessage(envelope external.InternalEnvelope) error {
+	clientId := envelope.ClientId
+	j.eofCounters[clientId]++
+	if j.eofCounters[clientId] < j.prevWorkerAmount {
+		slog.Debug("Received EOF from a worker, waiting for more...", "clientID", clientId, "count", j.eofCounters[clientId])
 		return nil
 	}
 
-	client := j.clients[pkt.ClientID]
+	client := j.clients[clientId]
 	if client == nil {
-		slog.Debug("No accounts received for this client, sending EOF only", "clientID", pkt.ClientID)
-		eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
-		if err != nil {
-			return fmt.Errorf("error marshalling Query4 EOF: %w", err)
-		}
-		return j.broker.Send(*eof)
+		slog.Debug("No accounts received for this client, sending EOF only", "clientID", clientId)
+		// eof, err := inner.MarshalQuery4EOFPacket(clientId)
+		// if err != nil {
+		// 	return fmt.Errorf("error marshalling Query4 EOF: %w", err)
+		// }
+		// return j.broker.Send(*eof)
+		return j.sendQuery4EOFMessage(clientId)
 	}
 
-	accounts := make([]domain.Account, 0, len(client.accountsSet))
+	// accounts := make([]domain.Account, 0, len(client.accountsSet))
+	// for account := range client.accountsSet {
+	// 	accounts = append(accounts, account)
+	// }
+
+	// for i := 0; i < len(accounts); i += BATCH_SIZE {
+	// 	end := i + BATCH_SIZE
+	// 	if end > len(accounts) {
+	// 		end = len(accounts)
+	// 	}
+	// 	data := domain.Query4Result{
+	// 		Accounts: accounts[i:end],
+	// 	}
+	// 	msg, err := inner.MarshalQuery4ResultPacket(pkt.ClientID, broker.KeyNil, data)
+	// 	if err != nil {
+	// 		return fmt.Errorf("error marshalling accounts batch: %w", err)
+	// 	}
+	// 	if err := j.broker.Send(*msg); err != nil {
+	// 		return fmt.Errorf("error sending accounts batch: %w", err)
+	// 	}
+	// }
+	subset := make(map[domain.Account]struct{}, BATCH_SIZE)
 	for account := range client.accountsSet {
-		accounts = append(accounts, account)
+		subset[account] = struct{}{}
+		if len(subset) == BATCH_SIZE {
+			slog.Debug("Sending accounts batch to gateway", "batchSize", len(subset), "clientID", clientId)
+			err := j.sendQuery4ResultEnvelope(clientId, subset)
+			if err != nil {
+				return err
+			}
+			subset = make(map[domain.Account]struct{}, BATCH_SIZE)
+		}
 	}
-
-	const batchSize = 1000
-	for i := 0; i < len(accounts); i += batchSize {
-		end := i + batchSize
-		if end > len(accounts) {
-			end = len(accounts)
-		}
-		data := domain.Query4Result{
-			Accounts: accounts[i:end],
-		}
-		msg, err := inner.MarshalQuery4ResultPacket(pkt.ClientID, broker.KeyNil, data)
+	if len(subset) > 0 {
+		err := j.sendQuery4ResultEnvelope(clientId, subset)
 		if err != nil {
-			return fmt.Errorf("error marshalling accounts batch: %w", err)
-		}
-		if err := j.broker.Send(*msg); err != nil {
-			return fmt.Errorf("error sending accounts batch: %w", err)
+			return err
 		}
 	}
 
-	delete(j.clients, pkt.ClientID)
-	delete(j.eofCounters, pkt.ClientID)
+	slog.Debug("All accounts sent for client, sending EOF", "clientID", clientId)
 
-	eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
+	delete(j.clients, clientId)
+	delete(j.eofCounters, clientId)
+
+	// eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
+	err := j.sendQuery4EOFMessage(clientId)
 	if err != nil {
-		return fmt.Errorf("error marshalling Query4 EOF: %w", err)
-	}
-	return j.broker.Send(*eof)
-}
-
-
-func (j *Query4) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
-
-	if err != nil {
-		slog.Error("Error unmarshalling packet", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeAccounts:
-		return j.handleAccountsMessage(*pkt)
-	case inner.TypeEOF:
-		return j.handleEOFMessage(*pkt)
-	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
+	return nil
+}
+
+func (j *Query4) handleMessage(msg broker.Message) error {
+	// pkt, err := inner.UnmarshalPacket(msg)
+	envelope, err := j.codec.DecodeInternalEnvelope(msg.Body)
+	if err != nil {
+		slog.Error("Error decoding packet", "error", err)
+		return err
 	}
+
+	switch envelope.MsgType {
+	case external.MsgTxAccounts:
+		return j.handleAccountsMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return j.handleEOFMessage(envelope)
+	default:
+		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
+	}
+}
+
+func (j *Query4) sendQuery4ResultEnvelope(clientId uuid.UUID, subset map[domain.Account]struct{}) error {
+	envelope, err := j.codec.EncodeQuery4ResultEnvelope(clientId, subset)
+	if err != nil {
+		return fmt.Errorf("error encoding query4 result envelope: %w", err)
+	}
+	msg := broker.Message{
+		RoutingKey:  broker.KeyNil,
+		ContentType: broker.ContentTypeBinary,
+		Body:        envelope,
+	}
+	if err := j.broker.Send(msg); err != nil {
+		return fmt.Errorf("error sending query4 result envelope: %w", err)
+	}
+	return nil
+}
+
+func (j *Query4) sendQuery4EOFMessage(clientId uuid.UUID) error {
+	eofEnvelope, err := j.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  external.MsgQuery4ResultEOF,
+		ClientId: clientId,
+		Payload:  nil,
+	})
+	if err != nil {
+		return fmt.Errorf("error encoding Query4 EOF: %w", err)
+	}
+	eofMsg := broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		ContentType: broker.ContentTypeBinary,
+		Body:        eofEnvelope,
+	}
+	if err := j.broker.Send(eofMsg); err != nil {
+		return fmt.Errorf("error sending Query4 EOF: %w", err)
+	}
+	return nil
 }

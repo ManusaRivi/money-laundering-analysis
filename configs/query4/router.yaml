@@ -1,10 +1,30 @@
-broker:
-  type: q-e
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q4_router
-  output: e_q4_agg
-  exchange_type: direct
+# broker:
+#   type: q-e
+#   url: amqp://guest:guest@rabbitmq:5672/
+#   input: q_q4_router
+#   output: e_q4_agg
+#   exchange_type: direct
   
+#   prefetch: 300
+#   durable: true
+#   auto_delete: false
+#   exclusive: false
+#   no_wait: false
+#   internal: false
+
+broker:
+  type: e-e
+  url: amqp://guest:guest@rabbitmq:5672/
+  
+  input: e_q345_filter
+  input_queue: q_q4_router
+  exchange_type: topic
+  input_keys:
+    - tx.usd
+
+  output: e_q4_agg
+  output_exchange_type: direct
+
   prefetch: 300
   durable: true
   auto_delete: false

@@ -1,29 +1,38 @@
+DC := docker compose -f docker-compose-dev.yaml
+
 docker-compose-dev.yaml: topology.yaml configs/base-compose.yaml.tmpl scripts/gen_compose.go
 	go run scripts/gen_compose.go
 
 compose:
-	go run scripts/gen_compose.go
+	rm -f docker-compose-dev.yaml
+	$(MAKE) docker-compose-dev.yaml
 .PHONY: compose
 
 up: docker-compose-dev.yaml
-	docker compose -f docker-compose-dev.yaml up -d --build
+	$(DC) up -d --build
 .PHONY: up
 
+stop:
+	$(DC) stop -t 1
+.PHONY: stop
+
+kill-%:
+	$(DC) kill $*
+
 down:
-	docker compose -f docker-compose-dev.yaml stop -t 1
-	docker compose -f docker-compose-dev.yaml down
-.PHONY: docker-compose-down
+	$(DC) down -t 1
+.PHONY: down
 
 ps:
-	docker compose -f docker-compose-dev.yaml ps
+	$(DC) ps
 .PHONY: ps
 
 logs:
-	docker compose -f docker-compose-dev.yaml logs --tail=50 -f
+	$(DC) logs --tail=50 -f
 .PHONY: logs
 
 logs-%:
-	docker compose -f docker-compose-dev.yaml logs -f $*
+	$(DC) logs -f $*
 
 logs-tail-%:
-	docker compose -f docker-compose-dev.yaml logs --tail=50 -f $*
+	$(DC) logs --tail=50 -f $*

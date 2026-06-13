@@ -7,11 +7,14 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
+	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
 
 type ScatterGatherThreshold struct {
+	codec 		 codec.Codec
 	cfg              config.WorkerConfig
 	broker           broker.Broker
 	thresholdAmount  int
@@ -27,6 +30,7 @@ func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGatherT
 	}
 
 	return &ScatterGatherThreshold{
+		codec:           codec.New(),
 		cfg:              cfg,
 		broker:           b,
 		thresholdAmount:  amount,
@@ -56,25 +60,37 @@ func (f *ScatterGatherThreshold) Stop() {
 
 // Private methods
 
-func (f *ScatterGatherThreshold) handleTxQ4Message(pkt inner.Packet) error {
-	var txQ4 domain.TxQ4PhaseThree
-	if err := pkt.UnmarshalData(&txQ4); err != nil {
+func (f *ScatterGatherThreshold) handleTxQ4Message(envelope external.InternalEnvelope) error {
+	// var txQ4 domain.TxQ4PhaseThree
+	// if err := pkt.UnmarshalData(&txQ4); err != nil {
+	// 	return err
+	// }
+	clientID := envelope.ClientId
+	txQ4, err := f.codec.DecodeTxQ4PhaseThreeEnvelope(envelope.Payload)
+	if err != nil {
+		slog.Error("Error decoding TxQ4PhaseThree envelope", "error", err)
 		return err
 	}
-	slog.Debug("Received scatter-gather to filter", "clientID", pkt.ClientID)
+	slog.Debug("Received scatter-gather to filter", "clientID", clientID)
 
 	for _, entry := range txQ4.ScatterGather {
 		if entry.Count >= f.thresholdAmount {
 			slog.Debug("Pair exceeds threshold", "count", entry.Count)
 
 			accounts := []domain.Account{entry.SrcAccount, entry.DstAccount}
-			msg, err := inner.MarshalAccountsPacket(pkt.ClientID, broker.KeyNil, accounts)
-			if err != nil {
-				slog.Error("Error marshalling accounts packet", "error", err)
+			// msg, err := inner.MarshalAccountsPacket(clientID, broker.KeyNil, accounts)
+			envelope, err := f.codec.EncodeAccountsEnvelope(clientID, accounts)
+			 if err != nil {
+				slog.Error("Error encoding accounts envelope", "error", err)
 				continue
 			}
-			if err := f.broker.Send(*msg); err != nil {
-				slog.Error("Error sending accounts packet to broker", "error", err)
+			msg := broker.Message{
+				RoutingKey:   broker.KeyNil,
+				ContentType: broker.ContentTypeBinary,
+				Body: envelope,
+			}
+			if err := f.broker.Send(msg); err != nil {
+				slog.Error("Error sending accounts envelope to broker", "error", err)
 				continue
 			}
 		}
@@ -83,45 +99,52 @@ func (f *ScatterGatherThreshold) handleTxQ4Message(pkt inner.Packet) error {
 	return nil
 }
 
-func (f *ScatterGatherThreshold) handleEOFMessage(pkt inner.Packet) error {
-	f.eofCounters[pkt.ClientID]++
-	slog.Debug("Received EOF packet", "clientID", pkt.ClientID, "counter", f.eofCounters[pkt.ClientID], "target", f.prevWorkerAmount)
+func (f *ScatterGatherThreshold) handleEOFMessage(envelope external.InternalEnvelope) error {
+	clientID := envelope.ClientId
+	f.eofCounters[clientID]++
+	slog.Debug("Received EOF packet", "clientID", clientID, "counter", f.eofCounters[clientID], "target", f.prevWorkerAmount)
 
-	if f.eofCounters[pkt.ClientID] < f.prevWorkerAmount {
+	if f.eofCounters[clientID] < f.prevWorkerAmount {
 		return nil
 	}
 
-	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", pkt.ClientID)
-	eofMsg, err := inner.MarshalEOFPacket(pkt.ClientID, domain.EOFCounts{
-		Counts: map[broker.KeyType]int{broker.KeyNil: 0},
-	})
+	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", clientID)
+	// eofMsg, err := inner.MarshalEOFPacket(clientID, domain.EOFCounts{
+
+	eofCounts := map[broker.KeyType]int{broker.KeyNil: 0}
+	eofEnvelope, err := f.codec.EncodeEOFCountsEnvelope(clientID, eofCounts)
 	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
+		slog.Error("Error encoding EOF counts envelope", "error", err)
 		return err
 	}
-	if err := f.broker.Send(*eofMsg); err != nil {
+	msg := broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		ContentType: broker.ContentTypeBinary,
+		Body:        eofEnvelope,
+	}
+	if err := f.broker.Send(msg); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}
 
-	delete(f.eofCounters, pkt.ClientID)
+	delete(f.eofCounters, clientID)
 	return nil
 }
 
 func (f *ScatterGatherThreshold) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
-
+	// pkt, err := inner.UnmarshalPacket(msg)
+	envelope, err := f.codec.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
-		slog.Error("Error unmarshalling packet", "error", err)
+		slog.Error("Error decoding internal envelope", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTxQ4:
-		return f.handleTxQ4Message(*pkt)
-	case inner.TypeEOF:
-		return f.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTxQ4:
+		return f.handleTxQ4Message(envelope)
+	case external.MsgTransactionsEOF:
+		return f.handleEOFMessage(envelope)
 	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
+		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
 	}
 }

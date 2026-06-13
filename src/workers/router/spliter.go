@@ -9,12 +9,15 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/google/uuid"
 )
 
 type Spliter struct {
 	cfg               config.WorkerConfig
+	codec			  codec.Codec
 	Broker            broker.Broker
 	syncEOFController *eof.SyncEOFController
 	fieldsToRouteBy   []string
@@ -40,6 +43,7 @@ func NewSpliter(cfg config.WorkerConfig, broker broker.Broker) (*Spliter, error)
 
 	return &Spliter{
 		cfg:               cfg,
+		codec:			   codec.New(),
 		Broker:            broker,
 		syncEOFController: nil,
 		fieldsToRouteBy:   fieldsToRouteBy,
@@ -81,16 +85,22 @@ func (r *Spliter) onflush(clientID uuid.UUID) error {
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	eofCounts := domain.EOFCounts{
-		Counts: finalSent,
-	}
-	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
+	// eofCounts := domain.EOFCounts{
+	// 	Counts: finalSent,
+	// }
+	// eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
+	eofEnvelope, err := r.codec.EncodeEOFCountsEnvelope(clientID, finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
+	eofMsg := broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		ContentType: broker.ContentTypeBinary,
+		Body:        eofEnvelope,
+	}
 	slog.Debug("Forwarding EOF to next worker...")
-	if err := r.Broker.Send(*eofMsg); err != nil {
+	if err := r.Broker.Send(eofMsg); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -109,7 +119,7 @@ func (r *Spliter) Stop() {
 
 // Private methods
 
-func (r *Spliter) routeByField(field string, tx domain.Transaction, clientID uuid.UUID) error {
+func (r *Spliter) routeByField(field string, tx external.Transaction, clientID uuid.UUID) error {
 	value := tx.GetTransactionField(field)
 	if value == "" {
 		slog.Error("Transaction missing routing field", "field", field, "transaction", tx)
@@ -120,18 +130,23 @@ func (r *Spliter) routeByField(field string, tx domain.Transaction, clientID uui
 	slog.Debug("Routing transaction", "routing_key", routingKey)
 
 	txQ4Type := domain.GetTypeTxQ4ByField(field)
-	slog.Debug("Marshalling TxQ4 packet", "type", txQ4Type, "field_used", field)
+	slog.Debug("Encoding TxQ4 packet", "type", txQ4Type, "field_used", field)
 	txQ4 := domain.TxQ4PhaseOne{
 		Type:        txQ4Type,
 		Transaction: &tx,
 	}
-	msg, err := inner.MarshalTxQ4PhaseOnePacket(clientID, broker.KeyType(routingKey), txQ4)
+	// envelope, err := inner.MarshalTxQ4PhaseOnePacket(clientID, broker.KeyType(routingKey), txQ4)
+	envelope, err := r.codec.EncodeTxQ4PhaseOneEnvelope(clientID, txQ4)
 	if err != nil {
-		slog.Error("Error marshalling transaction packet", "error", err)
+		slog.Error("Error encoding TxQ4 packet", "error", err)
 		return err
 	}
-
-	if err := r.Broker.Send(*msg); err != nil {
+	brokerMsg := broker.Message{
+		RoutingKey:  broker.KeyType(routingKey),
+		ContentType: broker.ContentTypeBinary,
+		Body:        envelope,
+	}
+	if err := r.Broker.Send(brokerMsg); err != nil {
 		slog.Error("Error sending message to broker", "error", err)
 		return err
 	}
@@ -149,48 +164,85 @@ func (r *Spliter) shardByValue(value string) string {
 	return fmt.Sprintf("%s_%d", r.cfg.NextWorkerPrefix, index)
 }
 
-func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
-	var tx domain.Transaction
-	err := pkt.UnmarshalData(&tx)
+// func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
+// 	var tx domain.Transaction
+// 	err := pkt.UnmarshalData(&tx)
+// 	if err != nil {
+// 		slog.Error("Error unmarshalling transaction data", "error", err)
+// 		return err
+// 	}
+// 	slog.Debug("Received transaction to split")
+// 	for _, field := range r.fieldsToRouteBy {
+// 		if err := r.routeByField(field, tx, pkt.ClientID); err != nil {
+// 			return err
+// 		}
+// 	}
+// 	r.syncEOFController.MessageReceived(pkt.ClientID, 1)
+
+// 	return nil
+// }
+
+func (r *Spliter) handleTransactionBatchMessage(envelope external.InternalEnvelope) error {
+	clientId := envelope.ClientId
+	txBatch, err := r.codec.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
-		slog.Error("Error unmarshalling transaction data", "error", err)
+		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-	slog.Debug("Received transaction to split")
-	for _, field := range r.fieldsToRouteBy {
-		if err := r.routeByField(field, tx, pkt.ClientID); err != nil {
-			return err
+	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", clientId)
+	for _, tx := range txBatch {
+		for _, field := range r.fieldsToRouteBy {
+			if err := r.routeByField(field, tx, clientId); err != nil {
+				return err
+			}
 		}
 	}
-	r.syncEOFController.MessageReceived(pkt.ClientID, 1)
+	r.syncEOFController.MessageReceived(clientId, len(txBatch))
 
 	return nil
 }
 
-func (r *Spliter) handleEOFMessage(pkt inner.Packet) error {
-	var eofCounts domain.EOFCounts
-	if err := pkt.UnmarshalData(&eofCounts); err != nil {
-		slog.Error("Error unmarshalling EOF counts", "error", err)
+func (r *Spliter) handleEOFMessage(envelope external.InternalEnvelope) error {
+	eofCounts, err := r.codec.DecodeEOFCounts(envelope.Payload)
+	if err != nil {
+		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
-	r.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, r.syncEOFKey)
+	r.syncEOFController.SyncEof(envelope.ClientId, eofCounts, r.syncEOFKey)
 	return nil
 }
+
+// func (r *Spliter) handleMessage(msg broker.Message) error {
+// 	pkt, err := inner.UnmarshalPacket(msg)
+
+// 	if err != nil {
+// 		slog.Error("Error unmarshalling message", "error", err)
+// 		return err
+// 	}
+
+// 	switch pkt.Type {
+// 	case inner.TypeTransaction:
+// 		return r.handleTransactionMessage(*pkt)
+// 	case inner.TypeEOF:
+// 		return r.handleEOFMessage(*pkt)
+// 	default:
+// 		return fmt.Errorf("unknown packet type: %v", pkt.Type)
+// 	}
+// }
 
 func (r *Spliter) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
-
+	envelope, err := r.codec.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
-		slog.Error("Error unmarshalling message", "error", err)
+		slog.Error("Error decoding message", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTransaction:
-		return r.handleTransactionMessage(*pkt)
-	case inner.TypeEOF:
-		return r.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTransactionsBatch:
+		return r.handleTransactionBatchMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return r.handleEOFMessage(envelope)
 	default:
-		return fmt.Errorf("unknown packet type: %v", pkt.Type)
+		return fmt.Errorf("unknown packet type: %v", envelope.MsgType)
 	}
 }
