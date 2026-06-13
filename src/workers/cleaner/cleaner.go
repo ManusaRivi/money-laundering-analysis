@@ -6,15 +6,16 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/external/codec"
 	"github.com/google/uuid"
 )
 
 type Cleaner struct {
 	cfg               config.WorkerConfig
 	Broker            broker.Broker
+	codec             codec.Codec
 	syncEOFController *eof.SyncEOFController
 	fieldsToClean     []string
 	syncEOFKey        broker.KeyType
@@ -40,6 +41,7 @@ func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
 	return &Cleaner{
 		cfg:               cfg,
 		Broker:            b,
+		codec:             codec.New(),
 		fieldsToClean:     fieldsToClean,
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
@@ -80,20 +82,30 @@ func (c *Cleaner) onflush(clientID uuid.UUID) error {
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	eofCounts := domain.EOFCounts{
-		Counts: finalSent,
-	}
-	eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
+	eofPayload, err := c.codec.EncodeEOFCounts(finalSent)
 	if err != nil {
-		slog.Error("Error marshalling EOF packet", "error", err)
+		slog.Error("Error encoding EOF counts for leader flush", "error", err)
 		return err
 	}
-	slog.Debug("Received EOF packet, forwarding to next worker...")
-	if err := c.Broker.Send(*eofMsg); err != nil {
-		slog.Error("Error sending EOF packet to broker", "error", err)
+	eofEnvelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  external.MsgTransactionsEOF,
+		ClientId: clientID,
+		Payload:  eofPayload,
+	})
+	if err != nil {
+		slog.Error("Error encoding internal envelope for leader flush", "error", err)
 		return err
 	}
-	// limpieza adicional si es necesaria
+	eofMsg := broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		ContentType: broker.ContentTypeBinary,
+		Body:        eofEnvelope,
+	}
+	slog.Debug("Leader flush triggered, sending EOF packet to next worker...")
+	if err := c.Broker.Send(eofMsg); err != nil {
+		slog.Error("Error sending EOF packet to broker during leader flush", "error", err)
+		return err
+	}
 	return nil
 }
 
@@ -107,63 +119,97 @@ func (c *Cleaner) Stop() {
 	c.Broker.Close()
 }
 
-func (c *Cleaner) handleTransactionMessage(pkt inner.Packet) error {
-	var tx domain.Transaction
-	if err := pkt.UnmarshalData(&tx); err != nil {
-		slog.Error("Error unmarshalling transaction data", "error", err)
-		return err
+func (c *Cleaner) cleanTransaction(tx external.Transaction) external.Transaction {
+	cleanedTx := tx
+
+	for _, field := range c.fieldsToClean {
+		switch field {
+		case "from_bank":
+			cleanedTx.FromBank = ""
+		case "from_account":
+			cleanedTx.FromAccount = ""
+		case "to_bank":
+			cleanedTx.ToBank = ""
+		case "to_account":
+			cleanedTx.ToAccount = ""
+		case "payment_format":
+			cleanedTx.PaymentFormat = ""
+		}
 	}
 
-	for _, f := range c.fieldsToClean {
-		tx.CutColumn(f)
-	}
+	return cleanedTx
+}
 
-	msg, err := inner.MarshalTransactionPacket(pkt.ClientID, broker.KeyNil, tx)
-
+func (c *Cleaner) handleTransactionMessage(envelope external.InternalEnvelope) error {
+	transactions, err := c.codec.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
-		slog.Error("Error marshalling cleaned packet", "error", err)
+		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
 
-	if err := c.Broker.Send(*msg); err != nil {
-		slog.Error("Error sending cleaned packet to broker", "error", err)
+	c.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	cleanedTx := make([]external.Transaction, len(transactions))
+
+	for _, tx := range transactions {
+		cleanedTx = append(cleanedTx, c.cleanTransaction(tx))
+	}
+
+	txPayload, err := c.codec.EncodeTransactionBatch(cleanedTx)
+	if err != nil {
+		slog.Error("Error encoding cleaned transaction batch", "error", err)
 		return err
 	}
-	slog.Debug("Cleaner sent transaction",
-		"client_id", pkt.ClientID,
-		"input_key", msg.RoutingKey,
-	)
-	c.syncEOFController.MessageReceived(pkt.ClientID, 1)
-	c.syncEOFController.MessageSentWithKey(pkt.ClientID, broker.KeyNil, 1)
+
+	resultEnvelope, err := c.codec.EncodeInternalEnvelope(external.InternalEnvelope{
+		MsgType:  external.MsgTransactionsBatch,
+		ClientId: envelope.ClientId,
+		Payload:  txPayload,
+	})
+	if err != nil {
+		slog.Error("Error encoding result envelope", "error", err)
+		return err
+	}
+
+	cleanedMsg := broker.Message{
+		ContentType: broker.ContentTypeBinary,
+		Body:        resultEnvelope,
+	}
+
+	if err := c.Broker.Send(cleanedMsg); err != nil {
+		slog.Error("Error sending cleaned transaction batch to broker", "error", err)
+		return err
+	}
+
+	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(transactions))
 
 	return nil
 }
 
-func (c *Cleaner) handleEOFMessage(pkt inner.Packet) error {
-	slog.Debug("Received EOF packet, forwarding to next worker...")
-	var eofCounts domain.EOFCounts
-	if err := pkt.UnmarshalData(&eofCounts); err != nil {
-		slog.Error("Error unmarshalling EOF counts", "error", err)
+func (c *Cleaner) handleEOFMessage(envelope external.InternalEnvelope) error {
+	slog.Debug("Received EOF packet, starting EOF sync...")
+	eofCounts, err := c.codec.DecodeEOFCounts(envelope.Payload)
+	if err != nil {
+		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
-	c.syncEOFController.SyncEof(pkt.ClientID, eofCounts.Counts, c.syncEOFKey)
+	c.syncEOFController.SyncEof(envelope.ClientId, eofCounts, c.syncEOFKey)
 	return nil
 }
 
 func (c *Cleaner) handleMessage(msg broker.Message) error {
-	pkt, err := inner.UnmarshalPacket(msg)
+	envelope, err := c.codec.DecodeInternalEnvelope(msg.Body)
 
 	if err != nil {
-		slog.Error("Error unmarshalling packet", "error", err)
+		slog.Error("Error decoding envelope", "error", err)
 		return err
 	}
 
-	switch pkt.Type {
-	case inner.TypeTransaction:
-		return c.handleTransactionMessage(*pkt)
-	case inner.TypeEOF:
-		return c.handleEOFMessage(*pkt)
+	switch envelope.MsgType {
+	case external.MsgTransactionsBatch:
+		return c.handleTransactionMessage(envelope)
+	case external.MsgTransactionsEOF:
+		return c.handleEOFMessage(envelope)
 	default:
-		return fmt.Errorf("unexpected inbound packet type: %v", pkt.Type)
+		return fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
 	}
 }
