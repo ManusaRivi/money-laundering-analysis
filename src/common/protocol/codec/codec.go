@@ -535,6 +535,82 @@ func (p *BinaryCodec) DecodeAccountsEnvelope(payload []byte) ([]domain.Account, 
 	return accounts, nil
 }
 
+// ============================
+// ===== Q4 degree exchange ===
+// ============================
+//
+// Heavy-account messages exchanged between ScatterAndGather replicas. Both carry
+// the sender's replica id so a replica can ignore its own fanout echo and dedup
+// redelivered "done"s. Heavy batches additionally carry a role (source|sink) and
+// an account list; they are sent in bounded chunks. A "done" marks that a sender
+// has finished publishing its heavy sets for a client.
+
+func (p *BinaryCodec) EncodeQ4HeavyBatchEnvelope(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account) ([]byte, error) {
+	var buf bytes.Buffer
+	writeInt64(&buf, int64(senderID))
+	buf.WriteByte(role)
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(accounts)))
+	buf.Write(count[:])
+	for _, a := range accounts {
+		if err := encodeTransactionAccount(&buf, a.BankID, a.ID); err != nil {
+			return nil, fmt.Errorf("encoding heavy account %s-%s: %w", a.BankID, a.ID, err)
+		}
+	}
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgQ4HeavyBatch,
+		ClientId: clientID,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (BinaryCodec) DecodeQ4HeavyBatch(payload []byte) (senderID int, role uint8, accounts []domain.Account, err error) {
+	r := bytes.NewReader(payload)
+	sid, err := readInt64(r)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("reading heavy batch sender id: %w", err)
+	}
+	role, err = r.ReadByte()
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("reading heavy batch role: %w", err)
+	}
+	var countBytes [4]byte
+	if _, err := io.ReadFull(r, countBytes[:]); err != nil {
+		return 0, 0, nil, fmt.Errorf("reading heavy batch count: %w", err)
+	}
+	count := binary.BigEndian.Uint32(countBytes[:])
+	accounts = make([]domain.Account, 0, count)
+	for i := uint32(0); i < count; i++ {
+		bank, id, err := decodeTransactionAccount(r)
+		if err != nil {
+			return 0, 0, nil, fmt.Errorf("decoding heavy account %d: %w", i, err)
+		}
+		accounts = append(accounts, domain.Account{BankID: bank, ID: id})
+	}
+	return int(sid), role, accounts, nil
+}
+
+func (p *BinaryCodec) EncodeQ4HeavyDoneEnvelope(clientID uuid.UUID, senderID int) ([]byte, error) {
+	var buf bytes.Buffer
+	writeInt64(&buf, int64(senderID))
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgQ4HeavyDone,
+		ClientId: clientID,
+		Payload:  buf.Bytes(),
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (BinaryCodec) DecodeQ4HeavyDone(payload []byte) (int, error) {
+	r := bytes.NewReader(payload)
+	sid, err := readInt64(r)
+	if err != nil {
+		return 0, fmt.Errorf("reading heavy done sender id: %w", err)
+	}
+	return int(sid), nil
+}
+
 // ====================
 // ===== Query  1 =====
 // ====================

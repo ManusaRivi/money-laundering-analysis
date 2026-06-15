@@ -25,17 +25,16 @@ type ScatterGatherThreshold struct {
 }
 
 func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGatherThreshold, error) {
-	params := cfg.Params
-	amount, ok := params["amount"].(int)
-	if !ok {
-		return nil, fmt.Errorf("invalid amount parameter")
+	// Shared with the Q4 aggregator's degree prune via SCATTER_GATHER_THRESHOLD.
+	if cfg.Threshold <= 0 {
+		return nil, fmt.Errorf("ScatterGatherFilter requires SCATTER_GATHER_THRESHOLD > 0 (got %d)", cfg.Threshold)
 	}
 
 	return &ScatterGatherThreshold{
 		pub:              messaging.New(codec.New(), b),
 		cfg:              cfg,
 		broker:           b,
-		thresholdAmount:  amount,
+		thresholdAmount:  cfg.Threshold,
 		prevWorkerAmount: cfg.PrevWorkerAmount,
 		eofCounters:      make(map[uuid.UUID]int),
 	}, nil

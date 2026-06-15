@@ -66,6 +66,9 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 
 	slog.Debug("Declaring input queue", "queue", inputQueueName)
 	queueArgs := amqp.Table{}
+	if cfg.Lazy {
+		queueArgs["x-queue-mode"] = "lazy"
+	}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		inputQueueName,

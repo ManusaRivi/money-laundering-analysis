@@ -129,7 +129,7 @@ def expected_query4(trans_df):
     return pd.concat([from_acc, to_acc]).drop_duplicates()
 
 
-def expected_query4_bis(trans_df, threshold=2):
+def expected_query4_bis(trans_df, threshold=5):
     usd = trans_df[trans_df["Payment Currency"] == "US Dollar"]
     date_filtered = usd[(usd["Timestamp"] >= "2022/09/01 00:00") & (usd["Timestamp"] <= "2022/09/05 23:59")]
 

@@ -25,6 +25,17 @@ const (
 	MsgQuery3ResultEOF
 	MsgQuery4ResultEOF
 	MsgQuery5ResultEOF
+
+	// Q4 degree exchange between ScatterAndGather replicas.
+	MsgQ4HeavyBatch
+	MsgQ4HeavyDone
+)
+
+// Roles carried in a Q4 heavy-accounts batch: whether the accounts are heavy
+// sources (eligible A1) or heavy sinks (eligible A2).
+const (
+	Q4HeavyRoleSource uint8 = 0
+	Q4HeavyRoleSink   uint8 = 1
 )
 
 func (m MsgType) String() string {
@@ -61,6 +72,10 @@ func (m MsgType) String() string {
 		return "MsgQuery4ResultEOF"
 	case MsgQuery5ResultEOF:
 		return "MsgQuery5ResultEOF"
+	case MsgQ4HeavyBatch:
+		return "MsgQ4HeavyBatch"
+	case MsgQ4HeavyDone:
+		return "MsgQ4HeavyDone"
 	default:
 		return "MsgTypeInvalid"
 	}

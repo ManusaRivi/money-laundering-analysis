@@ -32,6 +32,11 @@ type Codec interface {
 	EncodeTxQ4PhaseTwoBatchEnvelope(clientId uuid.UUID, pairs []domain.TxQ4PairCount) ([]byte, error)
 	DecodeTxQ4PhaseTwoBatch(payload []byte) ([]domain.TxQ4PairCount, error)
 
+	EncodeQ4HeavyBatchEnvelope(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account) ([]byte, error)
+	DecodeQ4HeavyBatch(payload []byte) (senderID int, role uint8, accounts []domain.Account, err error)
+	EncodeQ4HeavyDoneEnvelope(clientID uuid.UUID, senderID int) ([]byte, error)
+	DecodeQ4HeavyDone(payload []byte) (int, error)
+
 	EncodeTxQ4PhaseThreeEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseThree) ([]byte, error)
 	DecodeTxQ4PhaseThreeEnvelope(payload []byte) (domain.TxQ4PhaseThree, error)
 

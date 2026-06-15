@@ -105,7 +105,7 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		}
 		return worker, nil
 	case WorkerTypeScatterAndGather:
-		worker, err := aggregator.NewScatterAndGather(workerCfg, communicationBroker)
+		worker, err := aggregator.NewScatterAndGather(workerCfg, communicationBroker, workercfg.Broker.RabbitURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ScatterAndGather: %w", err)
 		}

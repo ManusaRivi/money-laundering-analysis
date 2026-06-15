@@ -191,6 +191,10 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	deliveryMode := amqp.Transient
+	if qb.config.Persistent {
+		deliveryMode = amqp.Persistent
+	}
 	if err := qb.produceChannel.PublishWithContext(
 		ctx,
 		"",
@@ -198,8 +202,9 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 		false,
 		false,
 		amqp.Publishing{
-			ContentType: msg.contentTypeOrDefault(),
-			Body:        msg.Body,
+			ContentType:  msg.contentTypeOrDefault(),
+			DeliveryMode: deliveryMode,
+			Body:         msg.Body,
 		},
 	); err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
