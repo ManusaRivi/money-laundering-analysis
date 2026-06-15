@@ -321,88 +321,22 @@ func decodeTransaction(r *bytes.Reader) (protocol.Transaction, error) {
 // =====   txQ4   =====
 // ====================
 
-//	type TxQ4PhaseOne struct {
-//		Type		TypeTxQ4
-//		// Transaction *Transaction
-//		Transaction *protocol.Transaction
-//	}
-func encodeTxQ4PhaseOne(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseOne) error {
-	if err := writeString(buf, string(txQ4.Type)); err != nil {
-		return err
-	}
-	// TODO: This tx will not have all the fields of a normal transaction
-	if err := encodeTransaction(buf, *txQ4.Transaction); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (p *BinaryCodec) EncodeTxQ4PhaseOneEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseOne) ([]byte, error) {
-	buf := bytes.Buffer{}
-	err := encodeTxQ4PhaseOne(&buf, txQ4)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode TxQ4PhaseOne: %w", err)
-	}
-	envelope := protocol.InternalEnvelope{
-		MsgType:  protocol.MsgTxQ4,
-		ClientId: clientId,
-		Payload:  buf.Bytes(),
-	}
-	return p.EncodeInternalEnvelope(envelope)
-}
-
-func (p *BinaryCodec) DecodeTxQ4PhaseOneEnvelope(payload []byte) (domain.TxQ4PhaseOne, error) {
-	r := bytes.NewReader(payload)
-	txQ4TypeStr, err := readString(r)
-	if err != nil {
-		return domain.TxQ4PhaseOne{}, fmt.Errorf("failed to read TxQ4 type: %w", err)
-	}
-	txQ4Type := domain.TypeTxQ4(txQ4TypeStr)
-
-	tx, err := decodeTransaction(r)
-	if err != nil {
-		return domain.TxQ4PhaseOne{}, fmt.Errorf("failed to decode transaction in TxQ4PhaseOne: %w", err)
-	}
-
-	return domain.TxQ4PhaseOne{
-		Type:        txQ4Type,
-		Transaction: &tx,
-	}, nil
-}
-
-//	type TxQ4PairKey struct {
-//		Src, Dst string
-//	}
+// Phase-one messages are batched: a single TxQ4 type (scatter|gather) followed
+// by a transaction batch. The spliter groups transactions by shard so each
+// phase-one worker receives one message per (shard, type) instead of one per
+// transaction.
 //
-//	type TxQ4PhaseTwo struct {
-//		Key        TxQ4PairKey
-//		Count      int
-//		SrcAccount *Account
-//		DstAccount *Account
-//	}
-func encodeTxQ4PhaseTwo(buf *bytes.Buffer, txQ4 domain.TxQ4PhaseTwo) error {
-	if err := encodeTransactionAccount(buf, txQ4.SrcAccount.BankID, txQ4.SrcAccount.ID); err != nil {
-		return err
+// Layout: [writeString type][transaction batch]
+func (p *BinaryCodec) EncodeTxQ4PhaseOneBatchEnvelope(clientId uuid.UUID, txType domain.TypeTxQ4, txs []protocol.Transaction) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeString(&buf, string(txType)); err != nil {
+		return nil, fmt.Errorf("failed to encode TxQ4 batch type: %w", err)
 	}
-	if err := encodeTransactionAccount(buf, txQ4.DstAccount.BankID, txQ4.DstAccount.ID); err != nil {
-		return err
-	}
-	if err := writeString(buf, txQ4.Key.Src); err != nil {
-		return err
-	}
-	if err := writeString(buf, txQ4.Key.Dst); err != nil {
-		return err
-	}
-	writeInt64(buf, int64(txQ4.Count))
-	return nil
-}
-
-func (p *BinaryCodec) EncodeTxQ4PhaseTwoEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseTwo) ([]byte, error) {
-	buf := bytes.Buffer{}
-	err := encodeTxQ4PhaseTwo(&buf, txQ4)
+	txBatch, err := p.EncodeTransactionBatch(txs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode TxQ4PhaseTwo: %w", err)
+		return nil, fmt.Errorf("failed to encode TxQ4 batch transactions: %w", err)
 	}
+	buf.Write(txBatch)
 	envelope := protocol.InternalEnvelope{
 		MsgType:  protocol.MsgTxQ4,
 		ClientId: clientId,
@@ -411,39 +345,69 @@ func (p *BinaryCodec) EncodeTxQ4PhaseTwoEnvelope(clientId uuid.UUID, txQ4 domain
 	return p.EncodeInternalEnvelope(envelope)
 }
 
-func (p *BinaryCodec) DecodeTxQ4PhaseTwoEnvelope(payload []byte) (domain.TxQ4PhaseTwo, error) {
+func (p *BinaryCodec) DecodeTxQ4PhaseOneBatch(payload []byte) (domain.TypeTxQ4, []protocol.Transaction, error) {
 	r := bytes.NewReader(payload)
+	txTypeStr, err := readString(r)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read TxQ4 batch type: %w", err)
+	}
+	// Whatever readString did not consume is the transaction batch.
+	txs, err := p.DecodeTransactionBatch(payload[len(payload)-r.Len():])
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to decode TxQ4 batch transactions: %w", err)
+	}
+	return domain.TypeTxQ4(txTypeStr), txs, nil
+}
 
-	srcBank, srcAccountId, err := decodeTransactionAccount(r)
-	if err != nil {
-		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to decode source account in TxQ4PhaseTwo: %w", err)
+// Phase-two messages are batched: the aggregator groups the pairs destined for
+// the same accumulator shard and sends them as one message. Each entry is just
+// the pair key and its partial bridge count — the two accounts are recoverable
+// from the key (each side is an Account.GetID()), so they are not re-sent.
+//
+// Layout: standard batch framing over ( [string Src][string Dst][int64 Count] ).
+func encodeTxQ4PairCount(buf *bytes.Buffer, pc domain.TxQ4PairCount) error {
+	if err := writeString(buf, pc.Key.Src); err != nil {
+		return err
 	}
-	dstBank, dstAccountId, err := decodeTransactionAccount(r)
-	if err != nil {
-		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to decode destination account in TxQ4PhaseTwo: %w", err)
+	if err := writeString(buf, pc.Key.Dst); err != nil {
+		return err
 	}
-	srcAccount := &domain.Account{BankID: srcBank, ID: srcAccountId}
-	dstAccount := &domain.Account{BankID: dstBank, ID: dstAccountId}
+	writeInt64(buf, int64(pc.Count))
+	return nil
+}
 
-	src, err := readString(r)
-	if err != nil {
-		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read source in TxQ4PhaseTwo: %w", err)
+func decodeTxQ4PairCount(r *bytes.Reader) (domain.TxQ4PairCount, error) {
+	var pc domain.TxQ4PairCount
+	var err error
+	if pc.Key.Src, err = readString(r); err != nil {
+		return pc, fmt.Errorf("pair source: %w", err)
 	}
-	dst, err := readString(r)
-	if err != nil {
-		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read destination in TxQ4PhaseTwo: %w", err)
+	if pc.Key.Dst, err = readString(r); err != nil {
+		return pc, fmt.Errorf("pair destination: %w", err)
 	}
 	count, err := readInt64(r)
 	if err != nil {
-		return domain.TxQ4PhaseTwo{}, fmt.Errorf("failed to read count in TxQ4PhaseTwo: %w", err)
+		return pc, fmt.Errorf("pair count: %w", err)
 	}
+	pc.Count = int(count)
+	return pc, nil
+}
 
-	return domain.TxQ4PhaseTwo{
-		Key:        domain.TxQ4PairKey{Src: src, Dst: dst},
-		Count:      int(count),
-		SrcAccount: srcAccount,
-		DstAccount: dstAccount,
-	}, nil
+func (p *BinaryCodec) EncodeTxQ4PhaseTwoBatchEnvelope(clientId uuid.UUID, pairs []domain.TxQ4PairCount) ([]byte, error) {
+	payload, err := encodeBatch(pairs, encodeTxQ4PairCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode TxQ4 phase-two batch: %w", err)
+	}
+	envelope := protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTxQ4,
+		ClientId: clientId,
+		Payload:  payload,
+	}
+	return p.EncodeInternalEnvelope(envelope)
+}
+
+func (BinaryCodec) DecodeTxQ4PhaseTwoBatch(payload []byte) ([]domain.TxQ4PairCount, error) {
+	return decodeBatch(payload, decodeTxQ4PairCount)
 }
 
 //	type TxQ4PairEntry struct {

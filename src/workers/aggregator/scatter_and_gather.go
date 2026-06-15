@@ -34,6 +34,8 @@ import (
 //  Y envía scatter-gather
 //  keys: hash[ (src_acc,dst_acc) ] % next_workers_amount
 
+const maxPairsBuffered = 100_000
+
 type accountSet map[domain.Account]struct{}
 
 type client struct {
@@ -107,8 +109,6 @@ func (a *ScatterAndGather) deleteClient(clientID uuid.UUID) {
 func (a *ScatterAndGather) handleScatterTx(tx *protocol.Transaction, clientID uuid.UUID) error {
 	slog.Debug("Handling scatter transaction", "clientID", clientID)
 	client := a.getClient(clientID)
-	// srcAcc := *tx.Origin
-	// dstAcc := *tx.Dest
 	srcAcc := domain.Account{
 		ID:     tx.FromAccount,
 		BankID: tx.FromBank,
@@ -146,48 +146,46 @@ func (a *ScatterAndGather) handleGatherTx(tx *protocol.Transaction, clientID uui
 
 func (a *ScatterAndGather) handleTxQ4Message(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
-	txQ4, err := a.pub.DecodeTxQ4PhaseOneEnvelope(envelope.Payload)
+	txType, txs, err := a.pub.DecodeTxQ4PhaseOneBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding TxQ4 data", "error", err)
 		return err
 	}
 
-	slog.Debug("Received TxQ4 message", "type", txQ4.Type)
+	slog.Debug("Received TxQ4 batch", "type", txType, "batchSize", len(txs))
 
-	switch txQ4.Type {
+	var handle func(tx *protocol.Transaction, clientID uuid.UUID) error
+	switch txType {
 	case domain.TxQ4Scatter:
-		return a.handleScatterTx(txQ4.Transaction, clientID)
+		handle = a.handleScatterTx
 	case domain.TxQ4Gather:
-		return a.handleGatherTx(txQ4.Transaction, clientID)
+		handle = a.handleGatherTx
 	default:
-		slog.Warn("Received TxQ4 message with unknown type", "type", txQ4.Type)
-		return fmt.Errorf("unknown TxQ4 type: %v", txQ4.Type)
+		slog.Warn("Received TxQ4 message with unknown type", "type", txType)
+		return fmt.Errorf("unknown TxQ4 type: %v", txType)
 	}
+
+	for i := range txs {
+		if err := handle(&txs[i], clientID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (a *ScatterAndGather) sendScatterGatherPhaseTwo(scatterGather map[domain.TxQ4PairKey]*domain.TxQ4PairEntry, clientId uuid.UUID) int {
+// sendScatterGatherPhaseTwo ships one flush worth of pairs to the accumulators,
+// one message per pair.
+func (a *ScatterAndGather) sendScatterGatherPhaseTwo(scatterGather map[domain.TxQ4PairKey]int, clientId uuid.UUID) int {
 	msgSent := 0
-	for pk, entry := range scatterGather {
-		routingString := pk.Src + "::" + pk.Dst
-		txQ4Phase2 := domain.TxQ4PhaseTwo{
-			Key:        pk,
-			Count:      entry.Count,
-			SrcAccount: &entry.SrcAccount,
-			DstAccount: &entry.DstAccount,
-		}
-
-		routingKey := a.shardByValue(routingString)
-
-		slog.Debug("Sending Scatter-Gather to phase two", "clientID", clientId, "routing_key", routingKey)
-
-		// msg, err := inner.MarshalTxQ4PhaseTwoPacket(clientId, broker.KeyType(routingKey), txQ4Phase2)
-		envelope, err := a.pub.EncodeTxQ4PhaseTwoEnvelope(clientId, txQ4Phase2)
+	for pk, count := range scatterGather {
+		routingKey := a.shardByValue(pk.Src + "::" + pk.Dst)
+		envelope, err := a.pub.EncodeTxQ4PhaseTwoBatchEnvelope(clientId, []domain.TxQ4PairCount{{Key: pk, Count: count}})
 		if err != nil {
-			slog.Error("Error encoding TxQ4 packet for phase two", "error", err, "routing_key", routingKey)
+			slog.Error("Error encoding TxQ4 pair for phase two", "error", err, "routing_key", routingKey)
 			continue
 		}
 		if err := a.pub.PublishRaw(broker.KeyType(routingKey), envelope); err != nil {
-			slog.Error("Error sending Scatter-Gather to phase two", "error", err, "routing_key", routingKey)
+			slog.Error("Error sending Scatter-Gather pair to phase two", "error", err, "routing_key", routingKey)
 			continue
 		}
 		msgSent++
@@ -195,68 +193,48 @@ func (a *ScatterAndGather) sendScatterGatherPhaseTwo(scatterGather map[domain.Tx
 	return msgSent
 }
 
-func (a *ScatterAndGather) aggregatePairs(envelope protocol.InternalEnvelope) map[domain.TxQ4PairKey]*domain.TxQ4PairEntry {
-	client := a.getClient(envelope.ClientId)
+func (a *ScatterAndGather) streamScatterGatherPhaseTwo(clientID uuid.UUID) int {
+	client := a.getClient(clientID)
 	scatter := client.scatterGroups
 	gather := client.gatherGroups
 
-	estimatedPairs := 0
-	for bridgeAcc, dstAccounts := range scatter {
-		if srcAccounts, ok := gather[bridgeAcc]; ok {
-			estimatedPairs += len(srcAccounts) * len(dstAccounts)
-		}
+	msgSent := 0
+	batch := make(map[domain.TxQ4PairKey]int, maxPairsBuffered)
+	flush := func() {
+		msgSent += a.sendScatterGatherPhaseTwo(batch, clientID)
+		batch = make(map[domain.TxQ4PairKey]int, maxPairsBuffered)
 	}
 
-	scatterGather := make(map[domain.TxQ4PairKey]*domain.TxQ4PairEntry, estimatedPairs)
 	// MAGIA :sparkles:
 	for bridgeAcc, dstAccounts := range scatter {
-		srcAccounts, exists := gather[bridgeAcc]
-		if !exists {
-			continue
-		}
-		for srcAcc := range srcAccounts {
-			for dstAcc := range dstAccounts {
-				pk := domain.TxQ4PairKey{Src: srcAcc.GetID(), Dst: dstAcc.GetID()}
-				entry, ok := scatterGather[pk]
-				if !ok {
-					entry = &domain.TxQ4PairEntry{Count: 0, SrcAccount: srcAcc, DstAccount: dstAcc}
-					scatterGather[pk] = entry
+		if srcAccounts, exists := gather[bridgeAcc]; exists {
+			for srcAcc := range srcAccounts {
+				for dstAcc := range dstAccounts {
+					pk := domain.TxQ4PairKey{Src: srcAcc.GetID(), Dst: dstAcc.GetID()}
+					batch[pk]++
+					if len(batch) >= maxPairsBuffered {
+						flush()
+					}
 				}
-				entry.Count++
 			}
 		}
+		delete(scatter, bridgeAcc)
+		delete(gather, bridgeAcc)
 	}
-	return scatterGather
+	if len(batch) > 0 {
+		flush()
+	}
+	return msgSent
 }
 
-// en EOF:
-//  scatter-gahter = Map<(src_acc,dst_acc), int >>
-//  for bridge_acc, destinos in scatter
-//
-//	  origenes = gather[bridge_acc]
-//
-//    for src in origenes
-//      for dst in destinos
-//        scatter-gather[src, dst] += 1
-//  Y envía scatter-gather
-//
-//	keys: hash[ (src_acc,dst_acc) ] % num_workers_next_stage
 func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received EOF packet, processing scatter and gather groups", "clientID", clientID)
 
-	scatterGather := a.aggregatePairs(envelope)
-
-	slog.Debug("Completed processing scatter and gather groups", "clientID", clientID, "scatter_gather_pairs", len(scatterGather))
-
-	msgSent := a.sendScatterGatherPhaseTwo(scatterGather, clientID)
+	msgSent := a.streamScatterGatherPhaseTwo(clientID)
 
 	slog.Debug("Finished sending Scatter-Gather to phase two messages", "clientID", clientID, "messages_sent", msgSent)
 
-	// eofCounts := domain.EOFCounts{
-	// 	Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
-	// }
-	// eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	eofCounts := map[broker.KeyType]int{broker.KeyNil: msgSent}
 	eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, eofCounts)
 	if err != nil {
@@ -273,36 +251,12 @@ func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope) 
 	return nil
 }
 
-// func (a *ScatterAndGather) handleMessage(msg broker.Message) error {
-// 	pkt, err := inner.UnmarshalPacket(msg)
-// 	if err != nil {
-// 		slog.Error("Error unmarshalling message", "error", err)
-// 		return err
-// 	}
-
-//		switch pkt.Type {
-//		case inner.TypeTxQ4:
-//			return a.handleTxQ4Message(*pkt)
-//		case inner.TypeEOF:
-//			return a.handleEOFMessage(*pkt)
-//		default:
-//			slog.Warn("Received message with unknown type", "type", pkt.Type)
-//			return fmt.Errorf("unknown packet type: %v", pkt.Type)
-//		}
-//	}
 func (a *ScatterAndGather) handleMessage(msg broker.Message) error {
 	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxQ4:            a.handleTxQ4Message,
 		protocol.MsgTransactionsEOF: a.handleEOFMessage,
 	})
 }
-
-// func (a *ScatterAndGather) splitSrcDestKey(key string) (string, string) {
-// 	// key format is "srcAccID-dstAccID"
-// 	var src, dst string
-// 	fmt.Sscanf(key, "%[^-]-%s", &src, &dst)
-// 	return src, dst
-// }
 
 func (a *ScatterAndGather) shardByValue(value string) string {
 	h := fnv.New32a()
