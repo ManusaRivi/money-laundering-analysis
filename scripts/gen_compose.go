@@ -171,7 +171,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	tmpl, err := template.New("compose").Parse(string(tmplData))
+	tmpl, err := template.New("compose").Funcs(template.FuncMap{
+		"until": func(n int) []int {
+			r := make([]int, n)
+			for i := 0; i < n; i++ {
+				r[i] = i
+			}
+			return r
+		},
+	}).Parse(string(tmplData))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error parsing template: %v\n", err)
 		os.Exit(1)

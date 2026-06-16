@@ -68,9 +68,12 @@ func (m *Manager) startHeartbeat(cfg *config.Config) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.hbCancel = cancel
-	addr := fmt.Sprintf("%s:%d", cfg.Heartbeat.MonitorHost, cfg.Heartbeat.MonitorPort)
+	var addrs []string
+	for _, host := range cfg.Heartbeat.MonitorHosts {
+		addrs = append(addrs, fmt.Sprintf("%s:%d", host, cfg.Heartbeat.MonitorPort))
+	}
 	interval := time.Duration(cfg.Heartbeat.Interval) * time.Second
-	go heartbeat.Start(ctx, cfg.Worker.WorkerPrefix, cfg.Worker.WorkerID, addr, interval)
+	go heartbeat.Start(ctx, cfg.Worker.WorkerPrefix, cfg.Worker.WorkerID, addrs, interval)
 }
 
 func (m *Manager) Run() error {

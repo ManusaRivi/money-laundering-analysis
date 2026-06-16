@@ -19,12 +19,16 @@ type MonitorConfig struct {
 	RestartCooldown  string `yaml:"restart_cooldown"`
 	RabbitMQHost     string `yaml:"rabbitmq_host"`
 	RabbitMQPort     int    `yaml:"rabbitmq_port"`
+	TcpHost          string `yaml:"tcp_host"`
+	TcpPort          int    `yaml:"tcp_port"`
+	PingInterval     string `yaml:"ping_interval"`
+	PingTimeout      string `yaml:"ping_timeout"`
 }
 
 type HeartbeatConfig struct {
-	MonitorHost string `yaml:"monitor_host"`
-	MonitorPort int    `yaml:"monitor_port"`
-	Interval    int    `yaml:"interval"`
+	MonitorHosts []string `yaml:"monitor_hosts"`
+	MonitorPort  int      `yaml:"monitor_port"`
+	Interval     int      `yaml:"interval"`
 }
 
 type Config struct {
@@ -199,6 +203,30 @@ func verifyConfig(cfg *Config) error {
 		}
 		if _, err := time.ParseDuration(cfg.Monitor.RestartCooldown); err != nil {
 			return fmt.Errorf("monitor.restart_cooldown: %w", err)
+		}
+		if cfg.Monitor.RabbitMQHost == "" {
+			cfg.Monitor.RabbitMQHost = "rabbitmq"
+		}
+		if cfg.Monitor.RabbitMQPort == 0 {
+			cfg.Monitor.RabbitMQPort = 5672
+		}
+		if cfg.Monitor.TcpHost == "" {
+			cfg.Monitor.TcpHost = "0.0.0.0"
+		}
+		if cfg.Monitor.TcpPort == 0 {
+			cfg.Monitor.TcpPort = 9001
+		}
+		if cfg.Monitor.PingInterval == "" {
+			cfg.Monitor.PingInterval = "1.5s"
+		}
+		if _, err := time.ParseDuration(cfg.Monitor.PingInterval); err != nil {
+			return fmt.Errorf("monitor.ping_interval: %w", err)
+		}
+		if cfg.Monitor.PingTimeout == "" {
+			cfg.Monitor.PingTimeout = "500ms"
+		}
+		if _, err := time.ParseDuration(cfg.Monitor.PingTimeout); err != nil {
+			return fmt.Errorf("monitor.ping_timeout: %w", err)
 		}
 		return nil
 	}

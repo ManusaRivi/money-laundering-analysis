@@ -36,18 +36,20 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  monitor:
+{{- $monitors := 3}}
+{{- range $i := until $monitors}}
+  monitor_{{$i}}:
     build:
       context: .
       dockerfile: src/cmd/node/Dockerfile
-    container_name: monitor
+    container_name: monitor_{{$i}}
     environment:
       - LOG_LEVEL=debug
       - CONFIG_PATH=/app/config.yaml
       - SYSTEM_CONFIG_PATH=/app/system.yaml
       - WORKER_PREFIX=monitor
-      - ID=0
-      - WORKER_AMOUNT=1
+      - ID={{$i}}
+      - WORKER_AMOUNT={{$monitors}}
     volumes:
       - ./configs/monitor.yaml:/app/config.yaml
       - ./configs/system.yaml:/app/system.yaml:ro
@@ -57,6 +59,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+{{- end}}
 {{- range .Clients}}
   client_{{.ID}}:
     build:
@@ -101,7 +104,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      monitor:
+      monitor_0:
         condition: service_started
 {{- end}}
 networks:

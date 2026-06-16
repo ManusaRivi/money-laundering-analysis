@@ -8,15 +8,20 @@ import (
 	"time"
 )
 
-func Start(ctx context.Context, prefix string, id int, addr string, interval time.Duration) {
-	raddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		slog.Error("heartbeat: failed to resolve", "addr", addr, "error", err)
-		return
+func Start(ctx context.Context, prefix string, id int, addrs []string, interval time.Duration) {
+	var raddrs []*net.UDPAddr
+	for _, addr := range addrs {
+		raddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			slog.Error("heartbeat: failed to resolve", "addr", addr, "error", err)
+			return
+		}
+		raddrs = append(raddrs, raddr)
 	}
-	conn, err := net.DialUDP("udp", nil, raddr)
+
+	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {
-		slog.Error("heartbeat: failed to dial", "error", err)
+		slog.Error("heartbeat: failed to open socket", "error", err)
 		return
 	}
 	defer conn.Close()
@@ -29,17 +34,18 @@ func Start(ctx context.Context, prefix string, id int, addr string, interval tim
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	slog.Debug("[heartbeat] sender started", "prefix", prefix, "id", id, "addr", addr)
+	slog.Debug("heartbeat sender started", "prefix", prefix, "id", id, "addrs", addrs)
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Debug("[heartbeat] sender stopped", "prefix", prefix, "id", id)
+			slog.Debug("heartbeat sender stopped", "prefix", prefix, "id", id)
 			return
 		case <-ticker.C:
-			slog.Debug("[heartbeat] sending heartbeat", "prefix", prefix, "id", id)
-			if _, err := conn.Write(payload); err != nil {
-				slog.Warn("heartbeat: send error", "error", err)
+			for _, raddr := range raddrs {
+				if _, err := conn.WriteTo(payload, raddr); err != nil {
+					slog.Warn("heartbeat: send error", "addr", raddr, "error", err)
+				}
 			}
 		}
 	}
