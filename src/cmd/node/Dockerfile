@@ -18,6 +18,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
 # Etapa 2: Imagen final
 FROM alpine:latest
 
+# docker-cli necesario para que el monitor reinicie contenedores
+RUN apk add --no-cache docker-cli
+
 WORKDIR /app
 
 # Copiar el binario desde la etapa anterior

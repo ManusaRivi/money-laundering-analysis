@@ -1,0 +1,4 @@
+heartbeat:
+  monitor_host: "monitor"
+  monitor_port: 9000
+  interval: 5

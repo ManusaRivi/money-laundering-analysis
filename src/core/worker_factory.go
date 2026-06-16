@@ -10,6 +10,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/converter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/filter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/join"
+	"github.com/ManusaRivi/money-laundering-analysis/src/workers/monitor"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/router"
 )
 
@@ -28,6 +29,7 @@ const (
 	WorkerTypeScatterGather       = "ScatterGather"
 	WorkerTypeScatterGatherFilter = "ScatterGatherFilter"
 	WorkerTypeJoinQuery4          = "JoinQuery4"
+	WorkerTypeMonitor             = "Monitor"
 )
 
 // TODO: Define worker types as constants
@@ -118,6 +120,13 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		return worker, nil
 	case WorkerTypeConverter:
 		worker := converter.NewConverter(workerCfg, communicationBroker)
+		return worker, nil
+	case WorkerTypeMonitor:
+		if workercfg.Monitor == nil {
+			return nil, fmt.Errorf("monitor config required for Monitor worker type")
+		}
+		selfKey := fmt.Sprintf("%s_%d", workerCfg.WorkerPrefix, workerCfg.WorkerID)
+		worker := monitor.NewMonitor(workercfg.Monitor, selfKey)
 		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", workerCfg.Type)

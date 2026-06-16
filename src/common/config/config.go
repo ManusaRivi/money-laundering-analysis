@@ -2,16 +2,37 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+type MonitorConfig struct {
+	UdpHost          string `yaml:"udp_host"`
+	UdpPort          int    `yaml:"udp_port"`
+	HeartbeatTimeout string `yaml:"heartbeat_timeout"`
+	CheckInterval    string `yaml:"check_interval"`
+	FailureThreshold int    `yaml:"failure_threshold"`
+	RestartCooldown  string `yaml:"restart_cooldown"`
+	RabbitMQHost     string `yaml:"rabbitmq_host"`
+	RabbitMQPort     int    `yaml:"rabbitmq_port"`
+}
+
+type HeartbeatConfig struct {
+	MonitorHost string `yaml:"monitor_host"`
+	MonitorPort int    `yaml:"monitor_port"`
+	Interval    int    `yaml:"interval"`
+}
+
 type Config struct {
-	Broker    BrokerConfig  `yaml:"broker"`
-	AvgBroker *BrokerConfig `yaml:"avg_broker"`
-	Worker    WorkerConfig  `yaml:"worker"`
+	Broker    BrokerConfig    `yaml:"broker,omitempty"`
+	AvgBroker *BrokerConfig   `yaml:"avg_broker,omitempty"`
+	Worker    WorkerConfig    `yaml:"worker"`
+	Monitor   *MonitorConfig  `yaml:"monitor,omitempty"`
+	Heartbeat *HeartbeatConfig `yaml:"heartbeat,omitempty"`
 }
 
 type BrokerConfig struct {
@@ -67,6 +88,45 @@ type SyncEOFControllerConfig struct {
 	InputKeys	[]string `yaml:"-"`
 }
 
+func Load(filepath string) (*Config, error) {
+	cfg := &Config{}
+
+	if err := loadSystemDefaults(cfg); err != nil {
+		slog.Warn("failed to load system defaults", "error", err)
+	}
+
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+
+	if err := applyEnv(cfg); err != nil {
+		return nil, err
+	}
+	if err := verifyConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		return cfg, nil
+	}
+
+	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
+		return nil, err
+	}
+	if cfg.AvgBroker != nil {
+		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
+			return nil, err
+		}
+	}
+	applyEOFDefaults(cfg)
+
+	return cfg, nil
+}
+
 func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
 	data, err := os.ReadFile(filepath)
 	if err != nil {
@@ -87,38 +147,62 @@ func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
 	return &cfg.AccountsBroker, nil
 }
 
-func Load(filepath string) (*Config, error) {
-	data, err := os.ReadFile(filepath)
+func loadSystemDefaults(cfg *Config) error {
+	sysPath := os.Getenv("SYSTEM_CONFIG_PATH")
+	if sysPath == "" {
+		sysPath = "/app/system.yaml"
+	}
+
+	data, err := os.ReadFile(sysPath)
 	if err != nil {
-		return nil, err
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-
-	if err := verifyConfig(&cfg); err != nil {
-		return nil, err
-	}
-
-	if err := applyEnv(&cfg); err != nil {
-		return nil, err
-	}
-	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
-		return nil, err
-	}
-	if cfg.AvgBroker != nil {
-		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
-			return nil, err
+		if os.IsNotExist(err) {
+			return nil
 		}
+		return err
 	}
-	applyEOFDefaults(&cfg)
 
-	return &cfg, nil
+	return yaml.Unmarshal(data, cfg)
 }
 
 func verifyConfig(cfg *Config) error {
+	if cfg.Worker.Type == "" {
+		return fmt.Errorf("worker type is required")
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		if cfg.Monitor == nil {
+			return fmt.Errorf("monitor config section is required for Monitor worker type")
+		}
+		if cfg.Monitor.UdpHost == "" {
+			return fmt.Errorf("monitor.udp_host is required")
+		}
+		if cfg.Monitor.UdpPort == 0 {
+			return fmt.Errorf("monitor.udp_port is required")
+		}
+		if cfg.Monitor.HeartbeatTimeout == "" {
+			return fmt.Errorf("monitor.heartbeat_timeout is required")
+		}
+		if _, err := time.ParseDuration(cfg.Monitor.HeartbeatTimeout); err != nil {
+			return fmt.Errorf("monitor.heartbeat_timeout: %w", err)
+		}
+		if cfg.Monitor.CheckInterval == "" {
+			return fmt.Errorf("monitor.check_interval is required")
+		}
+		if _, err := time.ParseDuration(cfg.Monitor.CheckInterval); err != nil {
+			return fmt.Errorf("monitor.check_interval: %w", err)
+		}
+		if cfg.Monitor.FailureThreshold == 0 {
+			cfg.Monitor.FailureThreshold = 1
+		}
+		if cfg.Monitor.RestartCooldown == "" {
+			cfg.Monitor.RestartCooldown = "1s"
+		}
+		if _, err := time.ParseDuration(cfg.Monitor.RestartCooldown); err != nil {
+			return fmt.Errorf("monitor.restart_cooldown: %w", err)
+		}
+		return nil
+	}
+
 	if cfg.Broker.Type == "" {
 		return fmt.Errorf("broker type is required")
 	}
@@ -126,13 +210,10 @@ func verifyConfig(cfg *Config) error {
 		return fmt.Errorf("broker url is required")
 	}
 	if cfg.Broker.Input == "" {
-		return fmt.Errorf("broker input is refalsequired")
+		return fmt.Errorf("broker input is required")
 	}
 	if cfg.Broker.Output == "" {
 		return fmt.Errorf("broker output is required")
-	}
-	if cfg.Worker.Type == "" {
-		return fmt.Errorf("worker type is required")
 	}
 	return nil
 }

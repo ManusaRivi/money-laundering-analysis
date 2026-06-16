@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/heartbeat"
 )
 
 type Worker interface {
@@ -18,14 +21,25 @@ type Worker interface {
 }
 
 type Manager struct {
-	Worker Worker
-	cnfg   *config.Config
-	broker broker.Broker
+	Worker  Worker
+	cnfg    *config.Config
+	broker  broker.Broker
+	hbCancel context.CancelFunc
 }
 
 func NewManager(cfg *config.Config) (*Manager, error) {
 	if cfg == nil {
 		return nil, errors.New("config is required")
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		worker, err := workerFactory(cfg, nil)
+		if err != nil {
+			return nil, err
+		}
+		m := &Manager{Worker: worker, cnfg: cfg}
+		m.startHeartbeat(cfg)
+		return m, nil
 	}
 
 	communicationBroker, err := broker.NewBroker(cfg.Broker)
@@ -38,11 +52,25 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 
-	return &Manager{
+	m := &Manager{
 		Worker: worker,
 		cnfg:   cfg,
 		broker: communicationBroker,
-	}, nil
+	}
+	m.startHeartbeat(cfg)
+
+	return m, nil
+}
+
+func (m *Manager) startHeartbeat(cfg *config.Config) {
+	if cfg.Heartbeat == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.hbCancel = cancel
+	addr := fmt.Sprintf("%s:%d", cfg.Heartbeat.MonitorHost, cfg.Heartbeat.MonitorPort)
+	interval := time.Duration(cfg.Heartbeat.Interval) * time.Second
+	go heartbeat.Start(ctx, cfg.Worker.WorkerPrefix, cfg.Worker.WorkerID, addr, interval)
 }
 
 func (m *Manager) Run() error {
@@ -56,6 +84,10 @@ func (m *Manager) Run() error {
 	go func() {
 		sig := <-sigCh
 		slog.Info("Received signal, shutting down worker...", "signal", sig)
+
+		if m.hbCancel != nil {
+			m.hbCancel()
+		}
 
 		go m.Worker.Stop()
 
