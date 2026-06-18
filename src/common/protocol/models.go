@@ -89,6 +89,7 @@ type ExternalEnvelope struct {
 type InternalEnvelope struct {
 	MsgType  MsgType
 	ClientId uuid.UUID
+	MsgID    MsgID
 	Payload  []byte
 }
 

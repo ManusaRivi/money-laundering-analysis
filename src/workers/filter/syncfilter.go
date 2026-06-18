@@ -128,7 +128,8 @@ func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyT
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return err
 	}
-	if err := f.pub.PublishInternal(clientID, msgType, key, payload); err != nil {
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	if err := f.pub.PublishInternalWithID(clientID, msgType, key, payload, eofID); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -174,16 +175,16 @@ func (f *SyncFilter) resolveEOFMessage(finalSent map[broker.KeyType]int) (protoc
 	return protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, nil
 }
 
-func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int) error {
+func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int, id protocol.MsgID) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	if err := f.pub.PublishInternal(clientID, msgType, broker.KeyNil, payload); err != nil {
+	if err := f.pub.PublishInternalWithID(clientID, msgType, broker.KeyNil, payload, id); err != nil {
 		return err
 	}
 	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, batchLength)
 	return nil
 }
 
-func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID) error {
+func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	filteredTx := make([]protocol.Transaction, 0, len(transactions))
 	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
@@ -199,10 +200,11 @@ func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Tran
 	if err != nil {
 		return fmt.Errorf("encoding filtered transaction batch: %w", err)
 	}
-	return f.encodeAndSendBatch(clientID, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
+	txID := protocol.DeriveMsgID(parentID, string(broker.KeyNil), 0)
+	return f.encodeAndSendBatch(clientID, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx), txID)
 }
 
-func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID) error {
+func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	results := make([]protocol.Query1Result, 0)
 	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
@@ -224,7 +226,8 @@ func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Tra
 	if err != nil {
 		return fmt.Errorf("encoding query1 result batch: %w", err)
 	}
-	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results))
+	resultID := protocol.DeriveMsgID(parentID, string(broker.KeyNil), 0)
+	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results), resultID)
 }
 
 func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
@@ -246,11 +249,11 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
 	if f.cfg.Query == Query1 {
-		if err := f.forwardQuery1ResultBatchMessage(txBatch, envelope.ClientId); err != nil {
+		if err := f.forwardQuery1ResultBatchMessage(txBatch, envelope.ClientId, envelope.MsgID); err != nil {
 			return fmt.Errorf("forwarding query1 result batch: %w", err)
 		}
 	} else {
-		if err := f.forwardTransactionBatchMessage(txBatch, envelope.ClientId); err != nil {
+		if err := f.forwardTransactionBatchMessage(txBatch, envelope.ClientId, envelope.MsgID); err != nil {
 			return fmt.Errorf("forwarding transaction batch: %w", err)
 		}
 	}

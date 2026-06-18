@@ -96,7 +96,8 @@ func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType
 		return err
 	}
 	slog.Debug("Forwarding EOF to next worker...")
-	if err := r.pub.PublishRaw(broker.KeyControlEOF, eofEnvelope); err != nil {
+	eofID := protocol.StageMsgID(clientID, r.cfg.WorkerPrefix, "eof", 0)
+	if err := r.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -118,13 +119,14 @@ func (r *Spliter) Stop() {
 // sendPhaseOneBatch ships one batched phase-one message for a (type, shard)
 // group. The EOF count is the number of transactions in the batch, so the
 // per-key accounting matches the old one-message-per-transaction behaviour.
-func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, routingKey broker.KeyType, txs []protocol.Transaction) error {
+func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, routingKey broker.KeyType, txs []protocol.Transaction, parentID protocol.MsgID) error {
 	envelope, err := r.pub.EncodeTxQ4PhaseOneBatchEnvelope(clientID, txType, txs)
 	if err != nil {
 		slog.Error("Error encoding TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	if err := r.pub.PublishRaw(routingKey, envelope); err != nil {
+	id := protocol.DeriveMsgID(parentID, fmt.Sprintf("%v:%s", txType, routingKey), 0)
+	if err := r.pub.PublishRawWithID(routingKey, envelope, id); err != nil {
 		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
@@ -195,7 +197,7 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 	}
 
 	for bk, txs := range buckets {
-		if err := r.sendPhaseOneBatch(clientId, bk.txType, broker.KeyType(bk.routingKey), txs); err != nil {
+		if err := r.sendPhaseOneBatch(clientId, bk.txType, broker.KeyType(bk.routingKey), txs, envelope.MsgID); err != nil {
 			return err
 		}
 	}

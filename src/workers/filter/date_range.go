@@ -109,7 +109,8 @@ func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyTy
 		slog.Error("Error encoding EOF counts", "error", err)
 		return err
 	}
-	if err := f.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload); err != nil {
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	if err := f.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
@@ -135,8 +136,8 @@ func (f *DateRange) filterTransactionByDate(tx protocol.Transaction) bool {
 	return true
 }
 
-func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType, payloadLen int) bool {
-	if err := f.pub.PublishInternal(clientId, msgType, routingKey, payload); err != nil {
+func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType, payloadLen int, id protocol.MsgID) bool {
+	if err := f.pub.PublishInternalWithID(clientId, msgType, routingKey, payload, id); err != nil {
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
@@ -144,7 +145,7 @@ func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.
 	return true
 }
 
-func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, clientId uuid.UUID, routingKey broker.KeyType) bool {
+func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, clientId uuid.UUID, routingKey broker.KeyType, parentID protocol.MsgID) bool {
 	if len(transactions) == 0 {
 		return true
 	}
@@ -154,7 +155,8 @@ func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, cl
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return false
 	}
-	return f.sendMessageToBroker(protocol.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions))
+	id := protocol.DeriveMsgID(parentID, string(routingKey), 0)
+	return f.sendMessageToBroker(protocol.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions), id)
 }
 
 func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
@@ -176,10 +178,10 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 			}
 		}
 	}
-	if !f.sendTransactionBatch(dollarTx, clientId, broker.KeyDollarTransaction) {
+	if !f.sendTransactionBatch(dollarTx, clientId, broker.KeyDollarTransaction, envelope.MsgID) {
 		return fmt.Errorf("error sending dollar transaction batch to broker")
 	}
-	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction) {
+	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction, envelope.MsgID) {
 		return fmt.Errorf("error sending non-dollar transaction batch to broker")
 	}
 	f.syncEOFController.MessageReceived(clientId, len(transactions))

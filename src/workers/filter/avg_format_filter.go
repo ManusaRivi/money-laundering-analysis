@@ -290,6 +290,12 @@ func (f *AvgFormatFilter) evaluateTransaction(tx protocol.Transaction, avg float
 	}, true
 }
 
+// flushQuery3Results emits one Query3 result batch. NOTE: results are produced as
+// the avg and tx streams interleave (two goroutines), so batch boundaries are
+// non-deterministic — like the Q2 join, this worker can't carry a deterministic
+// per-batch MsgID. Idempotency is deferred to Capa 3 (input dedup + persisted
+// output ids). See docs/message-ids.md §6. PublishInternal stamps a zero MsgID
+// for now (not dedup-safe yet).
 func (f *AvgFormatFilter) flushQuery3Results(clientID uuid.UUID, key broker.KeyType, items []protocol.Query3Result) error {
 	payload, err := f.pub.EncodeQuery3ResultBatch(items)
 	if err != nil {

@@ -3,6 +3,7 @@ package aggregator
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
@@ -75,6 +76,22 @@ func (a *Aggregator) Run() error {
 }
 
 func (a *Aggregator) Stop() {}
+
+// stage returns the per-replica seed for StageMsgID: results and EOFs are
+// emitted by every replica (control.eof is broadcast), so the WorkerID must be
+// folded in or sibling replicas would mint colliding ids.
+func (a *Aggregator) stage() string {
+	return fmt.Sprintf("%s#%d", a.cfg.WorkerPrefix, a.cfg.WorkerID)
+}
+
+// sortByTransactionID gives the flushed results a deterministic order, so their
+// per-batch MsgIDs (StageMsgID by index) are reproducible across runs and
+// restarts — Go map iteration order is not.
+func sortByTransactionID(txs []protocol.Transaction) {
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].GetTransactionId() < txs[j].GetTransactionId()
+	})
+}
 
 // Private Methods
 
@@ -151,6 +168,7 @@ func (a *Aggregator) collectResults(clientID uuid.UUID) []protocol.Transaction {
 			results = append(results, out)
 		}
 		delete(a.avgState, clientID)
+		sortByTransactionID(results)
 		return results
 	}
 
@@ -160,21 +178,25 @@ func (a *Aggregator) collectResults(clientID uuid.UUID) []protocol.Transaction {
 		results = append(results, tx)
 	}
 	delete(a.state, clientID)
+	sortByTransactionID(results)
 	return results
 }
 
 func (a *Aggregator) sendTransactionBatches(clientID uuid.UUID, results []protocol.Transaction) (int, error) {
 	sent := 0
+	batchIdx := uint32(0)
 	for start := 0; start < len(results); start += flushBatchSize {
 		chunk := results[start:min(start+flushBatchSize, len(results))]
 		payload, err := a.pub.EncodeTransactionBatch(chunk)
 		if err != nil {
 			return sent, fmt.Errorf("encoding aggregated batch: %w", err)
 		}
-		if err := a.pub.PublishInternal(clientID, protocol.MsgTransactionsBatch, broker.KeyNil, payload); err != nil {
+		id := protocol.StageMsgID(clientID, a.stage(), "result", batchIdx)
+		if err := a.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsBatch, broker.KeyNil, payload, id); err != nil {
 			return sent, fmt.Errorf("sending aggregated batch: %w", err)
 		}
 		sent += len(chunk)
+		batchIdx++
 	}
 	return sent, nil
 }
@@ -185,7 +207,8 @@ func (a *Aggregator) sendTransactionsEOF(clientID uuid.UUID, sent int) error {
 		return fmt.Errorf("encoding eof counts: %w", err)
 	}
 	slog.Debug("Sending EOF packet after processing aggregation results", "clientID", clientID, "msg_sent", sent)
-	return a.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts)
+	eofID := protocol.StageMsgID(clientID, a.stage(), "eof", 0)
+	return a.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts, eofID)
 }
 
 func (a *Aggregator) handleMessage(msg broker.Message) error {
@@ -208,11 +231,13 @@ func (a *Aggregator) emitUngroupedCount(clientID uuid.UUID) error {
 		slog.Error("Error encoding query 5 result", "error", err)
 		return err
 	}
-	err = a.pub.PublishInternal(clientID, protocol.MsgQuery5Result, broker.KeyNil, resultMsg)
+	resultID := protocol.StageMsgID(clientID, a.stage(), "q5result", 0)
+	err = a.pub.PublishInternalWithID(clientID, protocol.MsgQuery5Result, broker.KeyNil, resultMsg, resultID)
 	if err != nil {
 		slog.Error("Error sending count result", "error", err)
 		return err
 	}
 	slog.Debug("Sent count result", "clientID", clientID, "count", count, "query", a.cfg.Query)
-	return a.pub.PublishInternal(clientID, protocol.MsgQuery5ResultEOF, broker.KeyNil, nil)
+	eofID := protocol.StageMsgID(clientID, a.stage(), "q5eof", 0)
+	return a.pub.PublishInternalWithID(clientID, protocol.MsgQuery5ResultEOF, broker.KeyNil, nil, eofID)
 }

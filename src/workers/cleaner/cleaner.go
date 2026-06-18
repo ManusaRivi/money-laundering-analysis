@@ -88,7 +88,8 @@ func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType
 		return err
 	}
 	slog.Debug("Leader flush triggered, sending EOF packet to next worker...")
-	if err := c.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload); err != nil {
+	eofID := protocol.StageMsgID(clientID, c.cfg.WorkerPrefix, "eof", 0)
+	if err := c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID); err != nil {
 		slog.Error("Error sending EOF packet to broker during leader flush", "error", err)
 		return err
 	}
@@ -146,7 +147,8 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	if err := c.pub.PublishInternal(envelope.ClientId, protocol.MsgTransactionsBatch, broker.KeyNil, txPayload); err != nil {
+	txID := protocol.DeriveMsgID(envelope.MsgID, string(broker.KeyNil), 0)
+	if err := c.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgTransactionsBatch, broker.KeyNil, txPayload, txID); err != nil {
 		slog.Error("Error sending cleaned transaction batch to broker", "error", err)
 		return err
 	}

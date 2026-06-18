@@ -1,7 +1,9 @@
 package aggregator
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
@@ -91,6 +93,12 @@ func (a *ScatterGather) Stop() {
 	a.broker.Close()
 }
 
+// stage seeds StageMsgID; includes WorkerID because every replica emits its own
+// phase-three batches and EOF on flush.
+func (a *ScatterGather) stage() string {
+	return fmt.Sprintf("%s#%d", a.cfg.WorkerPrefix, a.cfg.WorkerID)
+}
+
 // Private Methods
 
 func (a *ScatterGather) getClient(clientID uuid.UUID) *clientScattergather {
@@ -144,40 +152,50 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 	if len(scatterGather) > 0 {
 		slog.Debug("Sending Scatter-Gather to phase three", "clientID", clientID, "scatter_gather_count", len(scatterGather))
 
+		// Sort the pair keys so the per-batch MsgIDs (StageMsgID by index) are
+		// reproducible across runs and restarts — map iteration order is not.
+		keys := make([]domain.TxQ4PairKey, 0, len(scatterGather))
+		for pk := range scatterGather {
+			keys = append(keys, pk)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i].Key() < keys[j].Key() })
+
+		batchIdx := uint32(0)
+		emit := func(batch map[string]*domain.TxQ4PairEntry) error {
+			txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
+			envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
+			if err != nil {
+				slog.Error("Error encoding Scatter-Gather batch", "error", err)
+				return err
+			}
+			id := protocol.StageMsgID(clientID, a.stage(), "result", batchIdx)
+			if err := a.pub.PublishRawWithID(broker.KeyNil, envelope, id); err != nil {
+				slog.Error("Error sending Scatter-Gather batch", "error", err)
+				return err
+			}
+			msgSent++
+			batchIdx++
+			return nil
+		}
+
 		batch := make(map[string]*domain.TxQ4PairEntry, BATCH_SIZE)
-		for pk, count := range scatterGather {
+		for _, pk := range keys {
 			batch[pk.Key()] = &domain.TxQ4PairEntry{
-				Count:      count,
+				Count:      scatterGather[pk],
 				SrcAccount: accountFromID(pk.Src),
 				DstAccount: accountFromID(pk.Dst),
 			}
 			if len(batch) >= BATCH_SIZE {
-				txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
-				envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
-				if err != nil {
-					slog.Error("Error encoding Scatter-Gather batch", "error", err)
+				if err := emit(batch); err != nil {
 					return err
 				}
-				if err := a.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
-					slog.Error("Error sending Scatter-Gather batch", "error", err)
-					return err
-				}
-				msgSent++
 				batch = make(map[string]*domain.TxQ4PairEntry, BATCH_SIZE)
 			}
 		}
 		if len(batch) > 0 {
-			txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
-			envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
-			if err != nil {
-				slog.Error("Error encoding Scatter-Gather final batch", "error", err)
+			if err := emit(batch); err != nil {
 				return err
 			}
-			if err := a.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
-				slog.Error("Error sending Scatter-Gather final batch", "error", err)
-				return err
-			}
-			msgSent++
 		}
 	}
 
@@ -189,7 +207,8 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 		return err
 	}
 	slog.Debug("Sending EOF packet after processing scatter and gather", "clientID", clientID, "msg_sent", msgSent)
-	if err := a.pub.PublishRaw(broker.KeyControlEOF, eofEnvelope); err != nil {
+	eofID := protocol.StageMsgID(clientID, a.stage(), "eof", 0)
+	if err := a.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}

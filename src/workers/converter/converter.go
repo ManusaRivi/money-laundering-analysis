@@ -2,6 +2,7 @@ package converter
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
@@ -54,13 +55,14 @@ func (c *Converter) Stop() {}
 
 // Private methods
 
-func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []protocol.Transaction) error {
+func (c *Converter) sendTransactionBatch(clientID uuid.UUID, transactions []protocol.Transaction, parentID protocol.MsgID) error {
 	transactionsBytes, err := c.pub.EncodeTransactionBatch(transactions)
 	if err != nil {
 		slog.Error("Error encoding converted transactions batch", "error", err)
 		return err
 	}
-	if err := c.pub.PublishInternal(clientID, protocol.MsgTransactionsBatch, broker.KeyDollarTransaction, transactionsBytes); err != nil {
+	txID := protocol.DeriveMsgID(parentID, string(broker.KeyDollarTransaction), 0)
+	if err := c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsBatch, broker.KeyDollarTransaction, transactionsBytes, txID); err != nil {
 		slog.Error("Error sending converted transactions batch to broker", "error", err)
 		return err
 	}
@@ -105,7 +107,7 @@ func (c *Converter) handleTransactionMessage(envelope protocol.InternalEnvelope)
 		tx.PaymentCurrency = Dollar
 		results = append(results, tx)
 	}
-	return c.sendTransactionBatch(clientID, results)
+	return c.sendTransactionBatch(clientID, results, envelope.MsgID)
 }
 
 func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
@@ -116,7 +118,8 @@ func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error encoding EOF counts", "error", err)
 		return err
 	}
-	if err := c.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts); err != nil {
+	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", c.cfg.WorkerPrefix, c.cfg.WorkerID), "eof", 0)
+	if err := c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts, eofID); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}

@@ -149,6 +149,12 @@ func (a *ScatterAndGather) Stop() {
 	a.exchange.Close()
 }
 
+// stage seeds StageMsgID; includes WorkerID because every replica emits its own
+// phase-two pairs and EOF (each owns a disjoint shard of accounts).
+func (a *ScatterAndGather) stage() string {
+	return fmt.Sprintf("%s#%d", a.cfg.WorkerPrefix, a.workerID)
+}
+
 // Private Methods
 
 func (a *ScatterAndGather) getClient(clientID uuid.UUID) *client {
@@ -253,7 +259,8 @@ func (a *ScatterAndGather) sendScatterGatherPhaseTwo(scatterGather map[domain.Tx
 			slog.Error("Error encoding TxQ4 pair for phase two", "error", err, "routing_key", routingKey)
 			continue
 		}
-		if err := a.pub.PublishRaw(broker.KeyType(routingKey), envelope); err != nil {
+		id := protocol.StageMsgID(clientId, a.stage(), pk.Key(), 0)
+		if err := a.pub.PublishRawWithID(broker.KeyType(routingKey), envelope, id); err != nil {
 			slog.Error("Error sending Scatter-Gather pair to phase two", "error", err, "routing_key", routingKey)
 			continue
 		}
@@ -368,8 +375,11 @@ func (a *ScatterAndGather) onClientReady(clientID uuid.UUID) {
 	eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: msgSent})
 	if err != nil {
 		slog.Error("Error encoding EOF counts envelope", "error", err, "clientID", clientID)
-	} else if err := a.pub.PublishRaw(broker.KeyControlEOF, eofEnvelope); err != nil {
-		slog.Error("Error sending downstream EOF", "error", err, "clientID", clientID)
+	} else {
+		eofID := protocol.StageMsgID(clientID, a.stage(), "eof", 0)
+		if err := a.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
+			slog.Error("Error sending downstream EOF", "error", err, "clientID", clientID)
+		}
 	}
 
 	if ack := a.takePendingAck(clientID); ack != nil {

@@ -67,6 +67,7 @@ func (f *ScatterGatherThreshold) handleTxQ4Message(envelope protocol.InternalEnv
 	// 	return err
 	// }
 	clientID := envelope.ClientId
+	parentID := envelope.MsgID
 	txQ4, err := f.pub.DecodeTxQ4PhaseThreeEnvelope(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding TxQ4PhaseThree envelope", "error", err)
@@ -74,18 +75,20 @@ func (f *ScatterGatherThreshold) handleTxQ4Message(envelope protocol.InternalEnv
 	}
 	slog.Debug("Received scatter-gather to filter", "clientID", clientID)
 
-	for _, entry := range txQ4.ScatterGather {
+	for key, entry := range txQ4.ScatterGather {
 		if entry.Count >= f.thresholdAmount {
 			slog.Debug("Pair exceeds threshold", "count", entry.Count)
 
 			accounts := []domain.Account{entry.SrcAccount, entry.DstAccount}
-			// msg, err := inner.MarshalAccountsPacket(clientID, broker.KeyNil, accounts)
-			envelope, err := f.pub.EncodeAccountsEnvelope(clientID, accounts)
+			// each qualifying pair is a distinct output of this parent; the pair
+			// key is a stable discriminator (order-independent), so no sort needed.
+			out, err := f.pub.EncodeAccountsEnvelope(clientID, accounts)
 			if err != nil {
 				slog.Error("Error encoding accounts envelope", "error", err)
 				continue
 			}
-			if err := f.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
+			id := protocol.DeriveMsgID(parentID, key, 0)
+			if err := f.pub.PublishRawWithID(broker.KeyNil, out, id); err != nil {
 				slog.Error("Error sending accounts envelope to broker", "error", err)
 				continue
 			}
@@ -113,7 +116,8 @@ func (f *ScatterGatherThreshold) handleEOFMessage(envelope protocol.InternalEnve
 		slog.Error("Error encoding EOF counts envelope", "error", err)
 		return err
 	}
-	if err := f.pub.PublishRaw(broker.KeyControlEOF, eofEnvelope); err != nil {
+	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", f.cfg.WorkerPrefix, f.cfg.WorkerID), "eof", 0)
+	if err := f.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}

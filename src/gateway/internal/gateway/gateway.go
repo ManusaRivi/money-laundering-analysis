@@ -23,6 +23,11 @@ type Client struct {
 	ID           uuid.UUID
 	tx_count     int
 	tx_usd_count int
+	// Per-stream monotonic sequences used to mint deterministic source MsgIDs.
+	// Transactions and accounts keep independent spaces. Mutated only from this
+	// client's connection goroutine.
+	txSeq  uint64
+	accSeq uint64
 }
 
 type Gateway struct {
@@ -167,10 +172,32 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
+// nextSourceMsgID generates the id of the next outbound message of clientId on the stream implied by msgType,
+// advancing that stream's per-client sequence. Transactions and accounts keep independent sequences so
+// their id spaces can't collide.
+func (gateway *Gateway) nextSourceMsgID(clientId uuid.UUID, msgType protocol.MsgType) protocol.MsgID {
+	stream := protocol.StreamTransactions
+	if msgType == protocol.MsgAccountsBatch || msgType == protocol.MsgAccountsEOF {
+		stream = protocol.StreamAccounts
+	}
+	var seq uint64
+	if client := gateway.clients[clientId]; client != nil {
+		if stream == protocol.StreamAccounts {
+			seq = client.accSeq
+			client.accSeq++
+		} else {
+			seq = client.txSeq
+			client.txSeq++
+		}
+	}
+	return protocol.SourceMsgID(clientId, stream, seq)
+}
+
 func (gateway *Gateway) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.UUID, payload []byte, routingKey broker.KeyType) bool {
 	envelope, err := gateway.codec.EncodeInternalEnvelope(protocol.InternalEnvelope{
 		MsgType:  msgType,
 		ClientId: clientId,
+		MsgID:    gateway.nextSourceMsgID(clientId, msgType),
 		Payload:  payload,
 	})
 	if err != nil {

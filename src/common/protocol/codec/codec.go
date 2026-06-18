@@ -16,11 +16,19 @@ import (
 
 const (
 	ExternalHeaderSize = 5
-	InternalHeaderSize = 21
 
 	MsgTypeHeaderBytes     = 1
 	ClientIDHeaderBytes    = 16
+	MsgIDHeaderBytes       = 16
 	PayloadSizeHeaderBytes = 4
+
+	// Internal header layout: [MsgType:1][ClientId:16][MsgID:16][payloadLen:4]
+	msgTypeOffset    = 0
+	clientIDOffset   = msgTypeOffset + MsgTypeHeaderBytes
+	msgIDOffset      = clientIDOffset + ClientIDHeaderBytes
+	payloadLenOffset = msgIDOffset + MsgIDHeaderBytes
+
+	InternalHeaderSize = payloadLenOffset + PayloadSizeHeaderBytes
 )
 
 func DecodeExternalHeader(header []byte) (protocol.MsgType, uint32) {
@@ -29,14 +37,16 @@ func DecodeExternalHeader(header []byte) (protocol.MsgType, uint32) {
 	return msgType, payloadLen
 }
 
-func DecodeInternalHeader(header []byte) (protocol.MsgType, uuid.UUID, uint32) {
-	msgType := protocol.MsgType(header[0])
-	clientId, err := uuid.FromBytes(header[MsgTypeHeaderBytes : MsgTypeHeaderBytes+ClientIDHeaderBytes])
+func DecodeInternalHeader(header []byte) (protocol.MsgType, uuid.UUID, protocol.MsgID, uint32) {
+	msgType := protocol.MsgType(header[msgTypeOffset])
+	clientId, err := uuid.FromBytes(header[clientIDOffset : clientIDOffset+ClientIDHeaderBytes])
 	if err != nil {
-		return msgType, uuid.Nil, 0
+		return msgType, uuid.Nil, protocol.MsgID{}, 0
 	}
-	payloadLen := binary.BigEndian.Uint32(header[MsgTypeHeaderBytes+ClientIDHeaderBytes : MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes])
-	return msgType, clientId, payloadLen
+	var msgID protocol.MsgID
+	copy(msgID[:], header[msgIDOffset:msgIDOffset+MsgIDHeaderBytes])
+	payloadLen := binary.BigEndian.Uint32(header[payloadLenOffset : payloadLenOffset+PayloadSizeHeaderBytes])
+	return msgType, clientId, msgID, payloadLen
 }
 
 type BinaryCodec struct{}
@@ -56,16 +66,20 @@ func (BinaryCodec) EncodeExternalEnvelope(envelope protocol.ExternalEnvelope) ([
 }
 
 func (BinaryCodec) EncodeInternalEnvelope(envelope protocol.InternalEnvelope) ([]byte, error) {
-	buffer := make([]byte, MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes+len(envelope.Payload))
-	buffer[0] = byte(envelope.MsgType)
-	copy(buffer[MsgTypeHeaderBytes:MsgTypeHeaderBytes+ClientIDHeaderBytes], envelope.ClientId[:])
-	binary.BigEndian.PutUint32(buffer[MsgTypeHeaderBytes+ClientIDHeaderBytes:MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes], uint32(len(envelope.Payload)))
-	copy(buffer[MsgTypeHeaderBytes+ClientIDHeaderBytes+PayloadSizeHeaderBytes:], envelope.Payload)
+	buffer := make([]byte, InternalHeaderSize+len(envelope.Payload))
+	buffer[msgTypeOffset] = byte(envelope.MsgType)
+	copy(buffer[clientIDOffset:clientIDOffset+ClientIDHeaderBytes], envelope.ClientId[:])
+	copy(buffer[msgIDOffset:msgIDOffset+MsgIDHeaderBytes], envelope.MsgID[:])
+	binary.BigEndian.PutUint32(buffer[payloadLenOffset:payloadLenOffset+PayloadSizeHeaderBytes], uint32(len(envelope.Payload)))
+	copy(buffer[InternalHeaderSize:], envelope.Payload)
 	return buffer, nil
 }
 
 func (BinaryCodec) DecodeInternalEnvelope(message []byte) (protocol.InternalEnvelope, error) {
-	msgType, ClientId, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
+	if len(message) < InternalHeaderSize {
+		return protocol.InternalEnvelope{}, fmt.Errorf("internal envelope too short: %d bytes (need at least %d)", len(message), InternalHeaderSize)
+	}
+	msgType, ClientId, msgID, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
 	if uint32(len(message)-InternalHeaderSize) < payloadLen {
 		return protocol.InternalEnvelope{}, fmt.Errorf("payload length mismatch: header says %d bytes but only %d bytes remain", payloadLen, len(message)-InternalHeaderSize)
 	}
@@ -73,8 +87,20 @@ func (BinaryCodec) DecodeInternalEnvelope(message []byte) (protocol.InternalEnve
 	return protocol.InternalEnvelope{
 		MsgType:  msgType,
 		ClientId: ClientId,
+		MsgID:    msgID,
 		Payload:  payload,
 	}, nil
+}
+
+// SetEnvelopeMsgID overwrites the MsgID field of an already-framed internal
+// envelope, in place. Used by the PublishRaw path: the envelope is built by an
+// Encode*Envelope helper with a zero MsgID, and the derived id is stamped just
+// before sending. No-op if the buffer is too short to hold an internal header.
+func SetEnvelopeMsgID(envelope []byte, id protocol.MsgID) {
+	if len(envelope) < InternalHeaderSize {
+		return
+	}
+	copy(envelope[msgIDOffset:msgIDOffset+MsgIDHeaderBytes], id[:])
 }
 
 // ====================

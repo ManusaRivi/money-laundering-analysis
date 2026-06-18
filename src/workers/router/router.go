@@ -86,9 +86,9 @@ func (r *Router) Stop() {}
 
 // Private methods
 
-func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, routingKey broker.KeyType, batchLength int) error {
+func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, routingKey broker.KeyType, batchLength int, id protocol.MsgID) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	if err := r.pub.PublishInternal(clientID, msgType, routingKey, payload); err != nil {
+	if err := r.pub.PublishInternalWithID(clientID, msgType, routingKey, payload, id); err != nil {
 		return err
 	}
 	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
@@ -126,7 +126,8 @@ func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]
 		slog.Error("Error marshalling EOF counts", "error", err)
 		return err
 	}
-	return r.encodeAndSendBatch(clientID, protocol.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0)
+	eofID := protocol.StageMsgID(clientID, r.cfg.WorkerPrefix, "eof", 0)
+	return r.encodeAndSendBatch(clientID, protocol.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0, eofID)
 }
 
 func (r *Router) onRetryExceeded(clientID uuid.UUID) error {
@@ -156,11 +157,12 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 
 		slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
 		// Encode and send batch
-		routingKey := broker.KeyType(routingKey)
-		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, routingKey, len(transactions)); err != nil {
+		txID := protocol.DeriveMsgID(envelope.MsgID, routingKey, 0)
+		key := broker.KeyType(routingKey)
+		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, key, len(transactions), txID); err != nil {
 			return err
 		}
-		r.syncEOFController.MessageSentWithKey(envelope.ClientId, routingKey, len(txBatch))
+		// r.syncEOFController.MessageSentWithKey(envelope.ClientId, key, len(txBatch))
 	}
 	return nil
 }

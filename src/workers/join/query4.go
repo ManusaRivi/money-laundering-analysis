@@ -3,6 +3,7 @@ package join
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/google/uuid"
 
@@ -29,6 +30,9 @@ type Query4 struct {
 
 	prevWorkerAmount int
 	eofCounters      map[uuid.UUID]int
+	// stage seeds StageMsgID; includes WorkerID because every replica emits its
+	// own results/EOF on flush.
+	stage string
 }
 
 func NewQuery4(cfg config.WorkerConfig, b broker.Broker) (*Query4, error) {
@@ -38,6 +42,7 @@ func NewQuery4(cfg config.WorkerConfig, b broker.Broker) (*Query4, error) {
 		broker:           b,
 		prevWorkerAmount: cfg.PrevWorkerAmount,
 		eofCounters:      make(map[uuid.UUID]int),
+		stage:            fmt.Sprintf("%s#%d", cfg.WorkerPrefix, cfg.WorkerID),
 	}, nil
 }
 
@@ -103,7 +108,8 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		// 	return fmt.Errorf("error marshalling Query4 EOF: %w", err)
 		// }
 		// return j.broker.Send(*eof)
-		return j.pub.PublishInternal(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil)
+		eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
+		return j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	}
 
 	// accounts := make([]domain.Account, 0, len(client.accountsSet))
@@ -127,23 +133,29 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	// 		return fmt.Errorf("error sending accounts batch: %w", err)
 	// 	}
 	// }
-	subset := make(map[domain.Account]struct{}, BATCH_SIZE)
+	// Sort the accounts so the per-batch MsgIDs (StageMsgID by index) are
+	// reproducible across runs and restarts — map iteration order is not.
+	accounts := make([]domain.Account, 0, len(client.accountsSet))
 	for account := range client.accountsSet {
-		subset[account] = struct{}{}
-		if len(subset) == BATCH_SIZE {
-			slog.Debug("Sending accounts batch to gateway", "batchSize", len(subset), "clientID", clientId)
-			err := j.sendQuery4ResultEnvelope(clientId, subset)
-			if err != nil {
-				return err
-			}
-			subset = make(map[domain.Account]struct{}, BATCH_SIZE)
-		}
+		accounts = append(accounts, account)
 	}
-	if len(subset) > 0 {
-		err := j.sendQuery4ResultEnvelope(clientId, subset)
-		if err != nil {
+	sort.Slice(accounts, func(i, k int) bool {
+		return accounts[i].GetID() < accounts[k].GetID()
+	})
+
+	batchIdx := uint32(0)
+	for start := 0; start < len(accounts); start += BATCH_SIZE {
+		end := min(start+BATCH_SIZE, len(accounts))
+		subset := make(map[domain.Account]struct{}, end-start)
+		for _, account := range accounts[start:end] {
+			subset[account] = struct{}{}
+		}
+		slog.Debug("Sending accounts batch to gateway", "batchSize", len(subset), "clientID", clientId)
+		id := protocol.StageMsgID(clientId, j.stage, "result", batchIdx)
+		if err := j.sendQuery4ResultEnvelope(clientId, subset, id); err != nil {
 			return err
 		}
+		batchIdx++
 	}
 
 	slog.Debug("All accounts sent for client, sending EOF", "clientID", clientId)
@@ -152,7 +164,8 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	delete(j.eofCounters, clientId)
 
 	// eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
-	err := j.pub.PublishInternal(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil)
+	eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
+	err := j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	if err != nil {
 		return err
 	}
@@ -167,12 +180,12 @@ func (j *Query4) handleMessage(msg broker.Message) error {
 	})
 }
 
-func (j *Query4) sendQuery4ResultEnvelope(clientId uuid.UUID, subset map[domain.Account]struct{}) error {
+func (j *Query4) sendQuery4ResultEnvelope(clientId uuid.UUID, subset map[domain.Account]struct{}, id protocol.MsgID) error {
 	envelope, err := j.pub.EncodeQuery4ResultEnvelope(clientId, subset)
 	if err != nil {
 		return fmt.Errorf("error encoding query4 result envelope: %w", err)
 	}
-	if err := j.pub.PublishRaw(broker.KeyNil, envelope); err != nil {
+	if err := j.pub.PublishRawWithID(broker.KeyNil, envelope, id); err != nil {
 		return fmt.Errorf("error sending query4 result envelope: %w", err)
 	}
 	return nil

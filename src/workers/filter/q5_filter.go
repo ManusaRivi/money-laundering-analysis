@@ -93,9 +93,9 @@ func (f *Q5Filter) Stop() {}
 
 // Private methods
 
-func (f *Q5Filter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int) error {
+func (f *Q5Filter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType, payload []byte, batchLength int, id protocol.MsgID) error {
 	slog.Debug("Sending batch to broker:", "batchSize", batchLength, "clientId", clientID, "msgType", msgType)
-	if err := f.pub.PublishInternal(clientID, msgType, broker.KeyNil, payload); err != nil {
+	if err := f.pub.PublishInternalWithID(clientID, msgType, broker.KeyNil, payload, id); err != nil {
 		return err
 	}
 	f.sentCount[clientID] += batchLength
@@ -124,7 +124,8 @@ func (f *Q5Filter) handleTransactionMessage(envelope protocol.InternalEnvelope) 
 	if err != nil {
 		return fmt.Errorf("encoding filtered transaction batch: %w", err)
 	}
-	return f.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx))
+	txID := protocol.DeriveMsgID(envelope.MsgID, string(broker.KeyNil), 0)
+	return f.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx), txID)
 }
 
 func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
@@ -162,7 +163,8 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		if err != nil {
 			return fmt.Errorf("encoding EOF counts for EOF envelope: %w", err)
 		}
-		if err := f.pub.PublishInternal(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload); err != nil {
+		eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", f.cfg.WorkerPrefix, f.cfg.WorkerID), "eof", 0)
+		if err := f.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID); err != nil {
 			return fmt.Errorf("sending EOF message to broker: %w", err)
 		}
 		delete(f.workerEofReceived, clientID)
