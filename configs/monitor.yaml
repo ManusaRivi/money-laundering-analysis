@@ -3,13 +3,15 @@ worker:
 monitor:
   tcp_host: "0.0.0.0"
   tcp_port: 9001
+  ping_interval: "1.5s"
+  ping_timeout: "500ms"
+
   udp_host: "0.0.0.0"
   udp_port: 9000
+  rabbitmq_host: "rabbitmq"
+  rabbitmq_port: 5672
   heartbeat_timeout: "15s"
   check_interval: "5s"
   failure_threshold: 3
   restart_cooldown: "15s"
-  ping_interval: "1.5s"
-  ping_timeout: "500ms"
-  rabbitmq_host: "rabbitmq"
-  rabbitmq_port: 5672
+  

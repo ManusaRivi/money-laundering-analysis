@@ -127,7 +127,10 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		}
 		selfKey := fmt.Sprintf("%s_%d", workerCfg.WorkerPrefix, workerCfg.WorkerID)
 
-		worker := monitor.NewMonitor(workercfg.Monitor, selfKey, workerCfg.WorkerID, workercfg.Heartbeat.MonitorHosts)
+		worker, err := monitor.New(workercfg.Monitor, selfKey, workerCfg.WorkerID, workercfg.Heartbeat.MonitorHosts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Monitor: %w", err)
+		}
 		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", workerCfg.Type)

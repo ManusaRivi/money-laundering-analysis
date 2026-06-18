@@ -14,6 +14,23 @@ const (
 	MsgCoordinator
 )
 
+func (t MsgType) String() string {
+	switch t {
+	case MsgPing:
+		return "Ping"
+	case MsgPong:
+		return "Pong"
+	case MsgAlive:
+		return "Alive"
+	case MsgElection:
+		return "Election"
+	case MsgCoordinator:
+		return "Coordinator"
+	default:
+		return fmt.Sprintf("Unknown(%d)", t)
+	}
+}
+
 type Message struct {
 	Type     MsgType
 	SenderID int

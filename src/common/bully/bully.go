@@ -46,11 +46,12 @@ func New(cfg Config) *Bully {
 	b := &Bully{
 		cfg:      cfg,
 		selfID:   cfg.SelfID,
-		leaderID: -1,
-		log:      slog.With("component", "bully"),
+		leaderID: 0,
+		isLeader: cfg.SelfID == 0,
+		log:      slog.With("component", "Bully"),
 	}
 	for _, p := range cfg.Peers {
-		b.peers = append(b.peers, &peerState{id: p.ID, addr: p.Addr})
+		b.peers = append(b.peers, &peerState{id: p.ID, addr: p.Addr, alive: true})
 	}
 	return b
 }
@@ -66,8 +67,7 @@ func (b *Bully) Start(ctx context.Context) error {
 	}
 	b.listener = listener
 
-	b.log.Info("bully started", "selfID", b.selfID, "peers", len(b.peers), "listenAddr", b.cfg.ListenAddr)
-
+	b.log.Info("bully started", "selfID", b.selfID, "peers", len(b.peers), "listenAddr", b.cfg.ListenAddr, "leader", b.isLeader)
 	go b.acceptLoop()
 	go b.pingLoop()
 
@@ -121,8 +121,14 @@ func (b *Bully) handleConn(conn net.Conn) {
 
 	msg, err := Decode(buf)
 	if err != nil {
+		b.log.Warn("invalid message", "error", err)
 		return
 	}
+	
+	// if msg.Type != 0 {
+	// 	b.log.Debug("message received", "type", msg.Type, "senderID", msg.SenderID, "leaderID", msg.LeaderID)
+	// }
+	b.log.Debug("message received", "type", msg.Type, "senderID", msg.SenderID, "leaderID", msg.LeaderID)
 
 	switch msg.Type {
 	case MsgPing:
@@ -145,12 +151,16 @@ func (b *Bully) handlePing(conn net.Conn, msg Message) {
 			break
 		}
 	}
-	if msg.LeaderID >= 0 && b.leaderID < 0 {
-		b.leaderID = msg.LeaderID
-	}
+	leaderID := b.leaderID
 	b.mu.Unlock()
 
-	resp := Encode(Message{Type: MsgPong, SenderID: b.selfID, LeaderID: b.leaderID})
+	if msg.LeaderID >= 0 && msg.LeaderID != leaderID {
+		b.log.Info("conflict: ping claims other leader, starting election",
+			"claimedLeader", msg.LeaderID, "currentLeader", leaderID, "sender", msg.SenderID)
+		go b.startElection()
+	}
+
+	resp := Encode(Message{Type: MsgPong, SenderID: b.selfID, LeaderID: leaderID})
 	conn.Write(resp)
 }
 
@@ -192,28 +202,13 @@ func (b *Bully) pingLoop() {
 	defer ticker.Stop()
 
 	time.Sleep(500 * time.Millisecond)
-	noRespRounds := 0
 
 	for {
 		select {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
-			anyAlive := b.pingPeers()
-			if anyAlive {
-				noRespRounds = 0
-				continue
-			}
-			noRespRounds++
-
-			b.mu.RLock()
-			unknown := b.leaderID < 0
-			b.mu.RUnlock()
-
-			if unknown && noRespRounds >= 3 {
-				b.startElection()
-				noRespRounds = 0
-			}
+			b.pingPeers()
 		}
 	}
 }
@@ -272,7 +267,7 @@ func (b *Bully) pingPeer(peer *peerState) bool {
 	return true
 }
 
-func (b *Bully) handlePong(peerID int, msg Message) {
+func (b *Bully) handlePong(peerID int, _ Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -282,11 +277,6 @@ func (b *Bully) handlePong(peerID int, msg Message) {
 			p.missedPings = 0
 			break
 		}
-	}
-
-	if msg.LeaderID >= 0 && b.leaderID < 0 {
-		b.leaderID = msg.LeaderID
-		b.log.Info("learned leader from peer", "leaderID", b.leaderID, "peerID", peerID)
 	}
 }
 
@@ -348,7 +338,11 @@ func (b *Bully) sendElection(peer *peerState) bool {
 	}
 	defer conn.Close()
 
-	msg := Encode(Message{Type: MsgElection, SenderID: b.selfID, LeaderID: -1})
+	b.mu.RLock()
+	leaderID := b.leaderID
+	b.mu.RUnlock()
+
+	msg := Encode(Message{Type: MsgElection, SenderID: b.selfID, LeaderID: leaderID})
 	if _, err := conn.Write(msg); err != nil {
 		return false
 	}

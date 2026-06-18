@@ -3,5 +3,5 @@ heartbeat:
     - "monitor_0"
     - "monitor_1"
     - "monitor_2"
-  monitor_port: 9001
+  monitor_port: 9000
   interval: 5

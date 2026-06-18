@@ -29,20 +29,13 @@ type Monitor struct {
 	cancel           context.CancelFunc
 	selfKey          string
 	selfID           int
-	peers            []bully.Peer
 	failureThreshold int
 }
 
-func NewMonitor(cfg *config.MonitorConfig, selfKey string, selfID int, monitorHosts []string) *Monitor {
-	var peers []bully.Peer
-	for i, host := range monitorHosts {
-		if i == selfID {
-			continue
-		}
-		peers = append(peers, bully.Peer{
-			ID:   i,
-			Addr: fmt.Sprintf("%s:%d", host, cfg.TcpPort),
-		})
+func New(cfg *config.MonitorConfig, selfKey string, selfID int, monitorHosts []string) (*Monitor, error) {
+	bullyLeader, err := newBully(monitorHosts, selfID, cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Monitor{
@@ -54,9 +47,39 @@ func NewMonitor(cfg *config.MonitorConfig, selfKey string, selfID int, monitorHo
 		},
 		selfKey:          selfKey,
 		selfID:           selfID,
-		peers:            peers,
+		bully:            bullyLeader,
 		failureThreshold: cfg.FailureThreshold,
+	}, nil
+}
+
+func newBully(monitorHosts []string, selfID int, cfg *config.MonitorConfig) (*bully.Bully, error) {
+	var peers []bully.Peer
+	for i, host := range monitorHosts {
+		if i == selfID {
+			continue
+		}
+		peers = append(peers, bully.Peer{
+			ID:   i,
+			Addr: fmt.Sprintf("%s:%d", host, cfg.TcpPort),
+		})
 	}
+	pingInterval, err := time.ParseDuration(cfg.PingInterval)
+	if err != nil {
+		return nil, fmt.Errorf("monitor: invalid ping_interval: %w", err)
+	}
+	pingTimeout, err := time.ParseDuration(cfg.PingTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("monitor: invalid ping_timeout: %w", err)
+	}
+
+	newBully := bully.New(bully.Config{
+		SelfID:       selfID,
+		Peers:        peers,
+		ListenAddr:   fmt.Sprintf("%s:%d", cfg.TcpHost, cfg.TcpPort),
+		PingInterval: pingInterval,
+		PingTimeout:  pingTimeout,
+	})
+	return newBully, nil
 }
 
 func (m *Monitor) Run() error {
@@ -89,26 +112,7 @@ func (m *Monitor) Run() error {
 
 	slog.Info("monitor listening for heartbeats", "addr", addr, "self", m.selfKey)
 
-	pingInterval, err := time.ParseDuration(m.cfg.PingInterval)
-	if err != nil {
-		cancel()
-		m.conn.Close()
-		return fmt.Errorf("monitor: invalid ping_interval: %w", err)
-	}
-	pingTimeout, err := time.ParseDuration(m.cfg.PingTimeout)
-	if err != nil {
-		cancel()
-		m.conn.Close()
-		return fmt.Errorf("monitor: invalid ping_timeout: %w", err)
-	}
 
-	m.bully = bully.New(bully.Config{
-		SelfID:       m.selfID,
-		Peers:        m.peers,
-		ListenAddr:   fmt.Sprintf("%s:%d", m.cfg.TcpHost, m.cfg.TcpPort),
-		PingInterval: pingInterval,
-		PingTimeout:  pingTimeout,
-	})
 	if err := m.bully.Start(ctx); err != nil {
 		cancel()
 		m.conn.Close()
@@ -165,7 +169,7 @@ func (m *Monitor) handleHeartbeat(data []byte) {
 	if key == m.selfKey {
 		return
 	}
-	slog.Debug("monitor: heartbeat received", "key", key)
+	// slog.Debug("monitor: heartbeat received", "key", key)
 	m.state.mu.Lock()
 	m.state.lastSeen[key] = time.Now()
 	m.state.failures[key] = 0
