@@ -22,12 +22,13 @@ broker:
   exchange_type: topic
   input_keys:
     - tx.usd
-  prefetch: 300 
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false
   no_wait: false
   internal: false
+  persistent: true
 
 worker:
   type: "DateRangeFilter"

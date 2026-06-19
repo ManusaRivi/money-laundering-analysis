@@ -13,5 +13,3 @@ broker:
 
 worker:
   type: "ScatterGatherFilter"
-  params:
-    amount: 2

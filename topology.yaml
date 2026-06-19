@@ -1,22 +1,20 @@
+env:
+  SCATTER_GATHER_THRESHOLD: "5"
+
 clients:
-  count: 2
-  # env:
-  #   TRANSACTIONS_DATASET_PATH: /app/.data/otro_dataset.csv
-  #   ACCOUNTS_DATASET_PATH: /app/.data/otras_cuentas.csv
-  #   OUTPUT_PATH: /app/.output/cliente_personalizado
-  #   LOG_LEVEL: debug
+  count: 3
 
 pipelines:
   query1:
 #    - name: cleaner
 #      amount: 2
     - name: filter
-      amount: 2
+      amount: 3
   query2:
 #    - name: cleaner
 #      amount: 2
     - name: router
-      amount: 2
+      amount: 3
     - name: aggregator
       amount: 3
     - name: join
@@ -46,11 +44,11 @@ pipelines:
 #    - name: cleaner
 #      amount: 1
     - name: router
-      amount: 1
+      amount: 3
     - name: aggregator
-      amount: 3
+      amount: 4
     - name: accumulator
-      amount: 3
+      amount: 4
     - name: filter
       amount: 1
     - name: join
@@ -59,9 +57,9 @@ pipelines:
 #    - name: cleaner
 #      amount: 1
     - name: format_filter
-      amount: 1
+      amount: 3
     - name: router
-      amount: 2
+      amount: 3
     - name: converter
       amount: 3
     - name: amount_filter

@@ -1,8 +1,8 @@
-accounts_dataset_path: "../.data/LI-Small_accounts.csv"
-transactions_dataset_path: "../.data/LI-Small_Trans.csv"
+accounts_dataset_path: "../.data/HI-Medium_accounts.csv"
+transactions_dataset_path: "../.data/HI-Medium_Trans.csv"
 output_path: "../.output"
-transaction_batch_size: 100
-account_batch_size: 100
+transaction_batch_size: 500
+account_batch_size: 500
 server:
   host: "gateway"
   port: 8080

@@ -25,6 +25,7 @@ broker:
   exclusive: false
   no_wait: false
   internal: false
+  lazy: true
 
 worker:
   type: "AvgFormatFilter"

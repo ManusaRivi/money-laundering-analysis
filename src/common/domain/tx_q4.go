@@ -29,11 +29,12 @@ type TxQ4PhaseOne struct {
 	Transaction *protocol.Transaction
 }
 
-type TxQ4PhaseTwo struct {
-	Key        TxQ4PairKey
-	Count      int
-	SrcAccount *Account
-	DstAccount *Account
+// TxQ4PairCount carries one pair's partial bridge count from the scatter-gather
+// aggregator to the accumulator. Accounts are not included: each side of the key
+// is an Account.GetID(), so they are reconstructed downstream from the key.
+type TxQ4PairCount struct {
+	Key   TxQ4PairKey
+	Count int
 }
 
 type TxQ4PhaseThree struct {

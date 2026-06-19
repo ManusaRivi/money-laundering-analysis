@@ -54,6 +54,8 @@ type BrokerConfig struct {
 	Exclusive    bool     `yaml:"exclusive"`
 	NoWait       bool     `yaml:"no_wait"`
 	Internal     bool     `yaml:"internal"`
+	Lazy         bool     `yaml:"lazy"`
+	Persistent   bool     `yaml:"persistent"`
 
 	WorkerID         int    `yaml:"-"`
 	WorkerPrefix     string `yaml:"-"`
@@ -76,6 +78,7 @@ type WorkerConfig struct {
 	PrevWorkerPrefix string                  `yaml:"-"`
 	NextWorkerAmount int                     `yaml:"-"`
 	NextWorkerPrefix string                  `yaml:"-"`
+	Threshold        int                     `yaml:"-"` // from SCATTER_GATHER_THRESHOLD; shared Q4 threshold
 	SyncEOFConfig    SyncEOFControllerConfig `yaml:"-"`
 }
 
@@ -283,6 +286,14 @@ func applyEnv(cfg *Config) error {
 		}
 		brokerConfig.NextWorkerAmount = amount
 		workerConfig.NextWorkerAmount = amount
+	}
+
+	if value := os.Getenv("SCATTER_GATHER_THRESHOLD"); value != "" {
+		threshold, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid SCATTER_GATHER_THRESHOLD: %w", err)
+		}
+		workerConfig.Threshold = threshold
 	}
 
 	prefix := os.Getenv("WORKER_PREFIX")

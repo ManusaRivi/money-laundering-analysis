@@ -2,6 +2,7 @@ package aggregator
 
 import (
 	"log/slog"
+	"strings"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
@@ -26,7 +27,25 @@ const BATCH_SIZE = 1000
 
 type clientScattergather struct {
 	ID          uuid.UUID
-	accumulator map[domain.TxQ4PairKey]*domain.TxQ4PairEntry
+	accumulator map[domain.TxQ4PairKey]int
+	intern      map[string]string
+}
+
+// internStr returns a single canonical copy of s, so repeated account IDs across
+// many pair keys share their backing bytes instead of each holding a copy.
+func (c *clientScattergather) internStr(s string) string {
+	if canon, ok := c.intern[s]; ok {
+		return canon
+	}
+	c.intern[s] = s
+	return s
+}
+
+// accountFromID reverses Account.GetID ("BankID-ID"), splitting on the first
+// '-'. Bank IDs in the dataset contain no '-', so this round-trips exactly.
+func accountFromID(id string) domain.Account {
+	bankID, accID, _ := strings.Cut(id, "-")
+	return domain.Account{BankID: bankID, ID: accID}
 }
 
 type ScatterGather struct {
@@ -80,7 +99,8 @@ func (a *ScatterGather) getClient(clientID uuid.UUID) *clientScattergather {
 	}
 	c := &clientScattergather{
 		ID:          clientID,
-		accumulator: make(map[domain.TxQ4PairKey]*domain.TxQ4PairEntry),
+		accumulator: make(map[domain.TxQ4PairKey]int),
+		intern:      make(map[string]string),
 	}
 	a.clients[clientID] = c
 	return c
@@ -91,31 +111,23 @@ func (a *ScatterGather) deleteClient(clientID uuid.UUID) {
 }
 
 func (a *ScatterGather) handleTxQ4Message(envelope protocol.InternalEnvelope) error {
-	// var txQ4 domain.TxQ4PhaseTwo
-	// if err := envelope.UnmarshalData(&txQ4); err != nil {
-	// 	slog.Error("Error unmarshalling TxQ4 data", "error", err)
-	// 	return err
-	// }
-	txQ4, err := a.pub.DecodeTxQ4PhaseTwoEnvelope(envelope.Payload)
+	pairs, err := a.pub.DecodeTxQ4PhaseTwoBatch(envelope.Payload)
 	if err != nil {
-		slog.Error("Error decoding TxQ4 envelope", "error", err)
+		slog.Error("Error decoding TxQ4 batch", "error", err)
 		return err
 	}
-	slog.Debug("Received TxQ4 message", "type", txQ4.Key)
+	slog.Debug("Received TxQ4 batch", "clientID", envelope.ClientId, "batchSize", len(pairs))
 
 	client := a.getClient(envelope.ClientId)
-	entry, ok := client.accumulator[txQ4.Key]
-	if !ok {
-		entry = &domain.TxQ4PairEntry{
-			SrcAccount: *txQ4.SrcAccount,
-			DstAccount: *txQ4.DstAccount,
+	for _, pc := range pairs {
+		key := domain.TxQ4PairKey{
+			Src: client.internStr(pc.Key.Src),
+			Dst: client.internStr(pc.Key.Dst),
 		}
-		client.accumulator[txQ4.Key] = entry
+		client.accumulator[key] += pc.Count
 	}
-	entry.Count += txQ4.Count
 
 	return nil
-
 }
 
 func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) error {
@@ -133,11 +145,14 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 		slog.Debug("Sending Scatter-Gather to phase three", "clientID", clientID, "scatter_gather_count", len(scatterGather))
 
 		batch := make(map[string]*domain.TxQ4PairEntry, BATCH_SIZE)
-		for pk, entry := range scatterGather {
-			batch[pk.Key()] = entry
+		for pk, count := range scatterGather {
+			batch[pk.Key()] = &domain.TxQ4PairEntry{
+				Count:      count,
+				SrcAccount: accountFromID(pk.Src),
+				DstAccount: accountFromID(pk.Dst),
+			}
 			if len(batch) >= BATCH_SIZE {
 				txQ4PhaseThree := domain.TxQ4PhaseThree{ScatterGather: batch}
-				// msg, err := inner.MarshalTxQ4PhaseThreePacket(clientID, broker.KeyNil, txQ4PhaseThree)
 				envelope, err := a.pub.EncodeTxQ4PhaseThreeEnvelope(clientID, txQ4PhaseThree)
 				if err != nil {
 					slog.Error("Error encoding Scatter-Gather batch", "error", err)
@@ -167,9 +182,6 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 	}
 
 	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", clientID, "msg_sent", msgSent)
-	// eofMsg, err := inner.MarshalEOFPacket(clientID, domain.EOFCounts{
-	// 	Counts: map[broker.KeyType]int{broker.KeyNil: msgSent},
-	// })
 	eofCounts := map[broker.KeyType]int{broker.KeyNil: msgSent}
 	eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, eofCounts)
 	if err != nil {

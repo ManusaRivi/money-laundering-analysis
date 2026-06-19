@@ -115,33 +115,20 @@ func (r *Spliter) Stop() {
 
 // Private methods
 
-func (r *Spliter) routeByField(field string, tx protocol.Transaction, clientID uuid.UUID) error {
-	value := tx.GetTransactionField(field)
-	if value == "" {
-		slog.Error("Transaction missing routing field", "field", field, "transaction", tx)
-		return fmt.Errorf("transaction missing routing field: %s", field)
-	}
-	routingKey := r.shardByValue(value)
-
-	slog.Debug("Routing transaction", "routing_key", routingKey)
-
-	txQ4Type := domain.GetTypeTxQ4ByField(field)
-	slog.Debug("Encoding TxQ4 packet", "type", txQ4Type, "field_used", field)
-	txQ4 := domain.TxQ4PhaseOne{
-		Type:        txQ4Type,
-		Transaction: &tx,
-	}
-	// envelope, err := inner.MarshalTxQ4PhaseOnePacket(clientID, broker.KeyType(routingKey), txQ4)
-	envelope, err := r.pub.EncodeTxQ4PhaseOneEnvelope(clientID, txQ4)
+// sendPhaseOneBatch ships one batched phase-one message for a (type, shard)
+// group. The EOF count is the number of transactions in the batch, so the
+// per-key accounting matches the old one-message-per-transaction behaviour.
+func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, routingKey broker.KeyType, txs []protocol.Transaction) error {
+	envelope, err := r.pub.EncodeTxQ4PhaseOneBatchEnvelope(clientID, txType, txs)
 	if err != nil {
-		slog.Error("Error encoding TxQ4 packet", "error", err)
+		slog.Error("Error encoding TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	if err := r.pub.PublishRaw(broker.KeyType(routingKey), envelope); err != nil {
-		slog.Error("Error sending message to broker", "error", err)
+	if err := r.pub.PublishRaw(routingKey, envelope); err != nil {
+		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, broker.KeyType(routingKey), 1)
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, len(txs))
 	return nil
 }
 
@@ -173,6 +160,13 @@ func (r *Spliter) shardByValue(value string) string {
 // 	return nil
 // }
 
+// bucketKey groups transactions heading to the same phase-one worker with the
+// same scatter/gather role, so they can be shipped as one batch.
+type bucketKey struct {
+	txType     domain.TypeTxQ4
+	routingKey string
+}
+
 func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
 	txBatch, err := r.pub.DecodeTransactionBatch(envelope.Payload)
@@ -181,13 +175,31 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", clientId)
+
+	// Group the whole inbound batch by (type, shard) before sending, so each
+	// phase-one worker gets one message per role instead of one per transaction.
+	buckets := make(map[bucketKey][]protocol.Transaction)
 	for _, tx := range txBatch {
 		for _, field := range r.fieldsToRouteBy {
-			if err := r.routeByField(field, tx, clientId); err != nil {
-				return err
+			value := tx.GetTransactionField(field)
+			if value == "" {
+				slog.Error("Transaction missing routing field", "field", field, "transaction", tx)
+				return fmt.Errorf("transaction missing routing field: %s", field)
 			}
+			bk := bucketKey{
+				txType:     domain.GetTypeTxQ4ByField(field),
+				routingKey: r.shardByValue(value),
+			}
+			buckets[bk] = append(buckets[bk], tx)
 		}
 	}
+
+	for bk, txs := range buckets {
+		if err := r.sendPhaseOneBatch(clientId, bk.txType, broker.KeyType(bk.routingKey), txs); err != nil {
+			return err
+		}
+	}
+
 	r.syncEOFController.MessageReceived(clientId, len(txBatch))
 
 	return nil

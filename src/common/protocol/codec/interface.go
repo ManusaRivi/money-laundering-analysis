@@ -26,11 +26,16 @@ type Codec interface {
 	EncodeTransactionBatch(transactions []protocol.Transaction) ([]byte, error)
 	DecodeTransactionBatch(payload []byte) ([]protocol.Transaction, error)
 
-	EncodeTxQ4PhaseOneEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseOne) ([]byte, error)
-	DecodeTxQ4PhaseOneEnvelope(payload []byte) (domain.TxQ4PhaseOne, error)
+	EncodeTxQ4PhaseOneBatchEnvelope(clientId uuid.UUID, txType domain.TypeTxQ4, txs []protocol.Transaction) ([]byte, error)
+	DecodeTxQ4PhaseOneBatch(payload []byte) (domain.TypeTxQ4, []protocol.Transaction, error)
 
-	EncodeTxQ4PhaseTwoEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseTwo) ([]byte, error)
-	DecodeTxQ4PhaseTwoEnvelope(payload []byte) (domain.TxQ4PhaseTwo, error)
+	EncodeTxQ4PhaseTwoBatchEnvelope(clientId uuid.UUID, pairs []domain.TxQ4PairCount) ([]byte, error)
+	DecodeTxQ4PhaseTwoBatch(payload []byte) ([]domain.TxQ4PairCount, error)
+
+	EncodeQ4HeavyBatchEnvelope(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account) ([]byte, error)
+	DecodeQ4HeavyBatch(payload []byte) (senderID int, role uint8, accounts []domain.Account, err error)
+	EncodeQ4HeavyDoneEnvelope(clientID uuid.UUID, senderID int) ([]byte, error)
+	DecodeQ4HeavyDone(payload []byte) (int, error)
 
 	EncodeTxQ4PhaseThreeEnvelope(clientId uuid.UUID, txQ4 domain.TxQ4PhaseThree) ([]byte, error)
 	DecodeTxQ4PhaseThreeEnvelope(payload []byte) (domain.TxQ4PhaseThree, error)

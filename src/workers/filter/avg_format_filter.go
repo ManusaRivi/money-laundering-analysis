@@ -38,6 +38,9 @@ type AvgFormatFilter struct {
 	syncEOFKey        broker.KeyType
 
 	q3Buffer *batch.Buffer[protocol.Query3Result]
+
+	txGate     chan struct{}
+	txGateOnce sync.Once
 }
 
 func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBroker broker.Broker) (*AvgFormatFilter, error) {
@@ -63,6 +66,7 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		avgReceivedByClient: make(map[uuid.UUID]int),
 		txCacheByClient:     make(map[uuid.UUID]map[string][]protocol.Transaction),
 		syncEOFKey:          eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
+		txGate:              make(chan struct{}),
 	}
 	f.q3Buffer = batch.NewBuffer(batch.DefaultSize, f.flushQuery3Results)
 	return f, nil
@@ -101,6 +105,8 @@ func (f *AvgFormatFilter) Run() error {
 	}()
 
 	go func() {
+		<-f.txGate
+		slog.Info("Averages complete; starting transaction consumption")
 		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
 			if err := f.handleTxMessage(msg); err != nil {
 				nack()
@@ -331,6 +337,7 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID) {
 			close(ch)
 			delete(f.avgDoneChByClient, clientID)
 		}
+		f.txGateOnce.Do(func() { close(f.txGate) })
 	}
 }
 

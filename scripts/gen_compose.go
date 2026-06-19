@@ -24,7 +24,8 @@ type ClientGroup struct {
 }
 
 type Topology struct {
-	Clients   ClientGroup          `yaml:"clients"`
+	Env       map[string]string      `yaml:"env"` // injected into every worker
+	Clients   ClientGroup            `yaml:"clients"`
 	Pipelines map[string][]WorkerDef `yaml:"pipelines"`
 }
 
@@ -119,6 +120,9 @@ func main() {
 				if wi.HasNext {
 					env["NEXT_WORKER_PREFIX"] = wi.NextWorkerPrefix
 					env["NEXT_WORKER_AMOUNT"] = strconv.Itoa(wi.NextWorkerAmount)
+				}
+				for k, v := range topo.Env { // global, before per-stage so stages can override
+					env[k] = v
 				}
 				for k, v := range wd.Env {
 					env[k] = v
