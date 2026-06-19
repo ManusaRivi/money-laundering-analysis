@@ -35,6 +35,31 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+
+{{- $monitors := 3}}
+{{- range $i := until $monitors}}
+  monitor_{{$i}}:
+    build:
+      context: .
+      dockerfile: src/cmd/node/Dockerfile
+    container_name: monitor_{{$i}}
+    environment:
+      - LOG_LEVEL=debug
+      - CONFIG_PATH=/app/config.yaml
+      - SYSTEM_CONFIG_PATH=/app/system.yaml
+      - WORKER_PREFIX=monitor
+      - ID={{$i}}
+      - WORKER_AMOUNT={{$monitors}}
+    volumes:
+      - ./configs/monitor.yaml:/app/config.yaml
+      - ./configs/system.yaml:/app/system.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - money-laundering-analysis-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+{{- end}}
 {{- range .Clients}}
   client_{{.ID}}:
     build:
@@ -67,16 +92,20 @@ services:
 {{- range .EnvSorted}}
       - {{.}}
 {{- end}}
+      - SYSTEM_CONFIG_PATH=/app/system.yaml
     volumes:
       - {{.VolumeMapping}}
 {{- range .ExtraVolumes}}
       - {{.}}
 {{- end}}
+      - ./configs/system.yaml:/app/system.yaml:ro
     networks:
       - money-laundering-analysis-net
     depends_on:
       rabbitmq:
         condition: service_healthy
+      monitor_0:
+        condition: service_started
 {{- end}}
 networks:
   money-laundering-analysis-net:
