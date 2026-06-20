@@ -1,20 +1,23 @@
 env:
   SCATTER_GATHER_THRESHOLD: "5"
 
+monitors:
+  amount: 3
+
 clients:
-  count: 3
+  count: 2
 
 pipelines:
   query1:
-#    - name: cleaner
-#      amount: 2
+    - name: cleaner
+      amount: 2
     - name: filter
       amount: 3
   query2:
-#    - name: cleaner
-#      amount: 2
+    - name: cleaner
+      amount: 2
     - name: router
-      amount: 3
+      amount: 2
     - name: aggregator
       amount: 3
     - name: join
@@ -27,13 +30,13 @@ pipelines:
     - name: filter
       amount: 3
   query3a:
-#    - name: cleaner
-#      amount: 3
+    - name: cleaner
+      amount: 3
     - name: filter
       amount: 3
   query3b:
-#    - name: cleaner
-#      amount: 3
+    - name: cleaner
+      amount: 3
     - name: router
       amount: 3
     - name: aggregator
@@ -41,21 +44,21 @@ pipelines:
     - name: filter
       amount: 3
   query4:
-#    - name: cleaner
-#      amount: 1
+    - name: cleaner
+      amount: 1
     - name: router
-      amount: 3
+      amount: 1
     - name: aggregator
-      amount: 4
+      amount: 3
     - name: accumulator
-      amount: 4
+      amount: 3
     - name: filter
       amount: 1
     - name: join
       amount: 1
   query5:
-#    - name: cleaner
-#      amount: 1
+    - name: cleaner
+      amount: 1
     - name: format_filter
       amount: 3
     - name: router

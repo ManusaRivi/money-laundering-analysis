@@ -58,6 +58,10 @@ type TemplateData struct {
 }
 
 func main() {
+	if _, err := os.Stat("topology.yaml"); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "error: topology.yaml does not exist\n")
+		os.Exit(1)
+	}
 	topoData, err := os.ReadFile("topology.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading topology.yaml: %v\n", err)
