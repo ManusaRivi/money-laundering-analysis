@@ -1,12 +1,24 @@
 package broker
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+const (
+	connectMaxAttempts = 10
+	connectBaseDelay   = 500 * time.Millisecond
+	connectMaxDelay    = 5 * time.Second
+
+	backoffExponent = 2
 )
 
 var (
@@ -105,9 +117,24 @@ func connectRabbit(rawURL string) (*amqp.Connection, *amqp.Channel, error) {
 		return nil, nil, fmt.Errorf("invalid rabbitmq url: %s", rawURL)
 	}
 
-	conn, err := amqp.Dial(rawURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to connect to rabbitmq: %w", err)
+	var conn *amqp.Connection
+	delay := connectBaseDelay
+	for attempt := 1; ; attempt++ {
+		conn, err = amqp.Dial(rawURL)
+		if err == nil {
+			break
+		}
+		if attempt >= connectMaxAttempts {
+			return nil, nil, fmt.Errorf("failed to connect to rabbitmq after %d attempts: %w", attempt, err)
+		}
+		slog.Warn("rabbitmq dial failed, retrying", "attempt", attempt, "delay", delay, "err", err)
+		time.Sleep(delay)
+		if delay < connectMaxDelay {
+			delay *= backoffExponent
+			if delay > connectMaxDelay {
+				delay = connectMaxDelay
+			}
+		}
 	}
 
 	channel, err := conn.Channel()
@@ -154,4 +181,46 @@ func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, routingKeys 
 	}
 
 	return nil
+}
+
+func classifyPublishErr(err error) error {
+	if errors.Is(err, amqp.ErrClosed) {
+		return ErrBrokerDisconnected
+	}
+	return ErrBrokerMessage
+}
+
+func publishMessage(mu *sync.Mutex, ch *amqp.Channel, persistent bool, exchange, routingKey string, msg Message) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	publishing := amqp.Publishing{
+		ContentType: msg.contentTypeOrDefault(),
+		Body:        msg.Body,
+	}
+
+	if !persistent {
+		if err := ch.PublishWithContext(ctx, exchange, routingKey, false, false, publishing); err != nil {
+			return classifyPublishErr(err)
+		}
+		return nil
+	}
+
+	publishing.DeliveryMode = amqp.Persistent
+	dc, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, false, false, publishing)
+	if err != nil {
+		return classifyPublishErr(err)
+	}
+	select {
+	case <-dc.Done():
+		if !dc.Acked() {
+			return ErrBrokerMessage
+		}
+		return nil
+	case <-ctx.Done():
+		return ErrBrokerDisconnected
+	}
 }

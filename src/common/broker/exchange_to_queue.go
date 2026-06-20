@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -26,6 +25,7 @@ type exchangeToQueueBroker struct {
 	state          consumerState
 	consumerTag    string
 	mu             sync.Mutex
+	publishMu      sync.Mutex
 	config         config.BrokerConfig
 }
 
@@ -57,6 +57,15 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		consumeChannel.Close()
 		conn.Close()
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
+	}
+
+	if cfg.Persistent {
+		if err := produceChannel.Confirm(false); err != nil {
+			produceChannel.Close()
+			consumeChannel.Close()
+			conn.Close()
+			return nil, fmt.Errorf("failed to enable publisher confirms: %w", err)
+		}
 	}
 
 	if cfg.Prefetch == 0 {
@@ -189,30 +198,7 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	deliveryMode := amqp.Transient
-	if qb.config.Persistent {
-		deliveryMode = amqp.Persistent
-	}
-	if err := qb.produceChannel.PublishWithContext(
-		ctx,
-		"",
-		qb.outputQueue,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  msg.contentTypeOrDefault(),
-			DeliveryMode: deliveryMode,
-			Body:         msg.Body,
-		},
-	); err != nil {
-		if errors.Is(err, amqp.ErrClosed) {
-			return ErrBrokerDisconnected
-		}
-		return ErrBrokerMessage
-	}
-	return nil
+	return publishMessage(&qb.publishMu, qb.produceChannel, qb.config.Persistent, "", qb.outputQueue, msg)
 }
 
 func (qb *exchangeToQueueBroker) Close() error {
