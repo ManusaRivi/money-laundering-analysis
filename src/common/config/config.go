@@ -14,7 +14,6 @@ type MonitoringConfig struct {
 }
 
 type BullyParams struct {
-	Hosts        []string `yaml:"hosts"`
 	TcpHost      string   `yaml:"tcp_host"`
 	TcpPort      int      `yaml:"tcp_port"`
 	PingInterval string   `yaml:"ping_interval"`

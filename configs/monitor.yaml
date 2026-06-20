@@ -2,10 +2,6 @@ worker:
   type: "Monitor"
   params:
     bully:
-      hosts:
-        - "monitor_0"
-        - "monitor_1"
-        - "monitor_2"
       tcp_host: "0.0.0.0"
       tcp_port: 9001
       ping_interval: "1.5s"

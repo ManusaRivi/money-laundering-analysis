@@ -131,7 +131,7 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		}
 		selfKey := fmt.Sprintf("%s_%d", workerCfg.WorkerPrefix, workerCfg.WorkerID)
 
-		worker, err := monitor.New(mp, selfKey, workerCfg.WorkerID)
+		worker, err := monitor.New(mp, selfKey, workerCfg.WorkerID, workerCfg.WorkerPrefix, workerCfg.WorkerAmount)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Monitor: %w", err)
 		}

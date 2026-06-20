@@ -35,7 +35,7 @@ type workersFile struct {
 	Workers []string `yaml:"workers"`
 }
 
-func New(mp *config.MonitorWorkerParams, selfKey string, selfID int) (*Monitor, error) {
+func New(mp *config.MonitorWorkerParams, selfKey string, selfID int, workerPrefix string, workerAmount int) (*Monitor, error) {
 	if mp.Monitoring.FailureThreshold == 0 {
 		mp.Monitoring.FailureThreshold = 3
 	}
@@ -61,7 +61,7 @@ func New(mp *config.MonitorWorkerParams, selfKey string, selfID int) (*Monitor, 
 		mp.Monitoring.UdpPort = 9000
 	}
 
-	bullyInst, err := newBully(mp.Bully, selfID)
+	bullyInst, err := newBully(mp.Bully, workerPrefix, workerAmount, selfID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func New(mp *config.MonitorWorkerParams, selfKey string, selfID int) (*Monitor, 
 	}, nil
 }
 
-func newBully(mp config.BullyParams, selfID int) (*bully.Bully, error) {
+func newBully(mp config.BullyParams, workerPrefix string, workerAmount int, selfID int) (*bully.Bully, error) {
 	pingInterval, err := time.ParseDuration(mp.PingInterval)
 	if err != nil {
 		return nil, fmt.Errorf("invalid bully.ping_interval: %w", err)
@@ -89,13 +89,13 @@ func newBully(mp config.BullyParams, selfID int) (*bully.Bully, error) {
 	}
 
 	var peers []bully.Peer
-	for i, host := range mp.Hosts {
-		if i == selfID {
+	for id := range workerAmount {
+		if id == selfID {
 			continue
 		}
 		peers = append(peers, bully.Peer{
-			ID:   i,
-			Addr: fmt.Sprintf("%s:%d", host, mp.TcpPort),
+			ID:   id,
+			Addr: fmt.Sprintf("%s_%d:%d", workerPrefix, id, mp.TcpPort),
 		})
 	}
 
@@ -186,12 +186,19 @@ func (m *Monitor) leaderLoop(ctx context.Context, workers []string, pingInterval
 }
 
 func (m *Monitor) startPinger(ctx context.Context, workers []string, pingInterval, pingTimeout time.Duration) {
-	if len(workers) == 0 {
+	var filtered []string
+	for _, w := range workers {
+		if w != m.selfKey {
+			filtered = append(filtered, w)
+		}
+	}
+	if len(filtered) == 0 {
+		slog.Warn("monitor: no workers to ping (all filtered out)")
 		return
 	}
 
 	m.pinger = monitoring.NewPinger(monitoring.PingerConfig{
-		Workers:  workers,
+		Workers:  filtered,
 		Port:     m.params.Monitoring.UdpPort,
 		Interval: pingInterval,
 		Timeout:  pingTimeout,

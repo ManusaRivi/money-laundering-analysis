@@ -23,9 +23,22 @@ type ClientGroup struct {
 	Env     map[string]string `yaml:"env"`
 }
 
+type MonitorGroup struct {
+	Amount int `yaml:"amount"`
+}
+
+type MonitorInstance struct {
+	ContainerName string
+	WorkerPrefix  string
+	ID            int
+	WorkerAmount  int
+	EnvSorted     []string
+}
+
 type Topology struct {
-	Env       map[string]string      `yaml:"env"` // injected into every worker
+	Env       map[string]string      `yaml:"env"`
 	Clients   ClientGroup            `yaml:"clients"`
+	Monitors  MonitorGroup           `yaml:"monitors"`
 	Pipelines map[string][]WorkerDef `yaml:"pipelines"`
 }
 
@@ -53,8 +66,9 @@ type ClientInstance struct {
 }
 
 type TemplateData struct {
-	Clients []ClientInstance
-	Workers []WorkerInstance
+	Clients  []ClientInstance
+	Monitors []MonitorInstance
+	Workers  []WorkerInstance
 }
 
 func main() {
@@ -173,6 +187,37 @@ func main() {
 		})
 	}
 
+	var monitors []MonitorInstance
+	if topo.Monitors.Amount < 3 {
+		topo.Monitors.Amount = 3
+	}
+	for id := range topo.Monitors.Amount {
+		env := map[string]string{
+			"LOG_LEVEL":          "debug",
+			"CONFIG_PATH":        "/app/config.yaml",
+			"SYSTEM_CONFIG_PATH": "/app/system.yaml",
+			"WORKER_PREFIX":      "monitor",
+			"ID":                 strconv.Itoa(id),
+			"WORKER_AMOUNT":      strconv.Itoa(topo.Monitors.Amount),
+		}
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var envSorted []string
+		for _, k := range keys {
+			envSorted = append(envSorted, fmt.Sprintf("%s=%s", k, env[k]))
+		}
+		monitors = append(monitors, MonitorInstance{
+			ContainerName: fmt.Sprintf("monitor_%d", id),
+			WorkerPrefix:  "monitor",
+			ID:            id,
+			WorkerAmount:  topo.Monitors.Amount,
+			EnvSorted:    envSorted,
+		})
+	}
+
 	tmplData, err := os.ReadFile("configs/base-compose.yaml.tmpl")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading template file: %v\n", err)
@@ -200,23 +245,26 @@ func main() {
 	}
 	defer out.Close()
 
-	if err := tmpl.Execute(out, TemplateData{Clients: clients, Workers: workers}); err != nil {
+	if err := tmpl.Execute(out, TemplateData{Clients: clients, Monitors: monitors, Workers: workers}); err != nil {
 		fmt.Fprintf(os.Stderr, "error executing template: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("generated docker-compose-dev.yaml")
 
-	if err := writeWorkersYAML(workers); err != nil {
+	if err := writeWorkersYAML(workers, monitors); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing workers.yaml: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func writeWorkersYAML(workers []WorkerInstance) error {
-	names := make([]string, len(workers))
-	for i, w := range workers {
-		names[i] = w.ContainerName
+func writeWorkersYAML(workers []WorkerInstance, monitors []MonitorInstance) error {
+	names := make([]string, 0, len(workers)+len(monitors))
+	for _, w := range workers {
+		names = append(names, w.ContainerName)
+	}
+	for _, m := range monitors {
+		names = append(names, m.ContainerName)
 	}
 	data := map[string]any{"workers": names}
 	out, err := yaml.Marshal(data)
