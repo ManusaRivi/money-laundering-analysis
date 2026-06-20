@@ -202,4 +202,22 @@ func main() {
 	}
 
 	fmt.Println("generated docker-compose-dev.yaml")
+
+	if err := writeWorkersYAML(workers); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing workers.yaml: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func writeWorkersYAML(workers []WorkerInstance) error {
+	names := make([]string, len(workers))
+	for i, w := range workers {
+		names[i] = w.ContainerName
+	}
+	data := map[string]any{"workers": names}
+	out, err := yaml.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("configs/workers.yaml", out, 0644)
 }

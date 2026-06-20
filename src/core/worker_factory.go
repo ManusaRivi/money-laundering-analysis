@@ -122,12 +122,16 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		worker := converter.NewConverter(workerCfg, communicationBroker)
 		return worker, nil
 	case WorkerTypeMonitor:
-		if workercfg.Monitor == nil {
-			return nil, fmt.Errorf("monitor config required for Monitor worker type")
+		if workercfg.Worker.Params == nil {
+			return nil, fmt.Errorf("worker.params required for Monitor worker type")
+		}
+		mp, err := config.ParseMonitorParams(workercfg.Worker.Params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse monitor params: %w", err)
 		}
 		selfKey := fmt.Sprintf("%s_%d", workerCfg.WorkerPrefix, workerCfg.WorkerID)
 
-		worker, err := monitor.New(workercfg.Monitor, selfKey, workerCfg.WorkerID, workercfg.Heartbeat.MonitorHosts)
+		worker, err := monitor.New(mp, selfKey, workerCfg.WorkerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Monitor: %w", err)
 		}

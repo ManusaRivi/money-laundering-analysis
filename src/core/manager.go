@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,7 +11,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/ManusaRivi/money-laundering-analysis/src/common/heartbeat"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/monitoring"
 )
 
 type Worker interface {
@@ -21,10 +20,10 @@ type Worker interface {
 }
 
 type Manager struct {
-	Worker  Worker
-	cnfg    *config.Config
-	broker  broker.Broker
-	hbCancel context.CancelFunc
+	Worker   Worker
+	cnfg     *config.Config
+	broker   broker.Broker
+	mlCancel context.CancelFunc
 }
 
 func NewManager(cfg *config.Config) (*Manager, error) {
@@ -38,7 +37,6 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 			return nil, err
 		}
 		m := &Manager{Worker: worker, cnfg: cfg}
-		m.startHeartbeat(cfg)
 		return m, nil
 	}
 
@@ -57,23 +55,18 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		cnfg:   cfg,
 		broker: communicationBroker,
 	}
-	m.startHeartbeat(cfg)
+	m.startMonitoringListener()
 
 	return m, nil
 }
 
-func (m *Manager) startHeartbeat(cfg *config.Config) {
-	if cfg.Heartbeat == nil {
+func (m *Manager) startMonitoringListener() {
+	if m.cnfg.Monitoring == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.hbCancel = cancel
-	var addrs []string
-	for _, host := range cfg.Heartbeat.MonitorHosts {
-		addrs = append(addrs, fmt.Sprintf("%s:%d", host, cfg.Heartbeat.MonitorPort))
-	}
-	interval := time.Duration(cfg.Heartbeat.Interval) * time.Second
-	go heartbeat.Start(ctx, cfg.Worker.WorkerPrefix, cfg.Worker.WorkerID, addrs, interval)
+	m.mlCancel = cancel
+	go monitoring.Listen(ctx, m.cnfg.Monitoring.Port, m.cnfg.Worker.WorkerPrefix, m.cnfg.Worker.WorkerID)
 }
 
 func (m *Manager) Run() error {
@@ -88,8 +81,8 @@ func (m *Manager) Run() error {
 		sig := <-sigCh
 		slog.Info("Received signal, shutting down worker...", "signal", sig)
 
-		if m.hbCancel != nil {
-			m.hbCancel()
+		if m.mlCancel != nil {
+			m.mlCancel()
 		}
 
 		go m.Worker.Stop()

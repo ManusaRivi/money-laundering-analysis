@@ -2,264 +2,236 @@ package monitor
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"net"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/bully"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/monitoring"
+	"gopkg.in/yaml.v3"
 )
 
-type heartbeatState struct {
-	mu             sync.RWMutex
-	lastSeen       map[string]time.Time
-	failures       map[string]int
-	pendingRestart map[string]time.Time
+type monitorState struct {
+	mu       sync.RWMutex
+	failures map[string]int
 }
 
 type Monitor struct {
-	cfg              *config.MonitorConfig
-	state            *heartbeatState
-	conn             *net.UDPConn
+	params           *config.MonitorWorkerParams
+	state            *monitorState
 	bully            *bully.Bully
+	pinger           *monitoring.Pinger
 	cancel           context.CancelFunc
 	selfKey          string
 	selfID           int
 	failureThreshold int
 }
 
-func New(cfg *config.MonitorConfig, selfKey string, selfID int, monitorHosts []string) (*Monitor, error) {
-	bullyLeader, err := newBully(monitorHosts, selfID, cfg)
+type workersFile struct {
+	Workers []string `yaml:"workers"`
+}
+
+func New(mp *config.MonitorWorkerParams, selfKey string, selfID int) (*Monitor, error) {
+	if mp.Monitoring.FailureThreshold == 0 {
+		mp.Monitoring.FailureThreshold = 3
+	}
+	if mp.Monitoring.PingInterval == "" {
+		mp.Monitoring.PingInterval = "3s"
+	}
+	if mp.Monitoring.PingTimeout == "" {
+		mp.Monitoring.PingTimeout = "2s"
+	}
+	if mp.Bully.TcpHost == "" {
+		mp.Bully.TcpHost = "0.0.0.0"
+	}
+	if mp.Bully.TcpPort == 0 {
+		mp.Bully.TcpPort = 9001
+	}
+	if mp.Bully.PingInterval == "" {
+		mp.Bully.PingInterval = "1.5s"
+	}
+	if mp.Bully.PingTimeout == "" {
+		mp.Bully.PingTimeout = "500ms"
+	}
+	if mp.Monitoring.UdpPort == 0 {
+		mp.Monitoring.UdpPort = 9000
+	}
+
+	bullyInst, err := newBully(mp.Bully, selfID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Monitor{
-		cfg: cfg,
-		state: &heartbeatState{
-			lastSeen:       make(map[string]time.Time),
-			failures:       make(map[string]int),
-			pendingRestart: make(map[string]time.Time),
+		params: mp,
+		state: &monitorState{
+			failures: make(map[string]int),
 		},
 		selfKey:          selfKey,
 		selfID:           selfID,
-		bully:            bullyLeader,
-		failureThreshold: cfg.FailureThreshold,
+		bully:            bullyInst,
+		failureThreshold: mp.Monitoring.FailureThreshold,
 	}, nil
 }
 
-func newBully(monitorHosts []string, selfID int, cfg *config.MonitorConfig) (*bully.Bully, error) {
+func newBully(mp config.BullyParams, selfID int) (*bully.Bully, error) {
+	pingInterval, err := time.ParseDuration(mp.PingInterval)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bully.ping_interval: %w", err)
+	}
+	pingTimeout, err := time.ParseDuration(mp.PingTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bully.ping_timeout: %w", err)
+	}
+
 	var peers []bully.Peer
-	for i, host := range monitorHosts {
+	for i, host := range mp.Hosts {
 		if i == selfID {
 			continue
 		}
 		peers = append(peers, bully.Peer{
 			ID:   i,
-			Addr: fmt.Sprintf("%s:%d", host, cfg.TcpPort),
+			Addr: fmt.Sprintf("%s:%d", host, mp.TcpPort),
 		})
 	}
-	pingInterval, err := time.ParseDuration(cfg.PingInterval)
-	if err != nil {
-		return nil, fmt.Errorf("monitor: invalid ping_interval: %w", err)
-	}
-	pingTimeout, err := time.ParseDuration(cfg.PingTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("monitor: invalid ping_timeout: %w", err)
-	}
 
-	newBully := bully.New(bully.Config{
+	return bully.New(bully.Config{
 		SelfID:       selfID,
 		Peers:        peers,
-		ListenAddr:   fmt.Sprintf("%s:%d", cfg.TcpHost, cfg.TcpPort),
+		ListenAddr:   fmt.Sprintf("%s:%d", mp.TcpHost, mp.TcpPort),
 		PingInterval: pingInterval,
 		PingTimeout:  pingTimeout,
-	})
-	return newBully, nil
+	}), nil
+}
+
+func loadWorkers() ([]string, error) {
+	path := os.Getenv("WORKERS_CONFIG_PATH")
+	if path == "" {
+		path = "/app/workers.yaml"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read workers config: %w", err)
+	}
+	var wf workersFile
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		return nil, fmt.Errorf("parse workers config: %w", err)
+	}
+	return wf.Workers, nil
 }
 
 func (m *Monitor) Run() error {
-	timeout, err := time.ParseDuration(m.cfg.HeartbeatTimeout)
+	pingInterval, err := time.ParseDuration(m.params.Monitoring.PingInterval)
 	if err != nil {
-		return fmt.Errorf("monitor: invalid heartbeat_timeout: %w", err)
+		return fmt.Errorf("invalid monitoring.ping_interval: %w", err)
 	}
-	checkInterval, err := time.ParseDuration(m.cfg.CheckInterval)
+	pingTimeout, err := time.ParseDuration(m.params.Monitoring.PingTimeout)
 	if err != nil {
-		return fmt.Errorf("monitor: invalid check_interval: %w", err)
-	}
-	cooldown, err := time.ParseDuration(m.cfg.RestartCooldown)
-	if err != nil {
-		return fmt.Errorf("monitor: invalid restart_cooldown: %w", err)
-	}
-
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(m.cfg.UdpHost),
-		Port: m.cfg.UdpPort,
-	}
-
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return fmt.Errorf("monitor: listen %s:%d: %w", m.cfg.UdpHost, m.cfg.UdpPort, err)
+		return fmt.Errorf("invalid monitoring.ping_timeout: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.conn = conn
 	m.cancel = cancel
 
-	slog.Info("monitor listening for heartbeats", "addr", addr, "self", m.selfKey)
-
+	slog.Info("monitor started", "self", m.selfKey)
 
 	if err := m.bully.Start(ctx); err != nil {
 		cancel()
-		m.conn.Close()
-		return fmt.Errorf("monitor: bully start: %w", err)
+		return fmt.Errorf("bully start: %w", err)
 	}
 
-	go m.checker(ctx, timeout, checkInterval, cooldown)
-	go m.rabbitChecker(ctx, checkInterval)
+	go monitoring.Listen(ctx, m.params.Monitoring.UdpPort, "monitor", m.selfID)
 
-	buf := make([]byte, 1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-		n, _, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			slog.Warn("monitor: read error", "error", err)
-			continue
-		}
-
-		m.handleHeartbeat(buf[:n])
+	workers, err := loadWorkers()
+	if err != nil {
+		slog.Warn("monitor: failed to load workers list, will retry", "error", err)
 	}
+
+	go m.leaderLoop(ctx, workers, pingInterval, pingTimeout)
+
+	<-ctx.Done()
+	return nil
 }
 
 func (m *Monitor) Stop() {
 	if m.cancel != nil {
 		m.cancel()
 	}
-	if m.conn != nil {
-		m.conn.Close()
-	}
 	if m.bully != nil {
 		m.bully.Stop()
 	}
+	m.stopPinger()
 }
 
-func (m *Monitor) handleHeartbeat(data []byte) {
-	if len(data) < 6 {
-		return
-	}
-	prefixLen := int(binary.BigEndian.Uint16(data[0:2]))
-	if len(data) < 2+prefixLen+4 {
-		return
-	}
-	prefix := string(data[2 : 2+prefixLen])
-	id := int(binary.BigEndian.Uint32(data[2+prefixLen:]))
-	key := fmt.Sprintf("%s_%d", prefix, id)
-
-	if key == m.selfKey {
-		return
-	}
-	// slog.Debug("monitor: heartbeat received", "key", key)
-	m.state.mu.Lock()
-	m.state.lastSeen[key] = time.Now()
-	m.state.failures[key] = 0
-	delete(m.state.pendingRestart, key)
-	m.state.mu.Unlock()
-}
-
-func (m *Monitor) checker(ctx context.Context, timeout, interval, cooldown time.Duration) {
-	ticker := time.NewTicker(interval)
+func (m *Monitor) leaderLoop(ctx context.Context, workers []string, pingInterval, pingTimeout time.Duration) {
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
-
-	slog.Info("monitor checker started", "timeout", timeout, "interval", interval, "cooldown", cooldown)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.check(timeout, cooldown)
-		}
-	}
-}
-
-func (m *Monitor) check(timeout, cooldown time.Duration) {
-	now := time.Now()
-	var toStart []string
-
-	m.state.mu.Lock()
-
-	for key := range m.state.lastSeen {
-		last := m.state.lastSeen[key]
-		if now.Sub(last) <= timeout {
-			m.state.failures[key] = 0
-			delete(m.state.pendingRestart, key)
-			continue
-		}
-
-		if lastAttempt, ok := m.state.pendingRestart[key]; ok {
-			if now.Sub(lastAttempt) < cooldown {
-				continue
+			if m.bully.IsLeader() && m.pinger == nil {
+				m.startPinger(ctx, workers, pingInterval, pingTimeout)
+			} else if !m.bully.IsLeader() && m.pinger != nil {
+				m.stopPinger()
 			}
-			m.state.pendingRestart[key] = now
-			toStart = append(toStart, key)
-			continue
 		}
-
-		m.state.failures[key]++
-
-		if m.state.failures[key] >= m.failureThreshold {
-			slog.Warn("monitor: container to be restarted", "container", key, "failures", m.state.failures[key])
-			m.state.pendingRestart[key] = now
-			toStart = append(toStart, key)
-		} else {
-			slog.Warn("monitor: heartbeat expired", "container", key, "failure", m.state.failures[key], "threshold", m.failureThreshold)
-		}
-	}
-
-	m.state.mu.Unlock()
-
-	for _, key := range toStart {
-		if m.bully != nil && !m.bully.IsLeader() {
-			slog.Debug("monitor: skipping restart, not leader", "container", key)
-			continue
-		}
-		go m.restartContainer(key)
 	}
 }
 
-func (m *Monitor) rabbitChecker(ctx context.Context, interval time.Duration) {
-	if m.cfg.RabbitMQHost == "" || m.cfg.RabbitMQPort == 0 {
+func (m *Monitor) startPinger(ctx context.Context, workers []string, pingInterval, pingTimeout time.Duration) {
+	if len(workers) == 0 {
 		return
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	m.pinger = monitoring.NewPinger(monitoring.PingerConfig{
+		Workers:  workers,
+		Port:     m.params.Monitoring.UdpPort,
+		Interval: pingInterval,
+		Timeout:  pingTimeout,
+		OnResult: func(key string, ok bool) {
+			m.handleResult(key, ok)
+		},
+	})
+	go m.pinger.Start(ctx)
+	slog.Info("monitor: started pinger as leader", "workers", len(workers))
+}
 
-	addr := fmt.Sprintf("%s:%d", m.cfg.RabbitMQHost, m.cfg.RabbitMQPort)
+func (m *Monitor) stopPinger() {
+	if m.pinger != nil {
+		m.pinger.Stop()
+		m.pinger = nil
+		slog.Info("monitor: stopped pinger, no longer leader")
+	}
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-			if err != nil {
-				slog.Warn("monitor: rabbitmq unreachable", "addr", addr, "error", err)
-			} else {
-				conn.Close()
-			}
-		}
+func (m *Monitor) handleResult(key string, ok bool) {
+	if ok {
+		m.state.mu.Lock()
+		m.state.failures[key] = 0
+		m.state.mu.Unlock()
+		return
+	}
+
+	m.state.mu.Lock()
+	m.state.failures[key]++
+	fails := m.state.failures[key]
+	m.state.mu.Unlock()
+
+	slog.Warn("monitor: ping failed", "container", key, "failure", fails, "threshold", m.failureThreshold)
+
+	if fails >= m.failureThreshold {
+		m.state.mu.Lock()
+		delete(m.state.failures, key)
+		m.state.mu.Unlock()
+
+		m.restartContainer(key)
 	}
 }
 
