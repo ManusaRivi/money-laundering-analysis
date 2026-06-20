@@ -1,6 +1,8 @@
 .data/
 .output*
 docker-compose-dev.yaml
+topology.yaml
+configs/workers.yaml
 
 .venv/
 __pycache__/

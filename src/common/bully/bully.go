@@ -125,11 +125,6 @@ func (b *Bully) handleConn(conn net.Conn) {
 		return
 	}
 	
-	// if msg.Type != 0 {
-	// 	b.log.Debug("message received", "type", msg.Type, "senderID", msg.SenderID, "leaderID", msg.LeaderID)
-	// }
-	b.log.Debug("message received", "type", msg.Type, "senderID", msg.SenderID, "leaderID", msg.LeaderID)
-
 	switch msg.Type {
 	case MsgPing:
 		b.handlePing(conn, msg)

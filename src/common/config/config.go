@@ -5,38 +5,50 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-type MonitorConfig struct {
-	UdpHost          string `yaml:"udp_host"`
-	UdpPort          int    `yaml:"udp_port"`
-	HeartbeatTimeout string `yaml:"heartbeat_timeout"`
-	CheckInterval    string `yaml:"check_interval"`
-	FailureThreshold int    `yaml:"failure_threshold"`
-	RestartCooldown  string `yaml:"restart_cooldown"`
-	RabbitMQHost     string `yaml:"rabbitmq_host"`
-	RabbitMQPort     int    `yaml:"rabbitmq_port"`
-	TcpHost          string `yaml:"tcp_host"`
-	TcpPort          int    `yaml:"tcp_port"`
-	PingInterval     string `yaml:"ping_interval"`
-	PingTimeout      string `yaml:"ping_timeout"`
+type MonitoringConfig struct {
+	Port int `yaml:"port"`
 }
 
-type HeartbeatConfig struct {
-	MonitorHosts []string `yaml:"monitor_hosts"`
-	MonitorPort  int      `yaml:"monitor_port"`
-	Interval     int      `yaml:"interval"`
+type BullyParams struct {
+	TcpHost      string   `yaml:"tcp_host"`
+	TcpPort      int      `yaml:"tcp_port"`
+	PingInterval string   `yaml:"ping_interval"`
+	PingTimeout  string   `yaml:"ping_timeout"`
+}
+
+type MonitoringParams struct {
+	UdpPort          int    `yaml:"udp_port"`
+	PingInterval     string `yaml:"ping_interval"`
+	PingTimeout      string `yaml:"ping_timeout"`
+	FailureThreshold int    `yaml:"failure_threshold"`
+}
+
+type MonitorWorkerParams struct {
+	Bully      BullyParams      `yaml:"bully"`
+	Monitoring MonitoringParams `yaml:"monitoring"`
 }
 
 type Config struct {
-	Broker    BrokerConfig    `yaml:"broker,omitempty"`
-	AvgBroker *BrokerConfig   `yaml:"avg_broker,omitempty"`
-	Worker    WorkerConfig    `yaml:"worker"`
-	Monitor   *MonitorConfig  `yaml:"monitor,omitempty"`
-	Heartbeat *HeartbeatConfig `yaml:"heartbeat,omitempty"`
+	Broker     BrokerConfig     `yaml:"broker,omitempty"`
+	AvgBroker  *BrokerConfig    `yaml:"avg_broker,omitempty"`
+	Worker     WorkerConfig     `yaml:"worker"`
+	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty"`
+}
+
+func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
+	data, err := yaml.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal monitor params: %w", err)
+	}
+	var p MonitorWorkerParams
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("unmarshal monitor params: %w", err)
+	}
+	return &p, nil
 }
 
 type BrokerConfig struct {
@@ -177,61 +189,14 @@ func verifyConfig(cfg *Config) error {
 	}
 
 	if cfg.Worker.Type == "Monitor" {
-		if cfg.Monitor == nil {
-			return fmt.Errorf("monitor config section is required for Monitor worker type")
-		}
-		if cfg.Monitor.UdpHost == "" {
-			return fmt.Errorf("monitor.udp_host is required")
-		}
-		if cfg.Monitor.UdpPort == 0 {
-			return fmt.Errorf("monitor.udp_port is required")
-		}
-		if cfg.Monitor.HeartbeatTimeout == "" {
-			return fmt.Errorf("monitor.heartbeat_timeout is required")
-		}
-		if _, err := time.ParseDuration(cfg.Monitor.HeartbeatTimeout); err != nil {
-			return fmt.Errorf("monitor.heartbeat_timeout: %w", err)
-		}
-		if cfg.Monitor.CheckInterval == "" {
-			return fmt.Errorf("monitor.check_interval is required")
-		}
-		if _, err := time.ParseDuration(cfg.Monitor.CheckInterval); err != nil {
-			return fmt.Errorf("monitor.check_interval: %w", err)
-		}
-		if cfg.Monitor.FailureThreshold == 0 {
-			cfg.Monitor.FailureThreshold = 1
-		}
-		if cfg.Monitor.RestartCooldown == "" {
-			cfg.Monitor.RestartCooldown = "1s"
-		}
-		if _, err := time.ParseDuration(cfg.Monitor.RestartCooldown); err != nil {
-			return fmt.Errorf("monitor.restart_cooldown: %w", err)
-		}
-		if cfg.Monitor.RabbitMQHost == "" {
-			cfg.Monitor.RabbitMQHost = "rabbitmq"
-		}
-		if cfg.Monitor.RabbitMQPort == 0 {
-			cfg.Monitor.RabbitMQPort = 5672
-		}
-		if cfg.Monitor.TcpHost == "" {
-			cfg.Monitor.TcpHost = "0.0.0.0"
-		}
-		if cfg.Monitor.TcpPort == 0 {
-			cfg.Monitor.TcpPort = 9001
-		}
-		if cfg.Monitor.PingInterval == "" {
-			cfg.Monitor.PingInterval = "1.5s"
-		}
-		if _, err := time.ParseDuration(cfg.Monitor.PingInterval); err != nil {
-			return fmt.Errorf("monitor.ping_interval: %w", err)
-		}
-		if cfg.Monitor.PingTimeout == "" {
-			cfg.Monitor.PingTimeout = "500ms"
-		}
-		if _, err := time.ParseDuration(cfg.Monitor.PingTimeout); err != nil {
-			return fmt.Errorf("monitor.ping_timeout: %w", err)
+		if cfg.Worker.Params == nil {
+			return fmt.Errorf("worker.params is required for Monitor worker type")
 		}
 		return nil
+	}
+
+	if cfg.Monitoring == nil || cfg.Monitoring.Port == 0 {
+		cfg.Monitoring = &MonitoringConfig{Port: 9000}
 	}
 
 	if cfg.Broker.Type == "" {
