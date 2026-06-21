@@ -9,28 +9,32 @@ import (
 )
 
 type Config struct {
-	Broker    BrokerConfig  `yaml:"broker"`
-	AvgBroker *BrokerConfig `yaml:"avg_broker"`
-	Worker    WorkerConfig  `yaml:"worker"`
+	Broker        BrokerConfig  `yaml:"broker"`
+	AvgBroker     *BrokerConfig `yaml:"avg_broker"`
+	Worker        WorkerConfig  `yaml:"worker"`
+	CheckpointDir string        `yaml:"-"`
 }
 
+const defaultCheckpointDir = "/app/checkpoints"
+const defaultCheckpointInterval = 20
+
 type BrokerConfig struct {
-	Type         string   `yaml:"type"`
-	RabbitURL    string   `yaml:"url"`
-	Input        string   `yaml:"input"`
-	InputQueue   string   `yaml:"input_queue"`
-	Output       string   `yaml:"output"`
-	InputKeys    []string `yaml:"input_keys"`
-	ExchangeType string   `yaml:"exchange_type"`
+	Type               string   `yaml:"type"`
+	RabbitURL          string   `yaml:"url"`
+	Input              string   `yaml:"input"`
+	InputQueue         string   `yaml:"input_queue"`
+	Output             string   `yaml:"output"`
+	InputKeys          []string `yaml:"input_keys"`
+	ExchangeType       string   `yaml:"exchange_type"`
 	OutputExchangeType string   `yaml:"output_exchange_type"`
-	Prefetch     int      `yaml:"prefetch"`
-	Durable      bool     `yaml:"durable"`
-	AutoDelete   bool     `yaml:"auto_delete"`
-	Exclusive    bool     `yaml:"exclusive"`
-	NoWait       bool     `yaml:"no_wait"`
-	Internal     bool     `yaml:"internal"`
-	Lazy         bool     `yaml:"lazy"`
-	Persistent   bool     `yaml:"persistent"`
+	Prefetch           int      `yaml:"prefetch"`
+	Durable            bool     `yaml:"durable"`
+	AutoDelete         bool     `yaml:"auto_delete"`
+	Exclusive          bool     `yaml:"exclusive"`
+	NoWait             bool     `yaml:"no_wait"`
+	Internal           bool     `yaml:"internal"`
+	Lazy               bool     `yaml:"lazy"`
+	Persistent         bool     `yaml:"persistent"`
 
 	WorkerID         int    `yaml:"-"`
 	WorkerPrefix     string `yaml:"-"`
@@ -46,28 +50,31 @@ type WorkerConfig struct {
 	Params map[string]any `yaml:"params"`
 	Query  int            `yaml:"query"`
 
-	WorkerID         int                     `yaml:"-"`
-	WorkerPrefix     string                  `yaml:"-"`
-	WorkerAmount     int                     `yaml:"-"`
-	PrevWorkerAmount int                     `yaml:"-"`
-	PrevWorkerPrefix string                  `yaml:"-"`
-	NextWorkerAmount int                     `yaml:"-"`
-	NextWorkerPrefix string                  `yaml:"-"`
-	Threshold        int                     `yaml:"-"` // from SCATTER_GATHER_THRESHOLD; shared Q4 threshold
-	SyncEOFConfig    SyncEOFControllerConfig `yaml:"-"`
+	WorkerID         int    `yaml:"-"`
+	WorkerPrefix     string `yaml:"-"`
+	WorkerAmount     int    `yaml:"-"`
+	PrevWorkerAmount int    `yaml:"-"`
+	PrevWorkerPrefix string `yaml:"-"`
+	NextWorkerAmount int    `yaml:"-"`
+	NextWorkerPrefix string `yaml:"-"`
+	Threshold        int    `yaml:"-"` // from SCATTER_GATHER_THRESHOLD; shared Q4 threshold
+
+	SyncEOFConfig      SyncEOFControllerConfig `yaml:"-"`
+	CheckpointDir      string                  `yaml:"-"`
+	CheckpointInterval int                     `yaml:"checkpoint_interval"`
 }
 
 type SyncEOFControllerConfig struct {
 	RetryBaseDelay float64 `yaml:"retries_base_delay"`
 	RetryStepDelay float64 `yaml:"retries_step_delay"`
 	MaxRetries     int     `yaml:"max_retries"`
-	
-	RabbitURL         string `yaml:"-"`
-	WorkerID          int    `yaml:"-"`
-	EOFPrefix         string `yaml:"-"`
-	WorkerAmount      int    `yaml:"-"`
-	BroadcastExchange string `yaml:"-"`
-	InputKeys	[]string `yaml:"-"`
+
+	RabbitURL         string   `yaml:"-"`
+	WorkerID          int      `yaml:"-"`
+	EOFPrefix         string   `yaml:"-"`
+	WorkerAmount      int      `yaml:"-"`
+	BroadcastExchange string   `yaml:"-"`
+	InputKeys         []string `yaml:"-"`
 }
 
 func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
@@ -137,6 +144,9 @@ func verifyConfig(cfg *Config) error {
 	if cfg.Worker.Type == "" {
 		return fmt.Errorf("worker type is required")
 	}
+	if cfg.Worker.CheckpointInterval == 0 {
+		cfg.Worker.CheckpointInterval = defaultCheckpointInterval
+	}
 	return nil
 }
 
@@ -199,6 +209,11 @@ func applyEnv(cfg *Config) error {
 	brokerConfig.NextWorkerPrefix = prefix
 	workerConfig.NextWorkerPrefix = prefix
 
+	cfg.Worker.CheckpointDir = os.Getenv("CHECKPOINT_DIR")
+	if cfg.Worker.CheckpointDir == "" {
+		cfg.Worker.CheckpointDir = defaultCheckpointDir
+	}
+
 	return nil
 }
 
@@ -231,6 +246,15 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
 			}
 			cfg.InputKeys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
+			// Defaulted keys mean this consumer is sharded: each replica owns a
+			// distinct binding key. Give it a stable, named queue so a restart
+			// re-attaches to the same inbox (keeping its un-acked messages and
+			// its binding alive while it was down) instead of an anonymous,
+			// exclusive queue that the broker deletes on disconnect. An explicit
+			// input_queue still wins.
+			if cfg.InputQueue == "" {
+				cfg.InputQueue = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
+			}
 		}
 	} else if cfg.Input == "" {
 		if cfg.WorkerPrefix == "" {

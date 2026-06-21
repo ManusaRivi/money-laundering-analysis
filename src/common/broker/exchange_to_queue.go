@@ -72,16 +72,20 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		cfg.Prefetch = 30
 	}
 
+	// An anonymous queue must be exclusive so the broker reclaims it; a named
+	// queue is a durable inbox (per-replica shard or shared RR) that must
+	// survive a consumer restart, so honour the configured durability instead
+	// of hardcoding a throwaway queue that gets deleted on disconnect.
 	if cfg.InputQueue == "" {
 		cfg.Exclusive = true
 	}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		cfg.InputQueue,
-		false,
-		false,
+		cfg.Durable,
+		cfg.AutoDelete,
 		cfg.Exclusive,
-		false,
+		cfg.NoWait,
 		nil,
 	)
 	if err != nil {
