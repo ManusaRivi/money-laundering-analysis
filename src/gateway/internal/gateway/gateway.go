@@ -39,6 +39,13 @@ type Gateway struct {
 	running        atomic.Bool
 	codec          codec.Codec
 	clients        map[uuid.UUID]*Client
+	// seenResults dedups inbound results by (client, MsgID). The gateway is the
+	// single-replica sink, so it sees every copy of a given id and its dedup is
+	// sound — this is the dedup point for paths whose last stage is a round-robin
+	// replica set (e.g. the Q1 filters), where a worker restart redelivers and
+	// re-emits the same deterministic-id result. Only touched from the broker
+	// consume goroutine (forwardResponse), so it needs no lock.
+	seenResults map[uuid.UUID]map[protocol.MsgID]struct{}
 }
 
 func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
@@ -63,7 +70,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	registry := clientregistry.NewClientRegistry()
 
-	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client)}
+	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
 	gateway.running.Store(true)
 	return gateway, nil
 }
@@ -305,9 +312,21 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 		return
 	}
 
-	/* 	if !isValidResultType(envelope.MsgType) {
-		// if MsgType ==
-	} */
+	// A worker restart can redeliver an un-acked input on a round-robin queue,
+	// so the same deterministic-id result is re-emitted (e.g. Q1 filters). Drop
+	// the duplicate here. Mirror Dispatch: only ids that opt into dedup (non-zero
+	// MsgID) are tracked; zero-id results (e.g. the join's Q2 output) are
+	// forwarded as-is and rely on their own upstream dedup point.
+	deduped := envelope.MsgID != (protocol.MsgID{})
+	if deduped {
+		if seen := gateway.seenResults[envelope.ClientId]; seen != nil {
+			if _, ok := seen[envelope.MsgID]; ok {
+				slog.Debug("Dropping already-forwarded result", "clientId", envelope.ClientId, "msgType", envelope.MsgType)
+				ack()
+				return
+			}
+		}
+	}
 
 	var client *clientconnection.ClientConnection
 	gateway.registry.WithLock(func(clients map[uuid.UUID]*clientconnection.ClientConnection) {
@@ -327,6 +346,14 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 		slog.Error("Error forwarding binary result to client", "clientId", envelope.ClientId, "err", err)
 		nack()
 		return
+	}
+	if deduped {
+		seen := gateway.seenResults[envelope.ClientId]
+		if seen == nil {
+			seen = make(map[protocol.MsgID]struct{})
+			gateway.seenResults[envelope.ClientId] = seen
+		}
+		seen[envelope.MsgID] = struct{}{}
 	}
 	ack()
 }
