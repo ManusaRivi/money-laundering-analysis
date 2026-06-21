@@ -44,7 +44,7 @@ func TestDispatchDropsDuplicates(t *testing.T) {
 	msg := msgWith(t, clientID, id)
 
 	for i := 0; i < 3; i++ {
-		if err := p.Dispatch(msg, handlers); err != nil {
+		if _, err := p.Dispatch(msg, handlers); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 	}
@@ -61,7 +61,7 @@ func TestDispatchPassesDistinctIDs(t *testing.T) {
 
 	for seq := uint64(0); seq < 5; seq++ {
 		id := protocol.SourceMsgID(clientID, protocol.StreamTransactions, seq)
-		if err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
+		if _, err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 	}
@@ -78,7 +78,7 @@ func TestDispatchZeroMsgIDNotDeduped(t *testing.T) {
 	msg := msgWith(t, clientID, protocol.MsgID{})
 
 	for i := 0; i < 3; i++ {
-		if err := p.Dispatch(msg, handlers); err != nil {
+		if _, err := p.Dispatch(msg, handlers); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 	}
@@ -95,10 +95,10 @@ func TestDispatchPerClientIsolation(t *testing.T) {
 	calls := 0
 	handlers := countingHandlers(&calls)
 
-	if err := p.Dispatch(msgWith(t, a, idA), handlers); err != nil {
+	if _, err := p.Dispatch(msgWith(t, a, idA), handlers); err != nil {
 		t.Fatalf("dispatch a: %v", err)
 	}
-	if err := p.Dispatch(msgWith(t, b, idB), handlers); err != nil {
+	if _, err := p.Dispatch(msgWith(t, b, idB), handlers); err != nil {
 		t.Fatalf("dispatch b: %v", err)
 	}
 	if calls != 2 {
@@ -125,10 +125,10 @@ func TestDispatchHandlerErrorIsReprocessed(t *testing.T) {
 	}
 	msg := msgWith(t, clientID, id)
 
-	if err := p.Dispatch(msg, handlers); err == nil {
+	if _, err := p.Dispatch(msg, handlers); err == nil {
 		t.Fatal("expected handler error")
 	}
-	if err := p.Dispatch(msg, handlers); err != nil {
+	if _, err := p.Dispatch(msg, handlers); err != nil {
 		t.Fatalf("redelivery dispatch: %v", err)
 	}
 	if calls != 2 {
@@ -143,11 +143,11 @@ func TestForgetClearsSeen(t *testing.T) {
 	calls := 0
 	handlers := countingHandlers(&calls)
 
-	if err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
+	if _, err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	p.Forget(clientID)
-	if err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
+	if _, err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
 		t.Fatalf("dispatch after forget: %v", err)
 	}
 	if calls != 2 {

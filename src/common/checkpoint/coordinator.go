@@ -1,0 +1,139 @@
+package checkpoint
+
+import (
+	"fmt"
+	"log/slog"
+	"sync"
+
+	"github.com/google/uuid"
+)
+
+type Coordinator struct {
+	manager  *Manager
+	dedup    Checkpointable
+	eof      Checkpointable
+	state    Checkpointable
+	interval int
+
+	mu          sync.Mutex
+	seenClients map[uuid.UUID]struct{}
+	acks        []func()
+	pending     int
+}
+
+func NewCoordinator(manager *Manager, dedup, eof, state Checkpointable, interval int) *Coordinator {
+	if interval < 1 {
+		interval = 1
+	}
+	return &Coordinator{
+		manager:     manager,
+		dedup:       dedup,
+		eof:         eof,
+		state:       state,
+		interval:    interval,
+		seenClients: make(map[uuid.UUID]struct{}),
+	}
+}
+
+func (co *Coordinator) Recover() error {
+	slog.Debug("Recovering checkpoint coordinator")
+	keys, err := co.manager.Keys()
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		clientID, err := uuid.Parse(key)
+		if err != nil {
+			continue
+		}
+		cp, ok, err := co.manager.Load(key)
+		if err != nil {
+			return fmt.Errorf("recover %s: %w", key, err)
+		}
+		if !ok {
+			continue
+		}
+		if err := co.restore(clientID, cp); err != nil {
+			return fmt.Errorf("recover %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func (co *Coordinator) Track(clientID uuid.UUID, ack func()) error {
+	co.mu.Lock()
+	co.seenClients[clientID] = struct{}{}
+	co.acks = append(co.acks, ack)
+	co.pending++
+	flush := co.pending >= co.interval
+	co.mu.Unlock()
+
+	if flush {
+		return co.Flush()
+	}
+	return nil
+}
+
+func (co *Coordinator) Flush() error {
+	co.mu.Lock()
+	clients := co.seenClients
+	acks := co.acks
+	co.seenClients = make(map[uuid.UUID]struct{})
+	co.acks = nil
+	co.pending = 0
+	co.mu.Unlock()
+
+	for clientID := range clients {
+		cp, err := co.snapshot(clientID)
+		if err != nil {
+			return err
+		}
+		if err := co.manager.Save(clientID.String(), cp); err != nil {
+			return err
+		}
+	}
+	for _, ack := range acks {
+		ack()
+	}
+	return nil
+}
+
+func (co *Coordinator) Delete(clientID uuid.UUID) error {
+	return co.manager.Delete(clientID.String())
+}
+
+func (co *Coordinator) snapshot(clientID uuid.UUID) (Checkpoint, error) {
+	dedup, err := co.dedup.SnapshotClient(clientID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	cp := Checkpoint{Dedup: dedup}
+	if co.eof != nil {
+		if cp.EOF, err = co.eof.SnapshotClient(clientID); err != nil {
+			return Checkpoint{}, err
+		}
+	}
+	if co.state != nil {
+		if cp.State, err = co.state.SnapshotClient(clientID); err != nil {
+			return Checkpoint{}, err
+		}
+	}
+	return cp, nil
+}
+
+func (co *Coordinator) restore(clientID uuid.UUID, cp Checkpoint) error {
+	if err := co.dedup.RestoreClient(clientID, cp.Dedup); err != nil {
+		return err
+	}
+	if co.eof != nil {
+		if err := co.eof.RestoreClient(clientID, cp.EOF); err != nil {
+			return err
+		}
+	}
+	if co.state != nil {
+		if err := co.state.RestoreClient(clientID, cp.State); err != nil {
+			return err
+		}
+	}
+	return nil
+}
