@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -25,6 +26,7 @@ type DateRange struct {
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 }
 
 func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) {
@@ -78,16 +80,26 @@ func (f *DateRange) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, nil, f.cfg.CheckpointInterval)
+	if err := f.coord.Recover(); err != nil {
+		return err
+	}
+
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		err := f.handleMessage(msg)
+		clientID, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		f.coord.Track(clientID, ack)
 	})
 }
 
@@ -201,7 +213,7 @@ func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (f *DateRange) handleMessage(msg broker.Message) error {
+func (f *DateRange) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,

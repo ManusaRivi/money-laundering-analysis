@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
@@ -25,6 +26,7 @@ type Spliter struct {
 	fieldsToRouteBy   []string
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 }
 
 func NewSpliter(cfg config.WorkerConfig, broker broker.Broker) (*Spliter, error) {
@@ -70,14 +72,25 @@ func (r *Spliter) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(r.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	r.coord = checkpoint.NewCoordinator(checkpointManager, r.pub, r.syncEOFController, nil, r.cfg.CheckpointInterval)
+	if err := r.coord.Recover(); err != nil {
+		return err
+	}
+
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := r.handleMessage(msg); err != nil {
+		clientID, err := r.handleMessage(msg)
+		if err != nil {
 			nack()
 			return
 		}
-		ack()
+		r.coord.Track(clientID, ack)
 	})
 }
 
@@ -86,10 +99,6 @@ func (r *Spliter) onflush(clientID uuid.UUID) error {
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
-	// eofCounts := domain.EOFCounts{
-	// 	Counts: finalSent,
-	// }
-	// eofMsg, err := inner.MarshalEOFPacket(clientID, eofCounts)
 	eofEnvelope, err := r.pub.EncodeEOFCountsEnvelope(clientID, finalSent)
 	if err != nil {
 		slog.Error("Error marshalling EOF packet", "error", err)
@@ -101,7 +110,6 @@ func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}
-	// limpieza adicional si es necesaria
 	return nil
 }
 
@@ -143,24 +151,6 @@ func (r *Spliter) shardByValue(value string) string {
 	}
 	return fmt.Sprintf("%s_%d", r.cfg.NextWorkerPrefix, index)
 }
-
-// func (r *Spliter) handleTransactionMessage(pkt inner.Packet) error {
-// 	var tx domain.Transaction
-// 	err := pkt.UnmarshalData(&tx)
-// 	if err != nil {
-// 		slog.Error("Error unmarshalling transaction data", "error", err)
-// 		return err
-// 	}
-// 	slog.Debug("Received transaction to split")
-// 	for _, field := range r.fieldsToRouteBy {
-// 		if err := r.routeByField(field, tx, pkt.ClientID); err != nil {
-// 			return err
-// 		}
-// 	}
-// 	r.syncEOFController.MessageReceived(pkt.ClientID, 1)
-
-// 	return nil
-// }
 
 // bucketKey groups transactions heading to the same phase-one worker with the
 // same scatter/gather role, so they can be shipped as one batch.
@@ -217,25 +207,7 @@ func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-// func (r *Spliter) handleMessage(msg broker.Message) error {
-// 	pkt, err := inner.UnmarshalPacket(msg)
-
-// 	if err != nil {
-// 		slog.Error("Error unmarshalling message", "error", err)
-// 		return err
-// 	}
-
-// 	switch pkt.Type {
-// 	case inner.TypeTransaction:
-// 		return r.handleTransactionMessage(*pkt)
-// 	case inner.TypeEOF:
-// 		return r.handleEOFMessage(*pkt)
-// 	default:
-// 		return fmt.Errorf("unknown packet type: %v", pkt.Type)
-// 	}
-// }
-
-func (r *Spliter) handleMessage(msg broker.Message) error {
+func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionBatchMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,

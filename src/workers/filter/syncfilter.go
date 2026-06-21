@@ -6,6 +6,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -29,6 +30,7 @@ type SyncFilter struct {
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 
 	// Query 1: los resultados se acumulan y publican como lotes binarios del
 	// protocolo external, que el gateway reenvía al cliente sin decodificar.
@@ -95,16 +97,27 @@ func (f *SyncFilter) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, nil, f.cfg.CheckpointInterval)
+	if err := f.coord.Recover(); err != nil {
+		return err
+	}
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		err := f.handleMessage(msg)
+		clientID, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		if err := f.coord.Track(clientID, ack); err != nil {
+			slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+		}
 	})
 }
 
@@ -260,9 +273,9 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 	return nil
 }
 
-func (f *SyncFilter) handleMessage(msg broker.Message) error {
+func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	if msg.ContentType != broker.ContentTypeBinary {
-		return fmt.Errorf("unexpected content type: %v", msg.ContentType)
+		return uuid.Nil, fmt.Errorf("unexpected content type: %v", msg.ContentType)
 	}
 
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{

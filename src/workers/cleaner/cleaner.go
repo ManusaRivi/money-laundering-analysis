@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -19,6 +20,7 @@ type Cleaner struct {
 	syncEOFController *eof.SyncEOFController
 	fieldsToClean     []string
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 }
 
 func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
@@ -65,14 +67,26 @@ func (c *Cleaner) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(c.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
+	if err := c.coord.Recover(); err != nil {
+		return err
+	}
+
 	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := c.handleMessage(msg); err != nil {
+		clientID, err := c.handleMessage(msg)
+		if err != nil {
+			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		c.coord.Track(clientID, ack)
 	})
 }
 
@@ -169,7 +183,7 @@ func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (c *Cleaner) handleMessage(msg broker.Message) error {
+func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   c.handleEOFMessage,

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
@@ -25,6 +26,7 @@ type Converter struct {
 	Broker                    broker.Broker
 	pub                       *messaging.Publisher
 	txProcessedCountForClient map[uuid.UUID]int
+	coord                     *checkpoint.Coordinator
 
 	rates *rateClient
 }
@@ -42,12 +44,23 @@ func NewConverter(cfg config.WorkerConfig, broker broker.Broker) *Converter {
 func (c *Converter) Run() error {
 	defer c.Broker.StopConsuming()
 
+	checkpointManager, err := checkpoint.NewManager(c.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, nil, c.cfg.CheckpointInterval)
+	if err := c.coord.Recover(); err != nil {
+		return err
+	}
+
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := c.handleMessage(msg); err != nil {
+		clientID, err := c.handleMessage(msg)
+		if err != nil {
 			nack()
 			return
 		}
-		ack()
+		c.coord.Track(clientID, ack)
 	})
 }
 
@@ -127,7 +140,7 @@ func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (c *Converter) handleMessage(msg broker.Message) error {
+func (c *Converter) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   c.handleEOFMessage,

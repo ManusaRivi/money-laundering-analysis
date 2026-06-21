@@ -7,6 +7,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
@@ -18,6 +19,8 @@ type Aggregator struct {
 	cfg    config.WorkerConfig
 	Broker broker.Broker
 	pub    *messaging.Publisher
+
+	coord *checkpoint.Coordinator
 
 	aggFunction aggFunction
 	field       string // field used for aggregation comparison (e.g., "Amount")
@@ -65,13 +68,24 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 func (a *Aggregator) Run() error {
 	defer a.Broker.StopConsuming()
 
+	checkpointManager, err := checkpoint.NewManager(a.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, a, a.cfg.CheckpointInterval)
+	if err := a.coord.Recover(); err != nil {
+		return err
+	}
+
 	return a.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := a.handleMessage(msg); err != nil {
+		clientID, err := a.handleMessage(msg)
+		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		a.coord.Track(clientID, ack)
 	})
 }
 
@@ -211,11 +225,12 @@ func (a *Aggregator) sendTransactionsEOF(clientID uuid.UUID, sent int) error {
 	return a.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts, eofID)
 }
 
-func (a *Aggregator) handleMessage(msg broker.Message) error {
-	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (a *Aggregator) handleMessage(msg broker.Message) (uuid.UUID, error) {
+	clientID, err := a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: a.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   a.handleEOFMessage,
 	})
+	return clientID, err
 }
 
 // emitUngroupedCount emits the running count for clientID as a query-result

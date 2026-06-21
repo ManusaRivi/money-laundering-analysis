@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -23,10 +24,12 @@ type Query4Client struct {
 }
 
 type Query4 struct {
+	cfg     config.WorkerConfig
 	pub     *messaging.Publisher
 	clients map[uuid.UUID]*Query4Client
 
 	broker broker.Broker
+	coord  *checkpoint.Coordinator
 
 	prevWorkerAmount int
 	eofCounters      map[uuid.UUID]int
@@ -37,6 +40,7 @@ type Query4 struct {
 
 func NewQuery4(cfg config.WorkerConfig, b broker.Broker) (*Query4, error) {
 	return &Query4{
+		cfg:              cfg,
 		pub:              messaging.New(codec.New(), b),
 		clients:          make(map[uuid.UUID]*Query4Client),
 		broker:           b,
@@ -50,14 +54,25 @@ func (j *Query4) Run() error {
 	defer func() {
 		j.broker.StopConsuming()
 	}()
+
+	checkpointManager, err := checkpoint.NewManager(j.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, nil, j.cfg.CheckpointInterval)
+	if err := j.coord.Recover(); err != nil {
+		return err
+	}
+
 	return j.broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		err := j.handleMessage(msg)
+		clientId, err := j.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling transaction message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		j.coord.Track(clientId, ack)
 	})
 }
 
@@ -103,36 +118,10 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	client := j.clients[clientId]
 	if client == nil {
 		slog.Debug("No accounts received for this client, sending EOF only", "clientID", clientId)
-		// eof, err := inner.MarshalQuery4EOFPacket(clientId)
-		// if err != nil {
-		// 	return fmt.Errorf("error marshalling Query4 EOF: %w", err)
-		// }
-		// return j.broker.Send(*eof)
 		eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
 		return j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	}
 
-	// accounts := make([]domain.Account, 0, len(client.accountsSet))
-	// for account := range client.accountsSet {
-	// 	accounts = append(accounts, account)
-	// }
-
-	// for i := 0; i < len(accounts); i += BATCH_SIZE {
-	// 	end := i + BATCH_SIZE
-	// 	if end > len(accounts) {
-	// 		end = len(accounts)
-	// 	}
-	// 	data := domain.Query4Result{
-	// 		Accounts: accounts[i:end],
-	// 	}
-	// 	msg, err := inner.MarshalQuery4ResultPacket(pkt.ClientID, broker.KeyNil, data)
-	// 	if err != nil {
-	// 		return fmt.Errorf("error marshalling accounts batch: %w", err)
-	// 	}
-	// 	if err := j.broker.Send(*msg); err != nil {
-	// 		return fmt.Errorf("error sending accounts batch: %w", err)
-	// 	}
-	// }
 	// Sort the accounts so the per-batch MsgIDs (StageMsgID by index) are
 	// reproducible across runs and restarts — map iteration order is not.
 	accounts := make([]domain.Account, 0, len(client.accountsSet))
@@ -173,7 +162,7 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Query4) handleMessage(msg broker.Message) error {
+func (j *Query4) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxAccounts:      j.handleAccountsMessage,
 		protocol.MsgTransactionsEOF: j.handleEOFMessage,

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -24,6 +25,7 @@ type Router struct {
 	fieldToRouteBy    string
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 }
 
 func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
@@ -71,14 +73,25 @@ func (r *Router) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(r.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	r.coord = checkpoint.NewCoordinator(checkpointManager, r.pub, r.syncEOFController, nil, r.cfg.CheckpointInterval)
+	if err := r.coord.Recover(); err != nil {
+		return err
+	}
+
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := r.handleMessage(msg); err != nil {
+		clientID, err := r.handleMessage(msg)
+		if err != nil {
 			nack()
 			return
 		}
-		ack()
+		r.coord.Track(clientID, ack)
 	})
 }
 
@@ -178,7 +191,7 @@ func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (r *Router) handleMessage(msg broker.Message) error {
+func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
@@ -19,9 +20,12 @@ import (
 // from an upstream sum aggregator) with bank account info (received directly
 // from the gateway on a separate queue).
 type Join struct {
+	cfg            config.WorkerConfig
 	resultsBroker  broker.Broker
 	accountsBroker broker.Broker
 	pub            *messaging.Publisher
+
+	coord *checkpoint.Coordinator
 
 	previousWorkerAmount int
 
@@ -46,6 +50,7 @@ func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error
 		return nil, fmt.Errorf("failed to create accounts broker: %w", err)
 	}
 	return &Join{
+		cfg:                  cfg,
 		resultsBroker:        resultsBroker,
 		accountsBroker:       accountsBroker,
 		pub:                  messaging.New(codec.New(), resultsBroker),
@@ -66,23 +71,37 @@ func (j *Join) Run() error {
 
 	errCh := make(chan error, 2)
 
+	checkpointManager, err := checkpoint.NewManager(j.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, nil, j.cfg.CheckpointInterval)
+	if err := j.coord.Recover(); err != nil {
+		return err
+	}
+
 	go func() {
 		errCh <- j.accountsBroker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-			if err := j.handleAccountsMessage(msg); err != nil {
+			clientID, err := j.handleAccountsMessage(msg)
+			if err != nil {
+				slog.Error("Error handling accounts message", "error", err)
 				nack()
 				return
 			}
-			ack()
+			j.coord.Track(clientID, ack)
 		})
 	}()
 
 	go func() {
 		errCh <- j.resultsBroker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-			if err := j.handleTransactionMessage(msg); err != nil {
+			clientID, err := j.handleTransactionMessage(msg)
+			if err != nil {
+				slog.Error("Error handling transaction message", "error", err)
 				nack()
 				return
 			}
-			ack()
+			j.coord.Track(clientID, ack)
 		})
 	}()
 
@@ -165,7 +184,7 @@ func (j *Join) handleAccountsEOF(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Join) handleAccountsMessage(msg broker.Message) error {
+func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgAccountsBatch: j.handleAccountsBatch,
 		protocol.MsgAccountsEOF:   j.handleAccountsEOF,
@@ -214,7 +233,7 @@ func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Join) handleTransactionMessage(msg broker.Message) error {
+func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: j.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   j.handleTransactionsEOF,

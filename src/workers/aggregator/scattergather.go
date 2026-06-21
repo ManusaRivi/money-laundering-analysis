@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -59,6 +60,7 @@ type ScatterGather struct {
 	nextWorkerAmount int
 	prevWorkerAmount int
 	eofCounters      map[uuid.UUID]int
+	coord            *checkpoint.Coordinator
 }
 
 func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGather, error) {
@@ -78,13 +80,24 @@ func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGather,
 func (a *ScatterGather) Run() error {
 	defer a.broker.StopConsuming()
 
+	checkpointManager, err := checkpoint.NewManager(a.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, nil, a.cfg.CheckpointInterval)
+	if err := a.coord.Recover(); err != nil {
+		return err
+	}
+
 	return a.broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		if err := a.handleMessage(msg); err != nil {
+		clientID, err := a.handleMessage(msg)
+		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		a.coord.Track(clientID, ack)
 	})
 }
 
@@ -218,7 +231,7 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 	return nil
 }
 
-func (a *ScatterGather) handleMessage(msg broker.Message) error {
+func (a *ScatterGather) handleMessage(msg broker.Message) (uuid.UUID, error) {
 	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxQ4:            a.handleTxQ4Message,
 		protocol.MsgTransactionsEOF: a.handleEOFMessage,

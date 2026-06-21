@@ -8,6 +8,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -36,6 +37,7 @@ type AvgFormatFilter struct {
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
+	coord             *checkpoint.Coordinator
 
 	q3Buffer *batch.Buffer[protocol.Query3Result]
 
@@ -90,17 +92,28 @@ func (f *AvgFormatFilter) Run() error {
 		return err
 	}
 
+	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, nil, f.cfg.CheckpointInterval)
+	if err := f.coord.Recover(); err != nil {
+		return err
+	}
+
 	go f.syncEOFController.Start()
 
 	errCh := make(chan error, 2)
 
 	go func() {
 		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			if err := f.handleAvgMessage(msg); err != nil {
+			clientID, err := f.handleAvgMessage(msg)
+			if err != nil {
 				nack()
 				return
 			}
-			ack()
+			f.coord.Track(clientID, ack)
 		})
 	}()
 
@@ -108,11 +121,12 @@ func (f *AvgFormatFilter) Run() error {
 		<-f.txGate
 		slog.Info("Averages complete; starting transaction consumption")
 		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			if err := f.handleTxMessage(msg); err != nil {
+			clientID, err := f.handleTxMessage(msg)
+			if err != nil {
 				nack()
 				return
 			}
-			ack()
+			f.coord.Track(clientID, ack)
 		})
 	}()
 
@@ -121,7 +135,7 @@ func (f *AvgFormatFilter) Run() error {
 
 func (f *AvgFormatFilter) Stop() {}
 
-func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) error {
+func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleAvgBatch,
 		protocol.MsgTransactionsEOF:   f.handleAvgEOF,
@@ -169,7 +183,7 @@ func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker
 	return nil
 }
 
-func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) error {
+func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   f.handleEOF,

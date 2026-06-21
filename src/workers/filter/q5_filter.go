@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
@@ -30,6 +31,8 @@ type Q5Filter struct {
 	receivedCount         map[uuid.UUID]int
 	sentCount             map[uuid.UUID]int
 	expectedPreviousCount map[uuid.UUID]int
+
+	coord *checkpoint.Coordinator
 }
 
 func NewQ5Filter(cfg config.WorkerConfig, b broker.Broker) (*Q5Filter, error) {
@@ -79,13 +82,24 @@ func NewQ5Filter(cfg config.WorkerConfig, b broker.Broker) (*Q5Filter, error) {
 func (f *Q5Filter) Run() error {
 	defer f.Broker.StopConsuming()
 
+	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, nil, nil, f.cfg.CheckpointInterval)
+	if err := f.coord.Recover(); err != nil {
+		return err
+	}
+
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		if err := f.handleMessage(msg); err != nil {
+		clientID, err := f.handleMessage(msg)
+		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		ack()
+		f.coord.Track(clientID, ack)
 	})
 }
 
@@ -175,9 +189,10 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (f *Q5Filter) handleMessage(msg broker.Message) error {
-	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (f *Q5Filter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+	clientID, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
 	})
+	return clientID, err
 }
