@@ -1,6 +1,7 @@
 package eof
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -442,6 +443,46 @@ func (c *SyncEOFController) cleanupClientState(clientID uuid.UUID) {
 	delete(c.clients, clientID)
 	c.mu.Unlock()
 	slog.Debug("[SyncEOFController] Client state cleaned", "client_id", clientID)
+}
+
+type clientCheckpoint struct {
+	MsgRcvCount       int                    `json:"msg_rcv_count"`
+	MsgSentCountByKey map[broker.KeyType]int `json:"msg_sent_count_by_key"`
+}
+
+func (c *SyncEOFController) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cl, exists := c.clients[clientID]
+	if !exists {
+		return nil, nil
+	}
+	return json.Marshal(clientCheckpoint{
+		MsgRcvCount:       cl.msgRcvCount,
+		MsgSentCountByKey: cl.msgSentCountByKey,
+	})
+}
+
+func (c *SyncEOFController) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp clientCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cl, exists := c.clients[clientID]
+	if !exists {
+		cl = NewClient(clientID)
+		c.clients[clientID] = cl
+	}
+	cl.msgRcvCount = cp.MsgRcvCount
+	if cp.MsgSentCountByKey != nil {
+		cl.msgSentCountByKey = cp.MsgSentCountByKey
+	}
+	return nil
 }
 
 func (c *SyncEOFController) sendFlushAck(clientID uuid.UUID, requesterID int) {
