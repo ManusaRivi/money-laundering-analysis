@@ -188,8 +188,8 @@ func main() {
 	}
 
 	var monitors []MonitorInstance
-	if topo.Monitors.Amount < 3 {
-		topo.Monitors.Amount = 3
+	if topo.Monitors.Amount < 1 {
+		topo.Monitors.Amount = 1
 	}
 	for id := range topo.Monitors.Amount {
 		env := map[string]string{
