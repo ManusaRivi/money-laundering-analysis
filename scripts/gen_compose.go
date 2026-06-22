@@ -66,9 +66,10 @@ type ClientInstance struct {
 }
 
 type TemplateData struct {
-	Clients  []ClientInstance
-	Monitors []MonitorInstance
-	Workers  []WorkerInstance
+	Clients          []ClientInstance
+	Monitors         []MonitorInstance
+	Workers          []WorkerInstance
+	GatewayDependsOn []string
 }
 
 func main() {
@@ -245,7 +246,15 @@ func main() {
 	}
 	defer out.Close()
 
-	if err := tmpl.Execute(out, TemplateData{Clients: clients, Monitors: monitors, Workers: workers}); err != nil {
+	gatewayDependsOn := make([]string, 0, len(workers)+len(monitors))
+	for _, w := range workers {
+		gatewayDependsOn = append(gatewayDependsOn, w.ContainerName)
+	}
+	for _, m := range monitors {
+		gatewayDependsOn = append(gatewayDependsOn, m.ContainerName)
+	}
+
+	if err := tmpl.Execute(out, TemplateData{Clients: clients, Monitors: monitors, Workers: workers, GatewayDependsOn: gatewayDependsOn}); err != nil {
 		fmt.Fprintf(os.Stderr, "error executing template: %v\n", err)
 		os.Exit(1)
 	}

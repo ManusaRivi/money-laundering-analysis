@@ -160,7 +160,6 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, routingKey, len(transactions)); err != nil {
 			return err
 		}
-		r.syncEOFController.MessageSentWithKey(envelope.ClientId, routingKey, len(txBatch))
 	}
 	return nil
 }

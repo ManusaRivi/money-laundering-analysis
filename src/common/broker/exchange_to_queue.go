@@ -69,7 +69,7 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		cfg.InputQueue,
-		false,
+		cfg.Durable,
 		false,
 		cfg.Exclusive,
 		false,
