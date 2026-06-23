@@ -3,7 +3,7 @@ broker:
   url: amqp://guest:guest@rabbitmq:5672/
   input: e_entry
   input_queue: q_q345_filter # de input
-  output: e_q345_filter
+  output: e_q345_cleaner
   exchange_type: topic # de outpt
   input_keys: # de input
     - tx.*

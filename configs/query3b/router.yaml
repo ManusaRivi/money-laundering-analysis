@@ -1,28 +1,9 @@
-# broker:
-#   type: q-e
-#   url: amqp://guest:guest@rabbitmq:5672/
-#   input: q_q3_router
-#   output: e_q3_agg
-#   exchange_type: direct
-#   # El routing key lo decide el worker (RoutingKey en el broker.Message)
-#   prefetch: 300
-#   durable: true
-#   auto_delete: false
-#   exclusive: false
-#   no_wait: false
-#   internal: false
-
 broker:
-  type: e-e
+  type: q-e
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q345_filter
-  input_queue: q_q3_router
+  input: q_q3_router
   output: e_q3_agg
-  exchange_type: topic
-  output_exchange_type: direct
-  input_keys:
-    - tx.usd
-  # El routing key lo decide el worker (RoutingKey en el broker.Message)
+  exchange_type: direct
   prefetch: 300
   durable: true
   auto_delete: false

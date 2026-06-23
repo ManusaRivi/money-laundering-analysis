@@ -9,5 +9,5 @@ worker:
     monitoring:
       udp_port: 9000
       ping_interval: "5s"
-      ping_timeout: "2s"
+      ping_timeout: "1s"
       failure_threshold: 3

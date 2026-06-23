@@ -1,5 +1,3 @@
-# q-e example (queue -> exchange)
-
 broker:
   type: e-q
   url: amqp://guest:guest@rabbitmq:5672/

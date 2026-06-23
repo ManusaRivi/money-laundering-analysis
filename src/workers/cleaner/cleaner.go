@@ -134,7 +134,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 	}
 
 	c.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
-	cleanedTx := make([]protocol.Transaction, len(transactions))
+	cleanedTx := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
 		cleanedTx = append(cleanedTx, c.cleanTransaction(tx))

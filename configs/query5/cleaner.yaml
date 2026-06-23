@@ -1,9 +1,8 @@
-# e-e example (exchange -> exchange)
-
 broker:
   type: e-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q345_filter
+  input: e_q345_cleaner
+  input_queue: q_q5_cleaner
   output: q_q5_format_filter
   exchange_type: topic
   input_keys:
@@ -26,8 +25,3 @@ worker:
     - retries_base_delay: 0.5
     - retries_step_delay: 0.5
     - max_retries: 5
-
-# Required envs if input is omitted
-# WORKER_PREFIX=agg
-# ID=0
-# NEXT_WORKER_PREFIX=join
