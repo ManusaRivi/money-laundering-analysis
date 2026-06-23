@@ -102,6 +102,20 @@ func (co *Coordinator) Delete(clientID uuid.UUID) error {
 	return co.manager.Delete(clientID.String())
 }
 
+// SaveClient durably persists one client's checkpoint immediately, outside the
+// interval-batched Flush and without touching the pending-ack batch. Use it to
+// capture state at a specific, irreversible point — e.g. the ScatterAndGather
+// global heavy sets at barrier seal, before the cross-product consumes the
+// adjacency — so a crash after that point recovers without re-running the
+// consensus. The snapshot is a full overwrite (same as Flush's per-client save).
+func (co *Coordinator) SaveClient(clientID uuid.UUID) error {
+	cp, err := co.snapshot(clientID)
+	if err != nil {
+		return err
+	}
+	return co.manager.Save(clientID.String(), cp)
+}
+
 func (co *Coordinator) snapshot(clientID uuid.UUID) (Checkpoint, error) {
 	dedup, err := co.dedup.SnapshotClient(clientID)
 	if err != nil {

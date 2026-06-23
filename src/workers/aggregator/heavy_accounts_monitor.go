@@ -37,9 +37,7 @@ type clientExchange struct {
 
 func NewHeavyAccountsMonitor(selfID, workerAmount int, onReady func(uuid.UUID)) *HeavyAccountsMonitor {
 	peerTarget := workerAmount - 1
-	if peerTarget < 0 {
-		peerTarget = 0
-	}
+	peerTarget = max(peerTarget, 0)
 	return &HeavyAccountsMonitor{
 		perClient:  make(map[uuid.UUID]*clientExchange),
 		selfID:     selfID,
@@ -65,24 +63,21 @@ func (m *HeavyAccountsMonitor) getLocked(clientID uuid.UUID) *clientExchange {
 // MergeLocal folds this replica's own heavy sets in and marks it locally done.
 // Called from the main loop at EOF, before publishing to peers. May complete the
 // barrier (e.g. N==1, or this replica finished last).
-func (m *HeavyAccountsMonitor) MergeLocal(clientID uuid.UUID, srcs, sinks map[domain.Account]struct{}) {
+func (m *HeavyAccountsMonitor) MergeLocal(clientID uuid.UUID, srcs, sinks map[domain.Account]struct{}) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	ce := m.getLocked(clientID)
-	ready := false
-	if !ce.sealed {
-		for a := range srcs {
-			ce.heavySrcs[a] = struct{}{}
-		}
-		for a := range sinks {
-			ce.heavySinks[a] = struct{}{}
-		}
-		ce.localDone = true
-		ready = m.maybeSealLocked(ce)
+	if ce.sealed {
+		return false
 	}
-	m.mu.Unlock()
-	if ready {
-		m.onReady(clientID)
+	for a := range srcs {
+		ce.heavySrcs[a] = struct{}{}
 	}
+	for a := range sinks {
+		ce.heavySinks[a] = struct{}{}
+	}
+	ce.localDone = true
+	return m.isReady(ce)
 }
 
 // RecordHeavyBatch merges a peer's heavy accounts for one role. Own echoes from
@@ -116,7 +111,7 @@ func (m *HeavyAccountsMonitor) RecordDone(clientID uuid.UUID, senderID int) {
 	ready := false
 	if !ce.sealed {
 		ce.donePeers[senderID] = struct{}{}
-		ready = m.maybeSealLocked(ce)
+		ready = m.isReady(ce)
 	}
 	m.mu.Unlock()
 	if ready {
@@ -124,9 +119,7 @@ func (m *HeavyAccountsMonitor) RecordDone(clientID uuid.UUID, senderID int) {
 	}
 }
 
-// maybeSealLocked seals and returns true exactly on the transition that lifts the
-// barrier (own merged + all N-1 peers done). Caller holds m.mu.
-func (m *HeavyAccountsMonitor) maybeSealLocked(ce *clientExchange) bool {
+func (m *HeavyAccountsMonitor) isReady(ce *clientExchange) bool {
 	if ce.sealed || !ce.localDone || len(ce.donePeers) < m.peerTarget {
 		return false
 	}
@@ -153,6 +146,27 @@ func (m *HeavyAccountsMonitor) HeavySinks(clientID uuid.UUID) map[domain.Account
 		return ce.heavySinks
 	}
 	return nil
+}
+
+// IsSealed reports whether the client's barrier has lifted — its global heavy
+// sets are final and the cross-product has been claimed. Used to skip
+// snapshotting a client whose adjacency the cross-product is concurrently
+// consuming on the degree goroutine.
+func (m *HeavyAccountsMonitor) IsSealed(clientID uuid.UUID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ce, ok := m.perClient[clientID]
+	return ok && ce.sealed
+}
+
+func (m *HeavyAccountsMonitor) RestoreSealed(clientID uuid.UUID, srcs, sinks map[domain.Account]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ce := m.getLocked(clientID)
+	ce.heavySrcs = srcs
+	ce.heavySinks = sinks
+	ce.sealed = true
+	ce.localDone = true
 }
 
 // Forget drops a client's exchange state once its cross-product is done.
