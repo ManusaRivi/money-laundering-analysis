@@ -1,6 +1,7 @@
 package aggregator
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -34,21 +35,16 @@ type clientScattergather struct {
 	intern      map[string]string
 }
 
-// internStr returns a single canonical copy of s, so repeated account IDs across
-// many pair keys share their backing bytes instead of each holding a copy.
-func (c *clientScattergather) internStr(s string) string {
-	if canon, ok := c.intern[s]; ok {
-		return canon
-	}
-	c.intern[s] = s
-	return s
-}
+var _ checkpoint.Checkpointable = (*ScatterGather)(nil)
 
-// accountFromID reverses Account.GetID ("BankID-ID"), splitting on the first
-// '-'. Bank IDs in the dataset contain no '-', so this round-trips exactly.
-func accountFromID(id string) domain.Account {
-	bankID, accID, _ := strings.Cut(id, "-")
-	return domain.Account{BankID: bankID, ID: accID}
+// scatterGatherCountCheckpoint persists the per-client accumulator and EOF
+// barrier count. The accumulator is keyed by a struct (TxQ4PairKey), which
+// encoding/json can't use as a map key, so it is serialised as a slice of
+// pair-counts. `intern` is not persisted — it's a string-dedup cache that the
+// accumulator's map-key equality doesn't depend on, rebuilt lazily after restore.
+type scatterGatherCountCheckpoint struct {
+	Pairs       []domain.TxQ4PairCount `json:"pairs,omitempty"`
+	EOFCounters int                    `json:"eof_counters,omitempty"`
 }
 
 type ScatterGather struct {
@@ -85,7 +81,7 @@ func (a *ScatterGather) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, nil, a.cfg.CheckpointInterval)
+	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, a, a.cfg.CheckpointInterval)
 	if err := a.coord.Recover(); err != nil {
 		return err
 	}
@@ -106,13 +102,61 @@ func (a *ScatterGather) Stop() {
 	a.broker.Close()
 }
 
+// Private Methods
+
+// Checkpoint Methods
+
+func (a *ScatterGather) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	client := a.getClient(clientID)
+	cp := scatterGatherCountCheckpoint{
+		Pairs:       make([]domain.TxQ4PairCount, 0, len(client.accumulator)),
+		EOFCounters: a.eofCounters[clientID],
+	}
+	for key, count := range client.accumulator {
+		cp.Pairs = append(cp.Pairs, domain.TxQ4PairCount{Key: key, Count: count})
+	}
+	return json.Marshal(cp)
+}
+
+func (a *ScatterGather) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	slog.Debug("Restoring scatter and gather state for client", "clientID", clientID)
+	var cp scatterGatherCountCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	client := a.getClient(clientID)
+	for _, pc := range cp.Pairs {
+		client.accumulator[pc.Key] = pc.Count
+	}
+	a.eofCounters[clientID] = cp.EOFCounters
+	return nil
+}
+
+// internStr returns a single canonical copy of s, so repeated account IDs across
+// many pair keys share their backing bytes instead of each holding a copy.
+func (c *clientScattergather) internStr(s string) string {
+	if canon, ok := c.intern[s]; ok {
+		return canon
+	}
+	c.intern[s] = s
+	return s
+}
+
+// accountFromID reverses Account.GetID ("BankID-ID"), splitting on the first
+// '-'. Bank IDs in the dataset contain no '-', so this round-trips exactly.
+func accountFromID(id string) domain.Account {
+	bankID, accID, _ := strings.Cut(id, "-")
+	return domain.Account{BankID: bankID, ID: accID}
+}
+
 // stage seeds StageMsgID; includes WorkerID because every replica emits its own
 // phase-three batches and EOF on flush.
 func (a *ScatterGather) stage() string {
 	return fmt.Sprintf("%s#%d", a.cfg.WorkerPrefix, a.cfg.WorkerID)
 }
-
-// Private Methods
 
 func (a *ScatterGather) getClient(clientID uuid.UUID) *clientScattergather {
 	if c, exists := a.clients[clientID]; exists {

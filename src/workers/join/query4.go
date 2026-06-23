@@ -1,6 +1,7 @@
 package join
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -14,10 +15,11 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
-	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 )
 
 const BATCH_SIZE = 1000
+
+var _ checkpoint.Checkpointable = (*Query4)(nil)
 
 type Query4Client struct {
 	accountsSet map[domain.Account]struct{}
@@ -60,7 +62,7 @@ func (j *Query4) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, nil, j.cfg.CheckpointInterval)
+	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, j, j.cfg.CheckpointInterval)
 	if err := j.coord.Recover(); err != nil {
 		return err
 	}
@@ -176,6 +178,53 @@ func (j *Query4) sendQuery4ResultEnvelope(clientId uuid.UUID, subset map[domain.
 	}
 	if err := j.pub.PublishRawWithID(broker.KeyNil, envelope, id); err != nil {
 		return fmt.Errorf("error sending query4 result envelope: %w", err)
+	}
+	return nil
+}
+
+type query4Checkpoint struct {
+	Accounts []domain.Account `json:"accounts,omitempty"`
+	EOFCount int              `json:"eof_count,omitempty"`
+}
+
+// SnapshotClient runs inside coord.Flush on the single consume goroutine, so the
+// maps are quiescent and it takes no lock. It persists both the accumulated
+// account set and the EOF barrier count: a crash would otherwise lose them, and
+// the acked accounts/EOF messages won't be redelivered to rebuild them — leaving
+// the result incomplete or the barrier permanently short of prevWorkerAmount.
+func (j *Query4) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	cp := query4Checkpoint{EOFCount: j.eofCounters[clientID]}
+	if client := j.clients[clientID]; client != nil {
+		cp.Accounts = make([]domain.Account, 0, len(client.accountsSet))
+		for account := range client.accountsSet {
+			cp.Accounts = append(cp.Accounts, account)
+		}
+	}
+	return json.Marshal(cp)
+}
+
+// RestoreClient runs at startup (coord.Recover, no concurrency), so it takes no
+// lock.
+func (j *Query4) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp query4Checkpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	if len(cp.Accounts) > 0 {
+		client := j.clients[clientID]
+		if client == nil {
+			client = &Query4Client{accountsSet: make(map[domain.Account]struct{}, len(cp.Accounts))}
+			j.clients[clientID] = client
+		}
+		for _, account := range cp.Accounts {
+			client.accountsSet[account] = struct{}{}
+		}
+	}
+	if cp.EOFCount != 0 {
+		j.eofCounters[clientID] = cp.EOFCount
 	}
 	return nil
 }

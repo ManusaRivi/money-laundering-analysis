@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync"
 
@@ -17,6 +18,18 @@ import (
 )
 
 const defaultAvgMultiplier = 0.01
+
+var _ checkpoint.Checkpointable = (*AvgFormatFilter)(nil)
+
+type AvgFilterCheckpoint struct {
+	AveragesByFormat     map[string]float64                         `json:"averages_by_format,omitempty"`
+	EofReceived          int                                        `json:"eof_received,omitempty"`
+	AverageDone          bool                                       `json:"average_done,omitempty"`
+	AverageReceivedCount int                                        `json:"average_received_count,omitempty"`
+	AverageExpectedCount int                                        `json:"average_expected_count,omitempty"`
+	TransactionCache     map[string][]protocol.Transaction          `json:"transaction_cache,omitempty"`
+	PendingResults       map[broker.KeyType][]protocol.Query3Result `json:"pending_results,omitempty"`
+}
 
 type AvgFormatFilter struct {
 	cfg           config.WorkerConfig
@@ -97,7 +110,7 @@ func (f *AvgFormatFilter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, nil, f.cfg.CheckpointInterval)
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, f, f.cfg.CheckpointInterval)
 	if err := f.coord.Recover(); err != nil {
 		return err
 	}
@@ -134,6 +147,60 @@ func (f *AvgFormatFilter) Run() error {
 }
 
 func (f *AvgFormatFilter) Stop() {}
+
+// Private methods
+
+// Checkpoint methods
+
+// SnapshotClient runs inside coord.Flush, off a consumer goroutine's Track call,
+// while the sibling consumer goroutine (avg vs tx) may be mutating these maps and
+// the q3 buffer. It must hold f.mu — the same lock the handlers take — or it
+// races them (concurrent map read/write). Nothing in this path holds f.mu when
+// Track is called (handlers release it before returning), so locking here is
+// deadlock-free.
+func (f *AvgFormatFilter) SnapshotClient(ClientID uuid.UUID) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	checkpoint := AvgFilterCheckpoint{
+		AveragesByFormat:     f.avgByClient[ClientID],
+		EofReceived:          f.avgEofByClient[ClientID],
+		AverageDone:          f.avgDoneByClient[ClientID],
+		AverageReceivedCount: f.avgReceivedByClient[ClientID],
+		AverageExpectedCount: f.avgExpectedByClient[ClientID],
+		TransactionCache:     f.txCacheByClient[ClientID],
+		PendingResults:       f.q3Buffer.Snapshot(ClientID),
+	}
+	return json.Marshal(checkpoint)
+}
+
+// RestoreClient runs at startup (coord.Recover, no concurrency), so it does not
+// take f.mu.
+func (f *AvgFormatFilter) RestoreClient(ClientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var checkpoint AvgFilterCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return err
+	}
+	f.avgByClient[ClientID] = checkpoint.AveragesByFormat
+	f.avgEofByClient[ClientID] = checkpoint.EofReceived
+	f.avgDoneByClient[ClientID] = checkpoint.AverageDone
+	f.avgReceivedByClient[ClientID] = checkpoint.AverageReceivedCount
+	f.avgExpectedByClient[ClientID] = checkpoint.AverageExpectedCount
+	f.txCacheByClient[ClientID] = checkpoint.TransactionCache
+	f.q3Buffer.Restore(ClientID, checkpoint.PendingResults)
+	if checkpoint.AverageDone {
+		f.dropUnresolvedCachedLocked(ClientID)
+		if ch, exists := f.avgDoneChByClient[ClientID]; exists {
+			close(ch)
+			delete(f.avgDoneChByClient, ClientID)
+		}
+		f.txGateOnce.Do(func() { close(f.txGate) })
+	}
+
+	return nil
+}
 
 func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{

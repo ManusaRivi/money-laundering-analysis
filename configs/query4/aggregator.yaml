@@ -4,7 +4,7 @@ broker:
   input: e_q4_agg
   output: e_q4_acc
   exchange_type: direct
-  prefetch: 150
+  prefetch: 300
   durable: true
   auto_delete: false
   # exclusive: false
@@ -13,3 +13,4 @@ broker:
 
 worker:
   type: "ScatterAndGather"
+  checkpoint_interval: 100

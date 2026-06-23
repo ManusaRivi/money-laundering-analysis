@@ -1,10 +1,12 @@
 package join
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -15,6 +17,24 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
+
+var _ checkpoint.Checkpointable = (*Join)(nil)
+
+type joinCheckpoint struct {
+	BankNames   map[string]string `json:"bank_names,omitempty"`
+	TxCache     []cachedBatch     `json:"tx_cache,omitempty"`
+	WorkerEOF   int               `json:"worker_eof,omitempty"`
+	AccountsEOF bool              `json:"accounts_eof,omitempty"`
+	Finalized   bool              `json:"finalized,omitempty"`
+}
+
+// cachedBatch holds a transaction batch that arrived before the accounts were
+// complete, together with its input MsgID so the join it eventually produces can
+// be emitted with a deterministic, restart-stable id.
+type cachedBatch struct {
+	MsgID protocol.MsgID         `json:"msg_id"`
+	Txs   []protocol.Transaction `json:"txs"`
+}
 
 // Join builds Query2Result records by joining max-amount transactions (received
 // from an upstream sum aggregator) with bank account info (received directly
@@ -29,13 +49,22 @@ type Join struct {
 
 	previousWorkerAmount int
 
-	// All fields below are guarded by mu.
-	mu                  sync.Mutex
+	// procMu serializes the two consumer goroutines: it is held across the whole
+	// handle + Track sequence (see process), so only one message is in flight at
+	// a time and a checkpoint flush (inside Track) can never interleave with the
+	// other goroutine's handler and capture an inconsistent state/dedup snapshot.
+	// All maps below — and SnapshotClient/RestoreClient — are covered by it; the
+	// snapshot/restore paths run under it (flush) or at startup, so they do not
+	// re-acquire it.
+	procMu              sync.Mutex
 	workerEofReceived   map[uuid.UUID]int
 	accountsEofReceived map[uuid.UUID]bool
 	finalized           map[uuid.UUID]bool
 	bankNamesPerCli     map[uuid.UUID]map[string]string
-	txCachePerCl        map[uuid.UUID]map[string][]protocol.Transaction
+	// txCachePerCl buffers transaction batches only while the bank table is still
+	// incomplete (before the accounts EOF). Once accounts are complete it is
+	// drained and stays empty — later batches are joined and emitted on arrival.
+	txCachePerCl map[uuid.UUID][]cachedBatch
 }
 
 func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error) {
@@ -59,7 +88,7 @@ func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error
 		accountsEofReceived:  make(map[uuid.UUID]bool),
 		finalized:            make(map[uuid.UUID]bool),
 		bankNamesPerCli:      make(map[uuid.UUID]map[string]string),
-		txCachePerCl:         make(map[uuid.UUID]map[string][]protocol.Transaction),
+		txCachePerCl:         make(map[uuid.UUID][]cachedBatch),
 	}, nil
 }
 
@@ -76,32 +105,20 @@ func (j *Join) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, nil, j.cfg.CheckpointInterval)
+	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, j, j.cfg.CheckpointInterval)
 	if err := j.coord.Recover(); err != nil {
 		return err
 	}
 
 	go func() {
 		errCh <- j.accountsBroker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-			clientID, err := j.handleAccountsMessage(msg)
-			if err != nil {
-				slog.Error("Error handling accounts message", "error", err)
-				nack()
-				return
-			}
-			j.coord.Track(clientID, ack)
+			j.process(j.handleAccountsMessage, msg, ack, nack)
 		})
 	}()
 
 	go func() {
 		errCh <- j.resultsBroker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-			clientID, err := j.handleTransactionMessage(msg)
-			if err != nil {
-				slog.Error("Error handling transaction message", "error", err)
-				nack()
-				return
-			}
-			j.coord.Track(clientID, ack)
+			j.process(j.handleTransactionMessage, msg, ack, nack)
 		})
 	}()
 
@@ -112,6 +129,24 @@ func (j *Join) Stop() {}
 
 // Private Methods
 
+// process serializes the two consumer goroutines. procMu is held across the
+// whole handle + Track sequence so a checkpoint flush cannot interleave with the
+// sibling goroutine's handler — which would snapshot state and dedup at
+// different instants and (for the EOF counters) double-count on restart.
+func (j *Join) process(handle func(broker.Message) (uuid.UUID, error), msg broker.Message, ack, nack func()) {
+	j.procMu.Lock()
+	defer j.procMu.Unlock()
+	clientID, err := handle(msg)
+	if err != nil {
+		slog.Error("Error handling join message", "error", err)
+		nack()
+		return
+	}
+	if err := j.coord.Track(clientID, ack); err != nil {
+		slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+	}
+}
+
 func toQuery2Result(tx protocol.Transaction, bankName string) protocol.Query2Result {
 	return protocol.Query2Result{
 		FromBank:    tx.FromBank,
@@ -119,6 +154,37 @@ func toQuery2Result(tx protocol.Transaction, bankName string) protocol.Query2Res
 		BankName:    bankName,
 		AmountPaid:  tx.AmountPaid,
 	}
+}
+
+// joinAndEmit joins one transaction batch against the (complete) bank table and
+// emits the results as a single Query2 batch. The output id is derived from the
+// input batch's MsgID, so the same input always yields the same output id — a
+// re-emission after a restart (immediate or drained) is collapsed downstream.
+// Banks absent from the accounts dataset are dropped. Caller holds procMu.
+func (j *Join) joinAndEmit(clientID uuid.UUID, inputMsgID protocol.MsgID, txs []protocol.Transaction, bankNames map[string]string) error {
+	results := make([]protocol.Query2Result, 0, len(txs))
+	for _, tx := range txs {
+		name, known := bankNames[tx.FromBank]
+		if !known {
+			slog.Warn("Dropping transaction with no matching bank", "clientID", clientID, "bankID", tx.FromBank)
+			continue
+		}
+		results = append(results, toQuery2Result(tx, name))
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	payload, err := j.pub.EncodeQuery2ResultBatch(results)
+	if err != nil {
+		slog.Error("Error encoding query result batch", "error", err)
+		return err
+	}
+	id := protocol.DeriveMsgID(inputMsgID, "q2result", 0)
+	if err := j.pub.PublishInternalWithID(clientID, protocol.MsgQuery2Result, broker.KeyNil, payload, id); err != nil {
+		slog.Error("Error sending message to broker", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (j *Join) handleAccountsBatch(envelope protocol.InternalEnvelope) error {
@@ -130,55 +196,36 @@ func (j *Join) handleAccountsBatch(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received accounts batch", "clientID", clientID, "batchLen", len(accounts))
 
-	j.mu.Lock()
-	// Create bank ID -> name map for this client
-	if j.bankNamesPerCli[clientID] == nil {
-		j.bankNamesPerCli[clientID] = make(map[string]string)
+	bankNames := j.bankNamesPerCli[clientID]
+	if bankNames == nil {
+		bankNames = make(map[string]string)
+		j.bankNamesPerCli[clientID] = bankNames
 	}
-	j.mu.Unlock()
-	// For each account received, if the Bank ID is not stored, store it with the Bank Name.
 	for _, info := range accounts {
-		j.mu.Lock()
-		if _, ok := j.bankNamesPerCli[clientID][info.BankID]; !ok {
-			j.bankNamesPerCli[clientID][info.BankID] = info.BankName
+		if _, ok := bankNames[info.BankID]; !ok {
+			bankNames[info.BankID] = info.BankName
 		}
-		var cached []protocol.Transaction
-		if perBank, ok := j.txCachePerCl[clientID]; ok {
-			cached = perBank[info.BankID]
-			delete(perBank, info.BankID)
-		}
-		j.mu.Unlock()
-		if len(cached) == 0 {
-			continue
-		}
-		results := make([]protocol.Query2Result, 0, len(cached))
-		for _, tx := range cached {
-			results = append(results, toQuery2Result(tx, info.BankName))
-		}
-		if err := j.emitResult(clientID, results); err != nil {
-			j.mu.Lock()
-			// Re-cache the whole cached object if sending fails, to retry if the same bank is received.
-			if j.txCachePerCl[clientID] == nil {
-				j.txCachePerCl[clientID] = make(map[string][]protocol.Transaction)
-			}
-			j.txCachePerCl[clientID][info.BankID] = cached
-			j.mu.Unlock()
-			slog.Error("Error emitting cached result", "error", err)
-			return err
-		}
-		slog.Debug("Emitted cached results for bank", "clientID", clientID, "bankID", info.BankID, "count", len(cached))
 	}
 	return nil
 }
 
+// handleAccountsEOF marks the bank table complete and drains everything cached
+// while it was still incomplete, then drops the cache. From here on transactions
+// are joined on arrival (handleTransactionBatch), so nothing else is buffered.
 func (j *Join) handleAccountsEOF(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received accounts EOF for client", "clientID", clientID)
-	j.mu.Lock()
 	j.accountsEofReceived[clientID] = true
-	ready := j.shouldFinalizeLocked(clientID)
-	j.mu.Unlock()
-	if ready {
+
+	bankNames := j.bankNamesPerCli[clientID]
+	for _, cb := range j.txCachePerCl[clientID] {
+		if err := j.joinAndEmit(clientID, cb.MsgID, cb.Txs, bankNames); err != nil {
+			return err
+		}
+	}
+	delete(j.txCachePerCl, clientID)
+
+	if j.shouldFinalize(clientID) {
 		return j.finalizeClient(clientID)
 	}
 	return nil
@@ -191,44 +238,34 @@ func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, error) {
 	})
 }
 
+// handleTransactionBatch joins on arrival once the bank table is complete; until
+// then it caches the whole batch (with its id) so it can be drained
+// deterministically at the accounts EOF.
 func (j *Join) handleTransactionBatch(envelope protocol.InternalEnvelope) error {
 	transactions, err := j.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
 		return err
 	}
-	results := make([]protocol.Query2Result, 0, len(transactions))
-	j.mu.Lock()
-	slog.Debug("Received transaction batch for join", "batchLen", len(transactions), "msgType", envelope.MsgType)
-	for _, tx := range transactions {
-		name, ok := j.bankNamesPerCli[envelope.ClientId][tx.FromBank]
-		if !ok {
-			if j.txCachePerCl[envelope.ClientId] == nil {
-				j.txCachePerCl[envelope.ClientId] = make(map[string][]protocol.Transaction)
-			}
-			slog.Debug("Bank name not found for transaction, caching", "clientID", envelope.ClientId, "bankID", tx.FromBank)
-			j.txCachePerCl[envelope.ClientId][tx.FromBank] = append(j.txCachePerCl[envelope.ClientId][tx.FromBank], tx)
-		} else {
-			results = append(results, toQuery2Result(tx, name))
-		}
-	}
-	j.mu.Unlock()
-	if len(results) == 0 {
+	clientID := envelope.ClientId
+	slog.Debug("Received transaction batch for join", "batchLen", len(transactions))
+
+	if !j.accountsEofReceived[clientID] {
+		j.txCachePerCl[clientID] = append(j.txCachePerCl[clientID], cachedBatch{MsgID: envelope.MsgID, Txs: transactions})
 		return nil
 	}
-	return j.emitResult(envelope.ClientId, results)
+	return j.joinAndEmit(clientID, envelope.MsgID, transactions, j.bankNamesPerCli[clientID])
 }
 
 func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
-	slog.Debug("Received transaction EOF for client", "clientID", envelope.ClientId)
-	j.mu.Lock()
-	j.workerEofReceived[envelope.ClientId]++
-	count := j.workerEofReceived[envelope.ClientId]
-	ready := j.shouldFinalizeLocked(envelope.ClientId)
-	j.mu.Unlock()
-	slog.Debug("Current EOF count", "clientID", envelope.ClientId, "workerEofReceived", count, "previousWorkerAmount", j.previousWorkerAmount)
-	if ready {
-		return j.finalizeClient(envelope.ClientId)
+	clientID := envelope.ClientId
+	slog.Debug("Received transaction EOF for client", "clientID", clientID)
+	slog.Debug("Sleeping...")
+	time.Sleep(5 * time.Second)
+	j.workerEofReceived[clientID]++
+	slog.Debug("Current EOF count", "clientID", clientID, "workerEofReceived", j.workerEofReceived[clientID], "previousWorkerAmount", j.previousWorkerAmount)
+	if j.shouldFinalize(clientID) {
+		return j.finalizeClient(clientID)
 	}
 	return nil
 }
@@ -240,11 +277,10 @@ func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, error) {
 	})
 }
 
-// shouldFinalizeLocked reports whether both the worker-side EOF barrier and the
-// accounts-side EOF have been reached for the given client, and atomically
-// claims the finalize for the caller so concurrent callers won't double-emit.
-// Caller must hold j.mu.
-func (j *Join) shouldFinalizeLocked(clientID uuid.UUID) bool {
+// shouldFinalize reports whether both the worker-side EOF barrier and the
+// accounts-side EOF have been reached for the client, and atomically claims the
+// finalize so the two consumer goroutines won't both run it. Caller holds procMu.
+func (j *Join) shouldFinalize(clientID uuid.UUID) bool {
 	if j.finalized[clientID] {
 		return false
 	}
@@ -258,57 +294,68 @@ func (j *Join) shouldFinalizeLocked(clientID uuid.UUID) bool {
 	return true
 }
 
-// finalizeClient is called once per client, when both EOF barriers have been
-// reached. It drains any transactions still cached for banks that have already
-// been registered (the failed-emit retry path stores them back under their
-// known bank), drops cached txs whose bank never appeared in the accounts
-// dataset, emits the Query2 EOF, and tears down the client's state.
+// finalizeClient runs once per client when both EOF barriers are met. By then
+// all results have already been emitted (drained at the accounts EOF and/or
+// joined on arrival), so it only emits the terminal Query2 EOF and tears the
+// client's state down. Caller holds procMu.
 func (j *Join) finalizeClient(clientID uuid.UUID) error {
-	j.mu.Lock()
-	banks := j.bankNamesPerCli[clientID]
-	cached := j.txCachePerCl[clientID]
-	delete(j.bankNamesPerCli, clientID)
-	delete(j.txCachePerCl, clientID)
-	delete(j.workerEofReceived, clientID)
-	delete(j.accountsEofReceived, clientID)
-	j.mu.Unlock()
-
-	for bankID, txs := range cached {
-		name, known := banks[bankID]
-		if !known {
-			slog.Warn("Dropping cached transactions with no matching bank",
-				"clientID", clientID, "bankID", bankID, "count", len(txs))
-			continue
-		}
-		results := make([]protocol.Query2Result, 0, len(txs))
-		for _, tx := range txs {
-			results = append(results, toQuery2Result(tx, name))
-		}
-		if err := j.emitResult(clientID, results); err != nil {
-			slog.Error("Error emitting cached result during finalize",
-				"clientID", clientID, "bankID", bankID, "error", err)
-			return err
-		}
-	}
-
-	if err := j.pub.PublishInternal(clientID, protocol.MsgQuery2ResultEOF, broker.KeyNil, nil); err != nil {
+	eofID := protocol.StageMsgID(clientID, j.cfg.WorkerPrefix, "eof", 0)
+	if err := j.pub.PublishInternalWithID(clientID, protocol.MsgQuery2ResultEOF, broker.KeyNil, nil, eofID); err != nil {
 		slog.Error("Error sending Query2 EOF to broker", "error", err)
 		return err
 	}
 	slog.Debug("Emitted Query2 EOF for client", "clientID", clientID)
+	slog.Debug("Sleeping...")
+	time.Sleep(5 * time.Second)
+
+	// Keep `finalized` as the terminal marker so a redelivered EOF won't
+	// re-finalize a client we've already completed.
+	delete(j.bankNamesPerCli, clientID)
+	delete(j.txCachePerCl, clientID)
+	delete(j.workerEofReceived, clientID)
+	delete(j.accountsEofReceived, clientID)
 	return nil
 }
 
-func (j *Join) emitResult(clientID uuid.UUID, results []protocol.Query2Result) error {
-	slog.Debug("Emitting result for client", "clientID", clientID)
-	resultsBytes, err := j.pub.EncodeQuery2ResultBatch(results)
-	if err != nil {
-		slog.Error("Error encoding query result batch", "error", err)
+// Checkpoint Methods
+
+// SnapshotClient runs inside coord.Flush, which executes under procMu (held by
+// process), so the maps are quiescent; it must not re-acquire procMu.
+func (j *Join) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	cp := joinCheckpoint{
+		BankNames:   j.bankNamesPerCli[clientID],
+		TxCache:     j.txCachePerCl[clientID],
+		WorkerEOF:   j.workerEofReceived[clientID],
+		AccountsEOF: j.accountsEofReceived[clientID],
+		Finalized:   j.finalized[clientID],
+	}
+	return json.Marshal(cp)
+}
+
+// RestoreClient runs at startup (coord.Recover, no concurrency), so it does not
+// take procMu.
+func (j *Join) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp joinCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
 		return err
 	}
-	if err := j.pub.PublishInternal(clientID, protocol.MsgQuery2Result, broker.KeyNil, resultsBytes); err != nil {
-		slog.Error("Error sending message to broker", "error", err)
-		return err
+	if cp.BankNames != nil {
+		j.bankNamesPerCli[clientID] = cp.BankNames
+	}
+	if cp.TxCache != nil {
+		j.txCachePerCl[clientID] = cp.TxCache
+	}
+	if cp.WorkerEOF != 0 {
+		j.workerEofReceived[clientID] = cp.WorkerEOF
+	}
+	if cp.AccountsEOF {
+		j.accountsEofReceived[clientID] = cp.AccountsEOF
+	}
+	if cp.Finalized {
+		j.finalized[clientID] = cp.Finalized
 	}
 	return nil
 }
