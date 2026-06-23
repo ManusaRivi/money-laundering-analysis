@@ -50,6 +50,42 @@ func (b *Buffer[T]) Add(clientID uuid.UUID, key broker.KeyType, item T) error {
 	return nil
 }
 
+func (b *Buffer[T]) Snapshot(clientID uuid.UUID) map[broker.KeyType][]T {
+	byKey, ok := b.buckets[clientID]
+	if !ok {
+		return nil
+	}
+	out := make(map[broker.KeyType][]T, len(byKey))
+	for key, items := range byKey {
+		if len(items) == 0 {
+			continue
+		}
+		cp := make([]T, len(items))
+		copy(cp, items)
+		out[key] = cp
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (b *Buffer[T]) Restore(clientID uuid.UUID, byKey map[broker.KeyType][]T) {
+	dst := make(map[broker.KeyType][]T, len(byKey))
+	for key, items := range byKey {
+		if len(items) == 0 {
+			continue
+		}
+		cp := make([]T, len(items))
+		copy(cp, items)
+		dst[key] = cp
+	}
+	if len(dst) == 0 {
+		return
+	}
+	b.buckets[clientID] = dst
+}
+
 // FlushClient publica todos los buckets parciales de un cliente y libera su
 // estado. DEBE llamarse antes de emitir el EOF de ese cliente: el conteo del
 // EOF promete que todos los resultados previos ya fueron publicados.
