@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/eof"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
@@ -24,6 +26,14 @@ type Client struct {
 	doneCh      chan struct{}
 }
 
+type AvgFormatFilterCheckpoint struct {
+	avgByFormat map[string]float64
+	eofCount    int
+	expected    int
+	received    int
+	done        bool
+}
+
 type AvgFormatFilter struct {
 	cfg           config.WorkerConfig
 	avgBroker     broker.Broker
@@ -31,6 +41,7 @@ type AvgFormatFilter struct {
 	prevWorkers   int
 	avgMultiplier float64
 	pub           *messaging.Publisher
+	coord         *checkpoint.Coordinator
 
 	mu      sync.Mutex
 	clients map[uuid.UUID]*Client
@@ -58,6 +69,112 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 	return f, nil
 }
 
+func (f *AvgFormatFilter) Run() error {
+	defer func() {
+		f.txBroker.StopConsuming()
+		f.avgBroker.StopConsuming()
+	}()
+
+	var err error
+	f.syncEOFController, err = eof.NewSyncEOFController(
+		f.cfg.SyncEOFConfig,
+		f.onflush,
+		f.onLeaderFlush,
+		f.onRetryExceeded,
+	)
+	if err != nil {
+		slog.Error("Error creating SyncEOFController", "error", err)
+		return err
+	}
+
+	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	if err != nil {
+		slog.Error("Error creating checkpoint manager", "error", err)
+		return err
+	}
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, f, f.cfg.CheckpointInterval)
+	if err := f.coord.Recover(); err != nil {
+		return err
+	}
+
+	go f.syncEOFController.Start()
+
+	errCh := make(chan error, 2)
+
+	go func() {
+		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
+			clientID, err := f.handleAvgMessage(msg)
+			if err != nil {
+				nack()
+				return
+			}
+			f.coord.Track(clientID, ack)
+		})
+	}()
+
+	go func() {
+		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
+			clientID, err := f.handleTxMessage(msg)
+			if err != nil {
+				nack()
+				return
+			}
+			f.coord.Track(clientID, ack)
+		})
+	}()
+
+	return <-errCh
+}
+
+func (f *AvgFormatFilter) Stop() {}
+
+// Private methods
+
+// Checkpoint methods
+
+func (f *AvgFormatFilter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	client, ok := f.clients[clientID]
+	if !ok {
+		return nil, fmt.Errorf("Client not found for snapshot: %s", clientID)
+	}
+
+	checkpoint := AvgFormatFilterCheckpoint{
+		avgByFormat: client.avgByFormat,
+		eofCount:    client.eofCount,
+		expected:    client.expected,
+		received:    client.received,
+		done:        client.done,
+	}
+
+	return json.Marshal(checkpoint)
+}
+
+func (f *AvgFormatFilter) RestoreClient(clientID uuid.UUID, data []byte) error {
+	var checkpoint AvgFormatFilterCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return fmt.Errorf("Failed to unmarshal checkpoint data for client %s: %w", clientID, err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	client := f.getOrCreateClientLocked(clientID)
+	client.avgByFormat = checkpoint.avgByFormat
+	client.eofCount = checkpoint.eofCount
+	client.expected = checkpoint.expected
+	client.received = checkpoint.received
+	client.done = checkpoint.done
+
+	if client.done && client.doneCh != nil {
+		close(client.doneCh)
+	}
+
+	return nil
+}
+
 func (f *AvgFormatFilter) getOrCreateClientLocked(clientID uuid.UUID) *Client {
 	client, ok := f.clients[clientID]
 	if !ok {
@@ -83,54 +200,7 @@ func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) {
 	<-ch
 }
 
-func (f *AvgFormatFilter) Run() error {
-	defer func() {
-		f.txBroker.StopConsuming()
-		f.avgBroker.StopConsuming()
-	}()
-
-	var err error
-	f.syncEOFController, err = eof.NewSyncEOFController(
-		f.cfg.SyncEOFConfig,
-		f.onflush,
-		f.onLeaderFlush,
-		f.onRetryExceeded,
-	)
-	if err != nil {
-		slog.Error("Error creating SyncEOFController", "error", err)
-		return err
-	}
-
-	go f.syncEOFController.Start()
-
-	errCh := make(chan error, 2)
-
-	go func() {
-		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			if err := f.handleAvgMessage(msg); err != nil {
-				nack()
-				return
-			}
-			ack()
-		})
-	}()
-
-	go func() {
-		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			if err := f.handleTxMessage(msg); err != nil {
-				nack()
-				return
-			}
-			ack()
-		})
-	}()
-
-	return <-errCh
-}
-
-func (f *AvgFormatFilter) Stop() {}
-
-func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) error {
+func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleAvgBatch,
 		protocol.MsgTransactionsEOF:   f.handleAvgEOF,
@@ -196,7 +266,7 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID, client *Client)
 	}
 }
 
-func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) error {
+func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   f.handleEOF,
