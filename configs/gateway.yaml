@@ -1,14 +1,12 @@
-type: "q-e"
-url: amqp://guest:guest@rabbitmq:5672/
-input: query_results
-output: e_entry
-exchange_type: topic
-prefetch: 300
-durable: true
-auto_delete: false
-exclusive: false
-no_wait: false
-internal: false
+broker:
+  type: q-e
+  input:
+    queue:
+      name: query_results
+  output:
+    exchange:
+      name: e_entry
+      type: topic
 
 server_host: "0.0.0.0"
 server_port: 8080

@@ -1,15 +1,15 @@
 broker:
   type: e-e
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q4_agg
-  output: e_q4_acc
-  exchange_type: direct
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  # exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    exchange:
+      name: e_q4_agg
+      type: direct
+    queue:
+      name: q_q4_agg
+  output:
+    exchange:
+      name: e_q4_acc
+      type: direct
 
 worker:
   type: "ScatterAndGather"

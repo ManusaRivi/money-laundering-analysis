@@ -1,18 +1,16 @@
 broker:
   type: e-q
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q345_cleaner
-  input_queue: q_q3_avg_cleaner
-  output: q_q3_router
-  exchange_type: topic
-  input_keys:
-    - tx.usd
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    exchange:
+      name: e_q345_cleaner
+      type: topic
+      keys:
+        - tx.usd
+    queue:
+      name: q_q3_avg_cleaner
+  output:
+    queue:
+      name: q_q3_router
 
 worker:
   type: "Cleaner"
