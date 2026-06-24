@@ -61,7 +61,6 @@ func (r *Spliter) Run() error {
 	var err error
 	r.syncEOFController, err = eof.NewSyncEOFController(
 		r.cfg.SyncEOFConfig,
-		r.onflush,
 		r.onLeaderFlush,
 		r.onRetryExceeded,
 	)
@@ -79,10 +78,6 @@ func (r *Spliter) Run() error {
 		}
 		ack()
 	})
-}
-
-func (r *Spliter) onflush(clientID uuid.UUID) error {
-	return nil
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
