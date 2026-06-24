@@ -1,14 +1,11 @@
 broker:
   type: q-q
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q4_join
-  output: query_results
-  prefetch: 100
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    queue:
+      name: q_q4_join
+  output:
+    queue:
+      name: query_results
 
 worker:
   type: "JoinQuery4"

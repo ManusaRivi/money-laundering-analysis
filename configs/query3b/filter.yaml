@@ -1,30 +1,21 @@
 avg_broker:
   type: e-q
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: e_q3_avg
-  output: q_q3_avg_filter_sink
-  exchange_type: fanout
-  input_keys:
-    - tx.*
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    exchange:
+      name: e_q3_avg
+      type: fanout
+  output:
+    queue:
+      name: q_q3_avg_filter_sink
 
 broker:
   type: q-q
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q3_amount_filter
-  output: query_results
-  exchange_type: direct
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    queue:
+      name: q_q3_amount_filter
+  output:
+    queue:
+      name: query_results
   lazy: true
 
 worker:

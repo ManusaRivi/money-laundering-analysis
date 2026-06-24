@@ -1,15 +1,11 @@
 broker:
   type: q-q
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q3_date_filter
-  output: q_q3_amount_filter
-
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    queue:
+      name: q_q3_date_filter
+  output:
+    queue:
+      name: q_q3_amount_filter
 
 worker:
   type: "DateRangeFilter"

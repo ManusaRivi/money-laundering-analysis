@@ -76,25 +76,31 @@ func (m *Manager) Run() error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
+	errCh := make(chan error, 1)
 	go func() {
-		sig := <-sigCh
-		slog.Info("Received signal, shutting down worker...", "signal", sig)
+		errCh <- m.Worker.Run()
+	}()
 
+	select {
+	case sig := <-sigCh:
+		slog.Info("Received signal, shutting down worker...", "signal", sig)
 		if m.mlCancel != nil {
 			m.mlCancel()
 		}
-
-		go m.Worker.Stop()
-
+		m.Worker.Stop()
+		if m.broker != nil {
+			m.broker.Close()
+		}
 		select {
+		case <-errCh:
 		case <-time.After(5 * time.Second):
 			slog.Warn("Shutdown timed out, exiting forcefully")
-			os.Exit(0)
 		}
-	}()
+	case err := <-errCh:
+		return err
+	}
 
-	err := m.Worker.Run()
-	signal.Stop(sigCh)
-	return err
+	return nil
 }

@@ -15,11 +15,6 @@ import (
 
 const MaxQueueLength = 1000
 
-// queueToQueueBroker consumes from one queue and publishes to another. It owns
-// a single AMQP connection but separates the consumer and publisher onto two
-// dedicated channels so that publisher flow control (e.g. RabbitMQ memory
-// alarm) cannot stall consumer acks, and a channel-level error on one side
-// does not tear down the other.
 type queueToQueueBroker struct {
 	conn           *amqp.Connection
 	produceChannel *amqp.Channel
@@ -34,17 +29,17 @@ type queueToQueueBroker struct {
 }
 
 func newQueueToQueueBroker(cfg config.BrokerConfig) (Broker, error) {
-	if cfg.Input == "" {
-		return nil, errors.New("input is required for q-q broker")
+	if cfg.Input == nil || cfg.Input.Queue == nil || cfg.Input.Queue.Name == "" {
+		return nil, errors.New("input.queue.name is required for q-q broker")
 	}
-	if cfg.Output == "" {
-		return nil, errors.New("output is required for q-q broker")
+	if cfg.Output == nil || cfg.Output.Queue == nil || cfg.Output.Queue.Name == "" {
+		return nil, errors.New("output.queue.name is required for q-q broker")
 	}
 	if cfg.RabbitURL == "" {
 		return nil, errors.New("url is required for q-q broker")
 	}
 
-	return buildQueueToQueueBroker(cfg.Input, cfg.Output, cfg.RabbitURL, cfg)
+	return buildQueueToQueueBroker(cfg.Input.Queue.Name, cfg.Output.Queue.Name, cfg.RabbitURL, cfg)
 }
 
 func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabbitURL string, cfg config.BrokerConfig) (Broker, error) {
@@ -60,7 +55,7 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if cfg.Persistent {
+	if *cfg.Persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -69,22 +64,18 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		}
 	}
 
-	if cfg.Prefetch == 0 {
-		cfg.Prefetch = 30
-	}
-
 	slog.Debug("Declaring input queue", "queue", inputQueueName)
 	queueArgs := amqp.Table{}
-	if cfg.Lazy {
+	if *cfg.Lazy {
 		queueArgs["x-queue-mode"] = "lazy"
 	}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		inputQueueName,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
+		*cfg.Durable,
+		*cfg.AutoDelete,
+		*cfg.Exclusive,
+		*cfg.NoWait,
 		queueArgs,
 	)
 	if err != nil {
@@ -126,9 +117,9 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	}
 	qb.mu.Unlock()
 
-	if qb.config.Prefetch == 0 {
-		qb.config.Prefetch = 30
-	}
+	queueName := qb.inputQueue.Name
+	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
 	if qb.config.Prefetch > 0 {
 		if err := qb.consumeChannel.Qos(qb.config.Prefetch, 0, false); err != nil {
 			if errors.Is(err, amqp.ErrClosed) {
@@ -137,9 +128,6 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 			return ErrBrokerMessage
 		}
 	}
-
-	queueName := qb.inputQueue.Name
-	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
 	msgs, err := qb.consumeChannel.Consume(
 		queueName,
@@ -204,7 +192,7 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, qb.config.Persistent, "", qb.outputQueue, msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, "", qb.outputQueue, msg)
 }
 
 func (qb *queueToQueueBroker) Close() error {

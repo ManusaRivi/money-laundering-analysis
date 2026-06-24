@@ -4,55 +4,40 @@ import (
 	"os"
 
 	commonConfig "github.com/ManusaRivi/money-laundering-analysis/src/common/config"
-	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 type GatewayConfig struct {
-	BrokerConfig         commonConfig.BrokerConfig
+	BrokerConfig         commonConfig.BrokerConfig `yaml:"broker"`
 	AccountsBrokerConfig *commonConfig.BrokerConfig
-	ServerHost           string
-	ServerPort           string
+	ServerHost           string `yaml:"server_host"`
+	ServerPort           string `yaml:"server_port"`
 }
 
 const CONFIG_PATH = "../config.yaml"
 
 func LoadConfig() (*GatewayConfig, error) {
-	v := viper.New()
-	v.SetConfigFile(CONFIG_PATH)
-	err := v.ReadInConfig()
+	commonConfig.InitSystemDefaults()
+
+	data, err := os.ReadFile(CONFIG_PATH)
 	if err != nil {
 		return nil, err
 	}
-	config := &GatewayConfig{
-		BrokerConfig: commonConfig.BrokerConfig{
-			Type:         v.GetString("type"),
-			RabbitURL:    v.GetString("url"),
-			Input:        v.GetString("input"),
-			Output:       v.GetString("output"),
-			ExchangeType: v.GetString("exchange_type"),
-			OutputExchangeType: v.GetString("output_exchange_type"),
-			Prefetch:     v.GetInt("prefetch"),
-			Durable:      v.GetBool("durable"),
-			AutoDelete:   v.GetBool("auto_delete"),
-			Exclusive:    v.GetBool("exclusive"),
-			NoWait:       v.GetBool("no_wait"),
-			Internal:     v.GetBool("internal"),
-		},
-		ServerHost: v.GetString("server_host"),
-		ServerPort: v.GetString("server_port"),
+
+	var cfg GatewayConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
 	}
 
-	if config.BrokerConfig.OutputExchangeType == "" {
-		config.BrokerConfig.OutputExchangeType = config.BrokerConfig.ExchangeType
-	}
+	commonConfig.LoadSystemDefaultsForBroker(&cfg.BrokerConfig)
 
 	if accountsConfigPath := os.Getenv("ACCOUNTS_CONFIG_PATH"); accountsConfigPath != "" {
 		accountsCfg, err := commonConfig.LoadAccountConfig(accountsConfigPath)
 		if err != nil {
 			return nil, err
 		}
-		config.AccountsBrokerConfig = accountsCfg
+		cfg.AccountsBrokerConfig = accountsCfg
 	}
 
-	return config, nil
+	return &cfg, nil
 }
