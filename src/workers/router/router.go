@@ -62,6 +62,7 @@ func (r *Router) Run() error {
 	var err error
 	r.syncEOFController, err = eof.NewSyncEOFController(
 		r.cfg.SyncEOFConfig,
+		r.onflush,
 		r.onLeaderFlush,
 		r.onRetryExceeded,
 	)
@@ -112,6 +113,10 @@ func parseRouteField(params map[string]any) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func (r *Router) onflush(clientID uuid.UUID) error {
+	return nil
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
