@@ -175,16 +175,7 @@ func (eb *EOFBroker) Send(msg broker.Message) error {
 			false,
 			amqp.Publishing{Body: msg.Body},
 		)
-	case MsgTypeFlushAck:
-		queueName := fmt.Sprintf("%s_%d", eb.EOFPrefix, ctrlMsg.RequesterID)
-		return eb.ch.Publish(
-			"",
-			queueName,
-			false,
-			false,
-			amqp.Publishing{Body: msg.Body},
-		)
-	case MsgTypeAmountRequest, MsgTypeFlush, MsgTypeRetryExceeded:
+	case MsgTypeAmountRequest, MsgTypeRetryExceeded:
 		return eb.ch.Publish(
 			eb.broadcastExchange,
 			"",
