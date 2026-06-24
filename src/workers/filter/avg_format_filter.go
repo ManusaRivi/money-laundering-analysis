@@ -92,6 +92,7 @@ func (f *AvgFormatFilter) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
 	)
@@ -264,6 +265,10 @@ func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
+	return nil
+}
+
+func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
 	return nil
 }
 

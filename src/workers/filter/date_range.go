@@ -68,6 +68,7 @@ func (f *DateRange) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
 	)
@@ -88,6 +89,11 @@ func (f *DateRange) Run() error {
 		}
 		ack()
 	})
+}
+
+func (f *DateRange) onflush(clientID uuid.UUID) error {
+	// El filtro sincronizado esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
+	return nil
 }
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {

@@ -85,6 +85,7 @@ func (f *SyncFilter) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
 	)
@@ -110,6 +111,10 @@ func (f *SyncFilter) Run() error {
 func (f *SyncFilter) Stop() {}
 
 // Private methods
+
+func (f *SyncFilter) onflush(clientID uuid.UUID) error {
+	return nil
+}
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
 	// TODO: Loguear que el cliente supero el maximo de reintentos y tomar la decision que se considere (ej: emitir un EOF forzado, loguear un error, etc)

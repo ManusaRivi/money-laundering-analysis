@@ -56,6 +56,7 @@ func (c *Cleaner) Run() error {
 	var err error
 	c.syncEOFController, err = eof.NewSyncEOFController(
 		c.cfg.SyncEOFConfig,
+		c.onflush,
 		c.onLeaderFlush,
 		c.onRetryExceeded,
 	)
@@ -73,6 +74,11 @@ func (c *Cleaner) Run() error {
 		}
 		ack()
 	})
+}
+
+func (c *Cleaner) onflush(clientID uuid.UUID) error {
+	// El cleaner esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
+	return nil
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
