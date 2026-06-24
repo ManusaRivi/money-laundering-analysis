@@ -4,8 +4,6 @@ avg_broker:
     exchange:
       name: e_q3_avg
       type: fanout
-    queue:
-      name: q_q3_avg_filter
   output:
     queue:
       name: q_q3_avg_filter_sink

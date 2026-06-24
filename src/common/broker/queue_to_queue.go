@@ -85,6 +85,15 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
+	if cfg.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+			produceChannel.Close()
+			consumeChannel.Close()
+			conn.Close()
+			return nil, fmt.Errorf("failed to set qos: %w", err)
+		}
+	}
+
 	return &queueToQueueBroker{
 		conn:           conn,
 		produceChannel: produceChannel,
@@ -110,6 +119,15 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 
 	queueName := qb.inputQueue.Name
 	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	if qb.config.Prefetch > 0 {
+		if err := qb.consumeChannel.Qos(qb.config.Prefetch, 0, false); err != nil {
+			if errors.Is(err, amqp.ErrClosed) {
+				return ErrBrokerDisconnected
+			}
+			return ErrBrokerMessage
+		}
+	}
 
 	msgs, err := qb.consumeChannel.Consume(
 		queueName,

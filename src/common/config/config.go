@@ -124,7 +124,7 @@ func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
 }
 
 const defaultCheckpointDir = "/app/checkpoints"
-const defaultCheckpointInterval = 20
+const defaultCheckpointInterval = 50
 
 func LoadSystemDefaultsForBroker(cfg *BrokerConfig) {
 	applyBrokerDefaults(cfg)
@@ -456,9 +456,13 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
 			}
 			cfg.Input.Exchange.Keys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
-			if cfg.Input.Queue != nil && cfg.Input.Queue.Name == "" {
-				cfg.Input.Queue.Name = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
+			if cfg.Input.Queue == nil {
+				cfg.Input.Queue = &QueueEndpoint{}
 			}
+			cfg.Input.Queue.Name = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
+		}
+		if cfg.Input.Queue == nil {
+			cfg.Input.Queue = &QueueEndpoint{}
 		}
 	} else {
 		if cfg.Input.Queue == nil {

@@ -22,13 +22,16 @@ const (
 	MsgIDHeaderBytes       = 16
 	PayloadSizeHeaderBytes = 4
 
-	// Internal header layout: [MsgType:1][ClientId:16][MsgID:16][payloadLen:4]
-	msgTypeOffset    = 0
-	clientIDOffset   = msgTypeOffset + MsgTypeHeaderBytes
-	msgIDOffset      = clientIDOffset + ClientIDHeaderBytes
-	payloadLenOffset = msgIDOffset + MsgIDHeaderBytes
+	// Internal header layout (current):  [MsgType:1][ClientId:16][MsgID:16][payloadLen:4]
+	// Internal header layout (pre-MsgID): [MsgType:1][ClientId:16][payloadLen:4]
+	msgTypeOffset         = 0
+	clientIDOffset        = msgTypeOffset + MsgTypeHeaderBytes
+	msgIDOffset           = clientIDOffset + ClientIDHeaderBytes
+	payloadLenOffset      = msgIDOffset + MsgIDHeaderBytes
+	oldPayloadLenOffset   = clientIDOffset + ClientIDHeaderBytes
 
-	InternalHeaderSize = payloadLenOffset + PayloadSizeHeaderBytes
+	InternalHeaderSize    = payloadLenOffset + PayloadSizeHeaderBytes
+	oldInternalHeaderSize = oldPayloadLenOffset + PayloadSizeHeaderBytes
 )
 
 func DecodeExternalHeader(header []byte) (protocol.MsgType, uint32) {
@@ -76,20 +79,37 @@ func (BinaryCodec) EncodeInternalEnvelope(envelope protocol.InternalEnvelope) ([
 }
 
 func (BinaryCodec) DecodeInternalEnvelope(message []byte) (protocol.InternalEnvelope, error) {
-	if len(message) < InternalHeaderSize {
-		return protocol.InternalEnvelope{}, fmt.Errorf("internal envelope too short: %d bytes (need at least %d)", len(message), InternalHeaderSize)
+	if len(message) >= InternalHeaderSize {
+		msgType, ClientId, msgID, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
+		if uint32(len(message)-InternalHeaderSize) >= payloadLen {
+			payload := message[InternalHeaderSize : InternalHeaderSize+payloadLen]
+			return protocol.InternalEnvelope{
+				MsgType:  msgType,
+				ClientId: ClientId,
+				MsgID:    msgID,
+				Payload:  payload,
+			}, nil
+		}
 	}
-	msgType, ClientId, msgID, payloadLen := DecodeInternalHeader(message[:InternalHeaderSize])
-	if uint32(len(message)-InternalHeaderSize) < payloadLen {
-		return protocol.InternalEnvelope{}, fmt.Errorf("payload length mismatch: header says %d bytes but only %d bytes remain", payloadLen, len(message)-InternalHeaderSize)
+
+	if len(message) >= oldInternalHeaderSize {
+		msgType := protocol.MsgType(message[msgTypeOffset])
+		clientId, err := uuid.FromBytes(message[clientIDOffset : clientIDOffset+ClientIDHeaderBytes])
+		if err == nil {
+			payloadLen := binary.BigEndian.Uint32(message[oldPayloadLenOffset : oldPayloadLenOffset+PayloadSizeHeaderBytes])
+			if uint32(len(message)-oldInternalHeaderSize) >= payloadLen {
+				payload := message[oldInternalHeaderSize : oldInternalHeaderSize+payloadLen]
+				return protocol.InternalEnvelope{
+					MsgType:  msgType,
+					ClientId: clientId,
+					MsgID:    protocol.MsgID{},
+					Payload:  payload,
+				}, nil
+			}
+		}
 	}
-	payload := message[InternalHeaderSize : InternalHeaderSize+payloadLen]
-	return protocol.InternalEnvelope{
-		MsgType:  msgType,
-		ClientId: ClientId,
-		MsgID:    msgID,
-		Payload:  payload,
-	}, nil
+
+	return protocol.InternalEnvelope{}, fmt.Errorf("internal envelope too short: %d bytes (need at least %d)", len(message), InternalHeaderSize)
 }
 
 // SetEnvelopeMsgID overwrites the MsgID field of an already-framed internal

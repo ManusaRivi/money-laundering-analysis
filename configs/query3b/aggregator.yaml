@@ -4,8 +4,6 @@ broker:
     exchange:
       name: e_q3_agg
       type: direct
-    queue:
-      name: q_q3_agg
   output:
     exchange:
       name: e_q3_avg
