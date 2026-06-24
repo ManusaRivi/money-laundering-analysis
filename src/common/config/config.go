@@ -97,11 +97,17 @@ type Config struct {
 	Monitoring    *MonitoringConfig `yaml:"monitoring,omitempty"`
 }
 
+type SystemWorkerDefaults struct {
+	CheckpointInterval int `yaml:"checkpoint_interval"`
+}
+
 var systemDefaults *SystemBrokerDefaults
+var systemWorkerDefaults *SystemWorkerDefaults
 
 type SystemConfig struct {
-	Monitoring *MonitoringConfig    `yaml:"monitoring"`
-	Broker     *SystemBrokerDefaults `yaml:"broker"`
+	Monitoring *MonitoringConfig       `yaml:"monitoring"`
+	Broker     *SystemBrokerDefaults    `yaml:"broker"`
+	Worker     *SystemWorkerDefaults    `yaml:"worker"`
 }
 
 func InitSystemDefaults() {
@@ -122,9 +128,6 @@ func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
 	}
 	return &p, nil
 }
-
-const defaultCheckpointDir = "/app/checkpoints"
-const defaultCheckpointInterval = 50
 
 func LoadSystemDefaultsForBroker(cfg *BrokerConfig) {
 	applyBrokerDefaults(cfg)
@@ -180,6 +183,9 @@ func Load(filepath string) (*Config, error) {
 	if err := applyEnv(cfg); err != nil {
 		return nil, err
 	}
+
+	applyWorkerDefaults(cfg)
+
 	if err := verifyConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -197,6 +203,10 @@ func Load(filepath string) (*Config, error) {
 		}
 	}
 	applyEOFDefaults(cfg)
+
+	if cfg.Worker.CheckpointInterval > cfg.Broker.Prefetch {
+		return nil, fmt.Errorf("worker checkpoint_interval cannot be greater than broker prefetch")
+	}
 
 	return cfg, nil
 }
@@ -245,6 +255,9 @@ func loadSystemDefaults(cfg *Config) error {
 	if sysCfg.Broker != nil {
 		systemDefaults = sysCfg.Broker
 	}
+	if sysCfg.Worker != nil {
+		systemWorkerDefaults = sysCfg.Worker
+	}
 	return nil
 }
 
@@ -277,7 +290,7 @@ func verifyConfig(cfg *Config) error {
 		return fmt.Errorf("worker type is required")
 	}
 	if cfg.Worker.CheckpointInterval == 0 {
-		cfg.Worker.CheckpointInterval = defaultCheckpointInterval
+		return fmt.Errorf("worker checkpoint_interval is required (set in config yaml or system.yaml)")
 	}
 	return nil
 }
@@ -343,10 +356,16 @@ func applyEnv(cfg *Config) error {
 
 	cfg.Worker.CheckpointDir = os.Getenv("CHECKPOINT_DIR")
 	if cfg.Worker.CheckpointDir == "" {
-		cfg.Worker.CheckpointDir = defaultCheckpointDir
+		return fmt.Errorf("CHECKPOINT_DIR environment variable is required")
 	}
 
 	return nil
+}
+
+func applyWorkerDefaults(cfg *Config) {
+	if systemWorkerDefaults != nil && cfg.Worker.CheckpointInterval == 0 {
+		cfg.Worker.CheckpointInterval = systemWorkerDefaults.CheckpointInterval
+	}
 }
 
 func applyBrokerDefaults(cfg *BrokerConfig) error {

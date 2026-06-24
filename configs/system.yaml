@@ -1,6 +1,9 @@
 monitoring:
   port: 9000
 
+worker:
+  checkpoint_interval: 50
+
 broker:
   url: amqp://guest:guest@rabbitmq:5672/
   input:
