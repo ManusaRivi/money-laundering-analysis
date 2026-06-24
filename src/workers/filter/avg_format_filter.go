@@ -87,12 +87,12 @@ func (f *AvgFormatFilter) Run() error {
 		return err
 	}
 
-	checkpointManager, err := checkpoint.NewManager(f.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(f.cfg.CheckpointDir, f.pub, f.syncEOFController, f, f.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, f, f.cfg.CheckpointInterval)
+	f.coord = coord
 	if err := f.coord.Recover(); err != nil {
 		return err
 	}

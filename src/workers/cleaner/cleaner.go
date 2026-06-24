@@ -67,12 +67,12 @@ func (c *Cleaner) Run() error {
 		return err
 	}
 
-	checkpointManager, err := checkpoint.NewManager(c.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(c.cfg.CheckpointDir, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
+	c.coord = coord
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}

@@ -72,12 +72,12 @@ func (r *Spliter) Run() error {
 		return err
 	}
 
-	checkpointManager, err := checkpoint.NewManager(r.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(r.cfg.CheckpointDir, r.pub, r.syncEOFController, nil, r.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	r.coord = checkpoint.NewCoordinator(checkpointManager, r.pub, r.syncEOFController, nil, r.cfg.CheckpointInterval)
+	r.coord = coord
 	if err := r.coord.Recover(); err != nil {
 		return err
 	}

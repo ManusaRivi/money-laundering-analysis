@@ -44,12 +44,12 @@ func NewConverter(cfg config.WorkerConfig, broker broker.Broker) *Converter {
 func (c *Converter) Run() error {
 	defer c.Broker.StopConsuming()
 
-	checkpointManager, err := checkpoint.NewManager(c.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(c.cfg.CheckpointDir, c.pub, nil, nil, c.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, nil, c.cfg.CheckpointInterval)
+	c.coord = coord
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}

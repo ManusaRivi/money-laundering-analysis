@@ -14,6 +14,12 @@ type Checkpointable interface {
 	RestoreClient(clientID uuid.UUID, data []byte) error
 }
 
+type AppendSource interface {
+	DrainClient(clientID uuid.UUID) ([]byte, error)
+	CommitClient(clientID uuid.UUID) error
+	ReplayClient(clientID uuid.UUID, record []byte) error
+}
+
 type Checkpoint struct {
 	Dedup []byte
 	EOF   []byte
