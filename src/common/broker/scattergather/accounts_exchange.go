@@ -144,8 +144,8 @@ func (e *HeavyAccountsExchange) publish(body []byte) error {
 // since merges are idempotent (set unions, done dedup by sender), at-least-once
 // redelivery is safe.
 func (e *HeavyAccountsExchange) StartConsuming(
-	onBatch func(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account),
-	onDone func(clientID uuid.UUID, senderID int),
+	onBatch func(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account, ack, nack func()),
+	onDone func(clientID uuid.UUID, senderID int, ack, nack func()),
 ) error {
 	e.mu.Lock()
 	if e.consuming {
@@ -172,8 +172,7 @@ func (e *HeavyAccountsExchange) StartConsuming(
 			if !ok {
 				return nil
 			}
-			e.dispatch(d.Body, onBatch, onDone)
-			_ = d.Ack(false)
+			e.dispatch(d.Body, onBatch, onDone, d.Ack(), d.Nack(false, true))
 		case <-e.consumeDone:
 			return nil
 		}
@@ -182,8 +181,8 @@ func (e *HeavyAccountsExchange) StartConsuming(
 
 func (e *HeavyAccountsExchange) dispatch(
 	body []byte,
-	onBatch func(uuid.UUID, int, uint8, []domain.Account),
-	onDone func(uuid.UUID, int),
+	onBatch func(uuid.UUID, int, uint8, []domain.Account, ack, nack func()),
+	onDone func(uuid.UUID, int, ack, nack func()),
 ) {
 	envelope, err := e.codec.DecodeInternalEnvelope(body)
 	if err != nil {
