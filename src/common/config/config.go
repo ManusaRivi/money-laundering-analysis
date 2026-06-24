@@ -2,17 +2,54 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
+type MonitoringConfig struct {
+	Port int `yaml:"port"`
+}
+
+type BullyParams struct {
+	TcpHost      string `yaml:"tcp_host"`
+	TcpPort      int    `yaml:"tcp_port"`
+	PingInterval string `yaml:"ping_interval"`
+	PingTimeout  string `yaml:"ping_timeout"`
+}
+
+type MonitoringParams struct {
+	UdpPort          int    `yaml:"udp_port"`
+	PingInterval     string `yaml:"ping_interval"`
+	PingTimeout      string `yaml:"ping_timeout"`
+	FailureThreshold int    `yaml:"failure_threshold"`
+}
+
+type MonitorWorkerParams struct {
+	Bully      BullyParams      `yaml:"bully"`
+	Monitoring MonitoringParams `yaml:"monitoring"`
+}
+
 type Config struct {
-	Broker        BrokerConfig  `yaml:"broker"`
-	AvgBroker     *BrokerConfig `yaml:"avg_broker"`
-	Worker        WorkerConfig  `yaml:"worker"`
-	CheckpointDir string        `yaml:"-"`
+	Broker        BrokerConfig      `yaml:"broker,omitempty"`
+	AvgBroker     *BrokerConfig     `yaml:"avg_broker,omitempty"`
+	Worker        WorkerConfig      `yaml:"worker"`
+	CheckpointDir string            `yaml:"-"`
+	Monitoring    *MonitoringConfig `yaml:"monitoring,omitempty"`
+}
+
+func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
+	data, err := yaml.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal monitor params: %w", err)
+	}
+	var p MonitorWorkerParams
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("unmarshal monitor params: %w", err)
+	}
+	return &p, nil
 }
 
 const defaultCheckpointDir = "/app/checkpoints"
@@ -77,6 +114,45 @@ type SyncEOFControllerConfig struct {
 	InputKeys         []string `yaml:"-"`
 }
 
+func Load(filepath string) (*Config, error) {
+	cfg := &Config{}
+
+	if err := loadSystemDefaults(cfg); err != nil {
+		slog.Warn("failed to load system defaults", "error", err)
+	}
+
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+
+	if err := applyEnv(cfg); err != nil {
+		return nil, err
+	}
+	if err := verifyConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		return cfg, nil
+	}
+
+	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
+		return nil, err
+	}
+	if cfg.AvgBroker != nil {
+		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
+			return nil, err
+		}
+	}
+	applyEOFDefaults(cfg)
+
+	return cfg, nil
+}
+
 func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
 	data, err := os.ReadFile(filepath)
 	if err != nil {
@@ -97,38 +173,39 @@ func LoadAccountConfig(filepath string) (*BrokerConfig, error) {
 	return &cfg.AccountsBroker, nil
 }
 
-func Load(filepath string) (*Config, error) {
-	data, err := os.ReadFile(filepath)
+func loadSystemDefaults(cfg *Config) error {
+	sysPath := os.Getenv("SYSTEM_CONFIG_PATH")
+	if sysPath == "" {
+		sysPath = "/app/system.yaml"
+	}
+
+	data, err := os.ReadFile(sysPath)
 	if err != nil {
-		return nil, err
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-
-	if err := verifyConfig(&cfg); err != nil {
-		return nil, err
-	}
-
-	if err := applyEnv(&cfg); err != nil {
-		return nil, err
-	}
-	if err := applyBrokerDefaults(&cfg.Broker); err != nil {
-		return nil, err
-	}
-	if cfg.AvgBroker != nil {
-		if err := applyBrokerDefaults(cfg.AvgBroker); err != nil {
-			return nil, err
+		if os.IsNotExist(err) {
+			return nil
 		}
+		return err
 	}
-	applyEOFDefaults(&cfg)
 
-	return &cfg, nil
+	return yaml.Unmarshal(data, cfg)
 }
 
 func verifyConfig(cfg *Config) error {
+	if cfg.Worker.Type == "" {
+		return fmt.Errorf("worker type is required")
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		if cfg.Worker.Params == nil {
+			return fmt.Errorf("worker.params is required for Monitor worker type")
+		}
+		return nil
+	}
+
+	if cfg.Monitoring == nil || cfg.Monitoring.Port == 0 {
+		cfg.Monitoring = &MonitoringConfig{Port: 9000}
+	}
+
 	if cfg.Broker.Type == "" {
 		return fmt.Errorf("broker type is required")
 	}
@@ -136,7 +213,7 @@ func verifyConfig(cfg *Config) error {
 		return fmt.Errorf("broker url is required")
 	}
 	if cfg.Broker.Input == "" {
-		return fmt.Errorf("broker input is refalsequired")
+		return fmt.Errorf("broker input is required")
 	}
 	if cfg.Broker.Output == "" {
 		return fmt.Errorf("broker output is required")

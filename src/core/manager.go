@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/monitoring"
 )
 
 type Worker interface {
@@ -18,14 +20,24 @@ type Worker interface {
 }
 
 type Manager struct {
-	Worker Worker
-	cnfg   *config.Config
-	broker broker.Broker
+	Worker   Worker
+	cnfg     *config.Config
+	broker   broker.Broker
+	mlCancel context.CancelFunc
 }
 
 func NewManager(cfg *config.Config) (*Manager, error) {
 	if cfg == nil {
 		return nil, errors.New("config is required")
+	}
+
+	if cfg.Worker.Type == "Monitor" {
+		worker, err := workerFactory(cfg, nil)
+		if err != nil {
+			return nil, err
+		}
+		m := &Manager{Worker: worker, cnfg: cfg}
+		return m, nil
 	}
 
 	communicationBroker, err := broker.NewBroker(cfg.Broker)
@@ -38,11 +50,23 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 
-	return &Manager{
+	m := &Manager{
 		Worker: worker,
 		cnfg:   cfg,
 		broker: communicationBroker,
-	}, nil
+	}
+	m.startMonitoringListener()
+
+	return m, nil
+}
+
+func (m *Manager) startMonitoringListener() {
+	if m.cnfg.Monitoring == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mlCancel = cancel
+	go monitoring.Listen(ctx, m.cnfg.Monitoring.Port, m.cnfg.Worker.WorkerPrefix, m.cnfg.Worker.WorkerID)
 }
 
 func (m *Manager) Run() error {
@@ -56,6 +80,10 @@ func (m *Manager) Run() error {
 	go func() {
 		sig := <-sigCh
 		slog.Info("Received signal, shutting down worker...", "signal", sig)
+
+		if m.mlCancel != nil {
+			m.mlCancel()
+		}
 
 		go m.Worker.Stop()
 

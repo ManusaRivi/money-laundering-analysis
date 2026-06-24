@@ -1,17 +1,10 @@
-# q-e example (queue -> exchange)
-
 broker:
-  type: e-e
+  type: q-e
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_entry
-  input_queue: q_q2_router
+  input: q_q2_router
   output: e_q2_max
-  exchange_type: topic          # input e_entry: topic (gateway routes tx.* wildcard)
-  output_exchange_type: direct  # output e_q2_max: direct (aggregator binds exact agg_<n> keys)
-  # El routing key lo decide el worker (RoutingKey en el broker.Message)
-  input_keys:
-    - tx.usd
-  prefetch: 30
+  output_exchange_type: direct
+  prefetch: 300
   durable: true
   auto_delete: false
   exclusive: false

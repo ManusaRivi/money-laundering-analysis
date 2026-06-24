@@ -1,14 +1,8 @@
-# q-e example (queue -> exchange)
-
 broker:
-  type: e-q
+  type: q-q
   url: amqp://guest:guest@rabbitmq:5672/
-  input: e_entry
-  input_queue: q_q1_filter
+  input: q_q1_filter
   output: query_results
-  exchange_type: topic
-  input_keys:
-    - tx.usd
   prefetch: 300
   durable: true
   auto_delete: false

@@ -10,6 +10,7 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/converter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/filter"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/join"
+	"github.com/ManusaRivi/money-laundering-analysis/src/workers/monitor"
 	"github.com/ManusaRivi/money-laundering-analysis/src/workers/router"
 )
 
@@ -28,6 +29,7 @@ const (
 	WorkerTypeScatterGather       = "ScatterGather"
 	WorkerTypeScatterGatherFilter = "ScatterGatherFilter"
 	WorkerTypeJoinQuery4          = "JoinQuery4"
+	WorkerTypeMonitor             = "Monitor"
 )
 
 // TODO: Define worker types as constants
@@ -118,6 +120,21 @@ func workerFactory(workercfg *config.Config, communicationBroker broker.Broker) 
 		return worker, nil
 	case WorkerTypeConverter:
 		worker := converter.NewConverter(workerCfg, communicationBroker)
+		return worker, nil
+	case WorkerTypeMonitor:
+		if workercfg.Worker.Params == nil {
+			return nil, fmt.Errorf("worker.params required for Monitor worker type")
+		}
+		mp, err := config.ParseMonitorParams(workercfg.Worker.Params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse monitor params: %w", err)
+		}
+		selfKey := fmt.Sprintf("%s_%d", workerCfg.WorkerPrefix, workerCfg.WorkerID)
+
+		worker, err := monitor.New(mp, selfKey, workerCfg.WorkerID, workerCfg.WorkerPrefix, workerCfg.WorkerAmount)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Monitor: %w", err)
+		}
 		return worker, nil
 	default:
 		return nil, fmt.Errorf("unknown worker type: %s", workerCfg.Type)

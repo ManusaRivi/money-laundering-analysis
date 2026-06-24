@@ -23,9 +23,22 @@ type ClientGroup struct {
 	Env     map[string]string `yaml:"env"`
 }
 
+type MonitorGroup struct {
+	Amount int `yaml:"amount"`
+}
+
+type MonitorInstance struct {
+	ContainerName string
+	WorkerPrefix  string
+	ID            int
+	WorkerAmount  int
+	EnvSorted     []string
+}
+
 type Topology struct {
-	Env       map[string]string      `yaml:"env"` // injected into every worker
+	Env       map[string]string      `yaml:"env"`
 	Clients   ClientGroup            `yaml:"clients"`
+	Monitors  MonitorGroup           `yaml:"monitors"`
 	Pipelines map[string][]WorkerDef `yaml:"pipelines"`
 }
 
@@ -53,11 +66,17 @@ type ClientInstance struct {
 }
 
 type TemplateData struct {
-	Clients []ClientInstance
-	Workers []WorkerInstance
+	Clients          []ClientInstance
+	Monitors         []MonitorInstance
+	Workers          []WorkerInstance
+	GatewayDependsOn []string
 }
 
 func main() {
+	if _, err := os.Stat("topology.yaml"); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "error: topology.yaml does not exist\n")
+		os.Exit(1)
+	}
 	topoData, err := os.ReadFile("topology.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading topology.yaml: %v\n", err)
@@ -169,13 +188,52 @@ func main() {
 		})
 	}
 
+	var monitors []MonitorInstance
+	if topo.Monitors.Amount < 1 {
+		topo.Monitors.Amount = 1
+	}
+	for id := range topo.Monitors.Amount {
+		env := map[string]string{
+			"LOG_LEVEL":          "debug",
+			"CONFIG_PATH":        "/app/config.yaml",
+			"SYSTEM_CONFIG_PATH": "/app/system.yaml",
+			"WORKER_PREFIX":      "monitor",
+			"ID":                 strconv.Itoa(id),
+			"WORKER_AMOUNT":      strconv.Itoa(topo.Monitors.Amount),
+		}
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var envSorted []string
+		for _, k := range keys {
+			envSorted = append(envSorted, fmt.Sprintf("%s=%s", k, env[k]))
+		}
+		monitors = append(monitors, MonitorInstance{
+			ContainerName: fmt.Sprintf("monitor_%d", id),
+			WorkerPrefix:  "monitor",
+			ID:            id,
+			WorkerAmount:  topo.Monitors.Amount,
+			EnvSorted:    envSorted,
+		})
+	}
+
 	tmplData, err := os.ReadFile("configs/base-compose.yaml.tmpl")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading template file: %v\n", err)
 		os.Exit(1)
 	}
 
-	tmpl, err := template.New("compose").Parse(string(tmplData))
+	tmpl, err := template.New("compose").Funcs(template.FuncMap{
+		"until": func(n int) []int {
+			r := make([]int, n)
+			for i := 0; i < n; i++ {
+				r[i] = i
+			}
+			return r
+		},
+	}).Parse(string(tmplData))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error parsing template: %v\n", err)
 		os.Exit(1)
@@ -188,10 +246,39 @@ func main() {
 	}
 	defer out.Close()
 
-	if err := tmpl.Execute(out, TemplateData{Clients: clients, Workers: workers}); err != nil {
+	gatewayDependsOn := make([]string, 0, len(workers)+len(monitors))
+	for _, w := range workers {
+		gatewayDependsOn = append(gatewayDependsOn, w.ContainerName)
+	}
+	for _, m := range monitors {
+		gatewayDependsOn = append(gatewayDependsOn, m.ContainerName)
+	}
+
+	if err := tmpl.Execute(out, TemplateData{Clients: clients, Monitors: monitors, Workers: workers, GatewayDependsOn: gatewayDependsOn}); err != nil {
 		fmt.Fprintf(os.Stderr, "error executing template: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("generated docker-compose-dev.yaml")
+
+	if err := writeWorkersYAML(workers, monitors); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing workers.yaml: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func writeWorkersYAML(workers []WorkerInstance, monitors []MonitorInstance) error {
+	names := make([]string, 0, len(workers)+len(monitors))
+	for _, w := range workers {
+		names = append(names, w.ContainerName)
+	}
+	for _, m := range monitors {
+		names = append(names, m.ContainerName)
+	}
+	data := map[string]any{"workers": names}
+	out, err := yaml.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("configs/workers.yaml", out, 0644)
 }
