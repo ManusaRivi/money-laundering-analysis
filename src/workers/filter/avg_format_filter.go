@@ -78,6 +78,8 @@ func (f *AvgFormatFilter) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.pub.GetSeen,
+		f.pub.GetSent,
 		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
@@ -92,7 +94,7 @@ func (f *AvgFormatFilter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, f, f.cfg.CheckpointInterval)
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f, f.cfg.CheckpointInterval)
 	if err := f.coord.Recover(); err != nil {
 		return err
 	}

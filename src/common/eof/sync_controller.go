@@ -1,7 +1,7 @@
 package eof
 
 import (
-	"encoding/json"
+	// "encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -300,20 +300,20 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	expectedRcv := client.expectedTotal
 	c.mu.Unlock()
 
-	if totalRcvReported == expectedRcv {
+	if len(totalRcvIdsReported) == expectedRcv {
 		slog.Info("[SyncEOFController] EOF sincronizado",
 			"client_id", clientID,
 			"expected_total", expectedRcv,
-			"reported_total", totalRcvReported,
-			"total_sent", combinedSentByKey,
+			"reported_total", len(totalRcvIdsReported),
+			// "total_sent", len(combinedSentByKey),
 		)
-		client.flushExpectedSent = copyCountsMap(combinedSentByKey)
-		c.broadcastFlush(clientID, combinedSentByKey)
+		client.flushExpectedSent = buildSentCountByKeyMap(totalRcvIdsReported, combinedSentByKey)
+		c.broadcastFlush(clientID)
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
 			"expected_total", expectedRcv,
-			"reported_total", totalRcvReported,
+			"reported_total", len(totalRcvIdsReported),
 		)
 		c.retryAmountRequest(clientID)
 	}
@@ -322,7 +322,7 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 func (c *SyncEOFController) processFlush(msg ControlMessage) {
 	slog.Info("[SyncEOFController] Recibido FLUSH",
 		"client_id", msg.ClientID,
-		"sent_count", msg.SentCountByKey,
+		"sent_count", msg.SentCountByKeyIds,
 		"requester_id", msg.RequesterID,
 	)
 	if c.onFlush != nil {
@@ -404,45 +404,45 @@ func (c *SyncEOFController) cleanupClientState(clientID uuid.UUID) {
 	slog.Debug("[SyncEOFController] Client state cleaned", "client_id", clientID)
 }
 
-type clientCheckpoint struct {
-	MsgRcvCount       int                    `json:"msg_rcv_count"`
-	MsgSentCountByKey map[broker.KeyType]int `json:"msg_sent_count_by_key"`
-}
+// type clientCheckpoint struct {
+// 	MsgRcvCount       int                    `json:"msg_rcv_count"`
+// 	MsgSentCountByKey map[broker.KeyType]int `json:"msg_sent_count_by_key"`
+// }
 
-func (c *SyncEOFController) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cl, exists := c.clients[clientID]
-	if !exists {
-		return nil, nil
-	}
-	return json.Marshal(clientCheckpoint{
-		MsgRcvCount:       cl.msgRcvCount,
-		MsgSentCountByKey: cl.msgSentCountByKey,
-	})
-}
+// func (c *SyncEOFController) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+// 	c.mu.Lock()
+// 	defer c.mu.Unlock()
+// 	cl, exists := c.clients[clientID]
+// 	if !exists {
+// 		return nil, nil
+// 	}
+// 	return json.Marshal(clientCheckpoint{
+// 		MsgRcvCount:       cl.msgRcvCount,
+// 		MsgSentCountByKey: cl.msgSentCountByKey,
+// 	})
+// }
 
-func (c *SyncEOFController) RestoreClient(clientID uuid.UUID, data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-	var cp clientCheckpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cl, exists := c.clients[clientID]
-	if !exists {
-		cl = NewClient(clientID)
-		c.clients[clientID] = cl
-	}
-	cl.msgRcvCount = cp.MsgRcvCount
-	if cp.MsgSentCountByKey != nil {
-		cl.msgSentCountByKey = cp.MsgSentCountByKey
-	}
-	return nil
-}
+// func (c *SyncEOFController) RestoreClient(clientID uuid.UUID, data []byte) error {
+// 	if len(data) == 0 {
+// 		return nil
+// 	}
+// 	var cp clientCheckpoint
+// 	if err := json.Unmarshal(data, &cp); err != nil {
+// 		return err
+// 	}
+// 	c.mu.Lock()
+// 	defer c.mu.Unlock()
+// 	cl, exists := c.clients[clientID]
+// 	if !exists {
+// 		cl = NewClient(clientID)
+// 		c.clients[clientID] = cl
+// 	}
+// 	cl.msgRcvCount = cp.MsgRcvCount
+// 	if cp.MsgSentCountByKey != nil {
+// 		cl.msgSentCountByKey = cp.MsgSentCountByKey
+// 	}
+// 	return nil
+// }
 
 func (c *SyncEOFController) sendFlushAck(clientID uuid.UUID, requesterID int) {
 	slog.Debug("[SyncEOFController] Send FLUSH ack",
@@ -476,6 +476,18 @@ func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 		"requester_id", msg.RequesterID,
 		"sender_id", msg.SenderID,
 	)
+}
+
+func buildSentCountByKeyMap(receivedIds map[protocol.MsgID]struct{}, sentIds map[broker.KeyType]map[protocol.MsgID]struct{}) map[broker.KeyType]int {
+	counts := make(map[broker.KeyType]int)
+	for key, ids := range sentIds {
+		for id := range ids {
+			if _, exists := receivedIds[id]; exists {
+				counts[key]++
+			}
+		}
+	}
+	return counts
 }
 
 func copyCountsMap(source map[broker.KeyType]int) map[broker.KeyType]int {

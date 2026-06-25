@@ -58,6 +58,8 @@ func (c *Cleaner) Run() error {
 	var err error
 	c.syncEOFController, err = eof.NewSyncEOFController(
 		c.cfg.SyncEOFConfig,
+		c.pub.GetSeen,
+		c.pub.GetSent,
 		c.onflush,
 		c.onLeaderFlush,
 		c.onRetryExceeded,
@@ -72,7 +74,7 @@ func (c *Cleaner) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
+	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, c.cfg.CheckpointInterval)
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}

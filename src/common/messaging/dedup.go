@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"encoding/binary"
 	"sync"
 
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 
 type dedupClientState struct {
 	seen map[protocol.MsgID]struct{}
+	virtualSeen map[protocol.MsgID]struct{}
 	sent map[broker.KeyType]map[protocol.MsgID]struct{}
 }
 
@@ -30,6 +32,7 @@ func (d *dedupState) getClient(clientID uuid.UUID) *dedupClientState {
 	if !ok {
 		client = &dedupClientState{
 			seen: make(map[protocol.MsgID]struct{}),
+			virtualSeen: make(map[protocol.MsgID]struct{}),
 			sent: make(map[broker.KeyType]map[protocol.MsgID]struct{}),
 		}
 		d.clients[clientID] = client
@@ -73,8 +76,8 @@ func (d *dedupState) alreadySeen(clientID uuid.UUID, id protocol.MsgID) bool {
 func (d *dedupState) markSeen(clientID uuid.UUID, id protocol.MsgID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ids := d.getClient(clientID).seen
-	ids[id] = struct{}{}
+	virtualIds := d.getClient(clientID).virtualSeen
+	virtualIds[id] = struct{}{}
 }
 
 func (d *dedupState) forget(clientID uuid.UUID) {
@@ -84,26 +87,101 @@ func (d *dedupState) forget(clientID uuid.UUID) {
 }
 
 func (d *dedupState) snapshotClient(clientID uuid.UUID) []byte {
-	// TODO: GUARDAR CON KEYS LOS SENT Y LOS SEEN, PARA PODER RECONSTRUIR EL ESTADO DE DEDUPLICACION
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ids := d.getClient(clientID).seen
-	buf := make([]byte, 0, len(ids)*len(protocol.MsgID{}))
-	for id := range ids {
+
+	client := d.getClient(clientID)
+
+	// ~20 bytes por mensaje (16 de ID + 1 de Flag + ~3 de Key)
+	buf := make([]byte, 0, len(client.virtualSeen)*20)
+
+	for id := range client.virtualSeen {
 		buf = append(buf, id[:]...)
+
+		var wasSent bool
+		var sentKey broker.KeyType
+
+		for k, idSet := range client.sent {
+			if _, ok := idSet[id]; ok {
+				wasSent = true
+				sentKey = k
+				break
+			}
+		}
+
+		if !wasSent {
+			// FLAG: 0x00 -> No enviado (conceptualmente 'nil')
+			buf = append(buf, 0x00)
+		} else {
+			// FLAG: 0x01 -> Sí fue enviado
+			buf = append(buf, 0x01)
+
+			keyBytes := []byte(sentKey)
+			var lenBuf [2]byte
+			binary.BigEndian.PutUint16(lenBuf[:], uint16(len(keyBytes)))
+			buf = append(buf, lenBuf[:]...)
+
+			buf = append(buf, keyBytes...)
+		}
+
+		client.seen[id] = struct{}{}
 	}
+
+	client.virtualSeen = make(map[protocol.MsgID]struct{})
+
 	return buf
 }
 
 func (d *dedupState) restoreClient(clientID uuid.UUID, data []byte) {
-	idLen := len(protocol.MsgID{})
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	set := make(map[protocol.MsgID]struct{}, len(data)/idLen)
-	for i := 0; i+idLen <= len(data); i += idLen {
+
+	seenSet := make(map[protocol.MsgID]struct{})
+	sentSet := make(map[broker.KeyType]map[protocol.MsgID]struct{})
+
+	idLen := len(protocol.MsgID{})
+	offset := 0
+
+	for offset < len(data) {
+		if offset+idLen > len(data) {
+			break
+		}
 		var id protocol.MsgID
-		copy(id[:], data[i:i+idLen])
-		set[id] = struct{}{}
+		copy(id[:], data[offset:offset+idLen])
+		offset += idLen
+
+		seenSet[id] = struct{}{}
+
+		if offset >= len(data) {
+			break
+		}
+		wasSent := data[offset] == 0x01
+		offset++
+
+		if wasSent {
+			if offset+2 > len(data) {
+				break
+			}
+			keyLen := binary.BigEndian.Uint16(data[offset : offset+2])
+			offset += 2
+
+			if offset+int(keyLen) > len(data) {
+				break
+			}
+			keyString := string(data[offset : offset+int(keyLen)])
+			keyType := broker.KeyType(keyString)
+			offset += int(keyLen)
+
+
+			if sentSet[keyType] == nil {
+				sentSet[keyType] = make(map[protocol.MsgID]struct{})
+			}
+			sentSet[keyType][id] = struct{}{}
+		}
 	}
-	d.getClient(clientID).seen = set
+
+	client := d.getClient(clientID)
+	
+	client.seen = seenSet
+	client.sent = sentSet
 }

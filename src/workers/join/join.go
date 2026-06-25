@@ -105,7 +105,7 @@ func (j *Join) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, j, j.cfg.CheckpointInterval)
+	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, j, j.cfg.CheckpointInterval)
 	if err := j.coord.Recover(); err != nil {
 		return err
 	}

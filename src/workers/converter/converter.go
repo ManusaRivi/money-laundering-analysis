@@ -49,7 +49,7 @@ func (c *Converter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, nil, c.cfg.CheckpointInterval)
+	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, c.cfg.CheckpointInterval)
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}

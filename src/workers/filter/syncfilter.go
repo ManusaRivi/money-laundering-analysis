@@ -102,7 +102,7 @@ func (f *SyncFilter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, f.syncEOFController, nil, f.cfg.CheckpointInterval)
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, nil, f.cfg.CheckpointInterval)
 	if err := f.coord.Recover(); err != nil {
 		return err
 	}

@@ -88,7 +88,7 @@ func (a *Aggregator) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, a, a.cfg.CheckpointInterval)
+	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, a, a.cfg.CheckpointInterval)
 	if err := a.coord.Recover(); err != nil {
 		return err
 	}

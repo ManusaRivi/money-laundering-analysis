@@ -11,7 +11,6 @@ import (
 type Coordinator struct {
 	manager  *Manager
 	dedup    Checkpointable
-	eof      Checkpointable
 	state    Checkpointable
 	interval int
 
@@ -21,14 +20,13 @@ type Coordinator struct {
 	pending     int
 }
 
-func NewCoordinator(manager *Manager, dedup, eof, state Checkpointable, interval int) *Coordinator {
+func NewCoordinator(manager *Manager, dedup, state Checkpointable, interval int) *Coordinator {
 	if interval < 1 {
 		interval = 1
 	}
 	return &Coordinator{
 		manager:     manager,
 		dedup:       dedup,
-		eof:         eof,
 		state:       state,
 		interval:    interval,
 		seenClients: make(map[uuid.UUID]struct{}),
@@ -122,11 +120,6 @@ func (co *Coordinator) snapshot(clientID uuid.UUID) (Checkpoint, error) {
 		return Checkpoint{}, err
 	}
 	cp := Checkpoint{Dedup: dedup}
-	if co.eof != nil {
-		if cp.EOF, err = co.eof.SnapshotClient(clientID); err != nil {
-			return Checkpoint{}, err
-		}
-	}
 	if co.state != nil {
 		if cp.State, err = co.state.SnapshotClient(clientID); err != nil {
 			return Checkpoint{}, err
@@ -138,11 +131,6 @@ func (co *Coordinator) snapshot(clientID uuid.UUID) (Checkpoint, error) {
 func (co *Coordinator) restore(clientID uuid.UUID, cp Checkpoint) error {
 	if err := co.dedup.RestoreClient(clientID, cp.Dedup); err != nil {
 		return err
-	}
-	if co.eof != nil {
-		if err := co.eof.RestoreClient(clientID, cp.EOF); err != nil {
-			return err
-		}
 	}
 	if co.state != nil {
 		if err := co.state.RestoreClient(clientID, cp.State); err != nil {

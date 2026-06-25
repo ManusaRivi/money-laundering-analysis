@@ -16,15 +16,13 @@ type Checkpointable interface {
 
 type Checkpoint struct {
 	Dedup []byte
-	EOF   []byte
 	State []byte
 }
 
 func (c Checkpoint) Encode() []byte {
-	buf := make([]byte, 0, 1+4*3+len(c.Dedup)+len(c.EOF)+len(c.State))
+	buf := make([]byte, 0, 1+4*3+len(c.Dedup)+len(c.State))
 	buf = append(buf, checkpointVersion)
 	buf = appendField(buf, c.Dedup)
-	buf = appendField(buf, c.EOF)
 	buf = appendField(buf, c.State)
 	return buf
 }
@@ -42,15 +40,11 @@ func Decode(data []byte) (Checkpoint, error) {
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("checkpoint: dedup field: %w", err)
 	}
-	eof, rest, err := readField(rest)
-	if err != nil {
-		return Checkpoint{}, fmt.Errorf("checkpoint: eof field: %w", err)
-	}
 	state, _, err := readField(rest)
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("checkpoint: state field: %w", err)
 	}
-	return Checkpoint{Dedup: dedup, EOF: eof, State: state}, nil
+	return Checkpoint{Dedup: dedup, State: state}, nil
 }
 
 func appendField(buf, field []byte) []byte {
