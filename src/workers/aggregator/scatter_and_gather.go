@@ -8,39 +8,19 @@ import (
 	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker/scattergather"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/domain"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
-	"github.com/ManusaRivi/money-laundering-analysis/src/workers/scattergather"
 
 	"github.com/google/uuid"
 )
 
-// Stateful
-// Por cada acc almacena y acumula:
-// scatter[acc]: {bridge_acc_1, ...}
-// gather[acc]:{bridge_acc_3, ...}
-
-// scatter = Map<acc, Set< bridge_acc's >>
-// gather = Map<acc, Set< bridge_acc's >>
-
-// en EOF:
-//  scatter-gahter = Map<(src_acc,dst_acc), int >>
-//  for bridge_acc, destinos in scatter
-//    origenes = gather[bridge_acc]
-//    for src in origenes
-//      for dst in destinos
-//        scatter-gather[src, dst] += 1
-//  Y envía scatter-gather
-//  keys: hash[ (src_acc,dst_acc) ] % next_workers_amount
-
 const maxPairsBuffered = 100_000
-
-// q4DegreesExchange is the fanout the ScatterAndGather replicas use to share heavy
-// accounts. The worker declares it itself (raw AMQP), so no topology wiring.
+const peerChanBuffer = 64
 const q4DegreesExchange = "e_q4_degrees"
 
 type accountSet map[domain.Account]struct{}
@@ -55,9 +35,7 @@ type client struct {
 
 var _ checkpoint.Checkpointable = (*ScatterAndGather)(nil)
 
-// accountAdjacency is the JSON form of one `Account -> set of Accounts` entry.
-// encoding/json can't use a struct (domain.Account) as a map key, so the
-// adjacency maps are persisted as slices and rebuilt on restore.
+// Account -> set of Accounts (can be scatter or gather)
 type accountAdjacency struct {
 	Account   domain.Account   `json:"account"`
 	Neighbors []domain.Account `json:"neighbors"`
@@ -68,7 +46,10 @@ type scatterGatherCheckpoint struct {
 	GatherGroups  []accountAdjacency `json:"gather_groups,omitempty"`
 	HeavySources  []domain.Account   `json:"heavy_sources,omitempty"`
 	HeavySinks    []domain.Account   `json:"heavy_sinks,omitempty"`
+	DonePeers     []int              `json:"done_peers,omitempty"`
+	LocalDone     bool               `json:"local_done,omitempty"`
 	Sealed        bool               `json:"sealed,omitempty"`
+	Completed     bool               `json:"completed,omitempty"`
 }
 
 type ScatterAndGather struct {
@@ -85,18 +66,18 @@ type ScatterAndGather struct {
 	threshold        int
 	workerID         int
 
-	exchange        *scattergather.HeavyAccountsExchange
-	heavyAccountsCh chan uuid.UUID
-	monitor         *HeavyAccountsMonitor
+	exchange *scattergather.HeavyAccountsExchange
+	monitor  *HeavyAccountsMonitor
+	peerCh   chan peerMessage
 
 	acksMu      sync.Mutex
 	pendingAcks map[uuid.UUID]func() // upstream-EOF acks, fired after the cross-product
+
+	completedMu sync.Mutex
+	completed   map[uuid.UUID]struct{}
 }
 
 func NewScatterAndGather(cfg config.WorkerConfig, b broker.Broker, rabbitURL string) (*ScatterAndGather, error) {
-	// Shared with the Q4 filter via SCATTER_GATHER_THRESHOLD: the prune drops
-	// endpoints whose degree < threshold, which is only sound if it matches the
-	// count threshold the filter applies downstream.
 	if cfg.Threshold <= 0 {
 		return nil, fmt.Errorf("ScatterAndGather requires SCATTER_GATHER_THRESHOLD > 0 (got %d)", cfg.Threshold)
 	}
@@ -118,10 +99,11 @@ func NewScatterAndGather(cfg config.WorkerConfig, b broker.Broker, rabbitURL str
 		threshold:        cfg.Threshold,
 		workerID:         cfg.WorkerID,
 		exchange:         exchange,
-		heavyAccountsCh:  make(chan uuid.UUID, cfg.WorkerAmount),
+		peerCh:           make(chan peerMessage, peerChanBuffer),
 		pendingAcks:      make(map[uuid.UUID]func()),
+		completed:        make(map[uuid.UUID]struct{}),
 	}
-	a.monitor = NewHeavyAccountsMonitor(cfg.WorkerID, cfg.WorkerAmount, func(clientID uuid.UUID) { a.heavyAccountsCh <- clientID })
+	a.monitor = NewHeavyAccountsMonitor(cfg.WorkerID, cfg.WorkerAmount)
 	return a, nil
 }
 
@@ -129,6 +111,16 @@ type message struct {
 	msg  broker.Message
 	ack  func()
 	nack func()
+}
+
+type peerMessage struct {
+	clientID uuid.UUID
+	senderID int
+	role     uint8
+	accounts []domain.Account
+	isDone   bool
+	ack      func()
+	nack     func()
 }
 
 func (a *ScatterAndGather) Run() error {
@@ -150,10 +142,17 @@ func (a *ScatterAndGather) Run() error {
 	msgCh := make(chan message)
 	errCh := make(chan error, 1)
 
-	// Degree exchange runs on its own goroutine, feeding peer heavy sets / dones
-	// into the monitor; barrier completion triggers onClientReady from here.
+	// This goroutine uses peerCh to make sure that the handling of peer heavy-accounts syncing messages
+	// are handled on the main loop, so that the merging of the heavy sets and the persistence of the merged state is done single-threaded.
+
 	go func() {
-		if err := a.exchange.StartConsuming(a.monitor.RecordHeavyBatch, a.monitor.RecordDone); err != nil {
+		onBatch := func(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account, ack, nack func()) {
+			a.peerCh <- peerMessage{clientID: clientID, senderID: senderID, role: role, accounts: accounts, ack: ack, nack: nack}
+		}
+		onDone := func(clientID uuid.UUID, senderID int, ack, nack func()) {
+			a.peerCh <- peerMessage{clientID: clientID, senderID: senderID, isDone: true, ack: ack, nack: nack}
+		}
+		if err := a.exchange.StartConsuming(onBatch, onDone); err != nil {
 			slog.Error("Degree exchange consume loop stopped", "error", err)
 		}
 	}()
@@ -168,8 +167,8 @@ func (a *ScatterAndGather) Run() error {
 		select {
 		case msg := <-msgCh:
 			a.processMessage(msg.msg, msg.ack, msg.nack)
-		case clientID := <-a.heavyAccountsCh:
-			a.onClientReady(clientID)
+		case pm := <-a.peerCh:
+			a.processPeerMessage(pm)
 		case err := <-errCh:
 			return err
 		}
@@ -201,12 +200,7 @@ func (a *ScatterAndGather) processMessage(msg broker.Message, ack, nack func()) 
 		// Persist-then-ack the adjacency accumulated from this batch.
 		a.coord.Track(envelope.ClientId, ack)
 	case protocol.MsgTransactionsEOF:
-		// Deferred ack: handleEOFMessage starts the degree exchange and stores
-		// the ack; onClientReady fires it after the cross-product. Deliberately
-		// NOT tracked here — handing it to coord.Track would let the coordinator
-		// ack it on the next flush, before the cross-product runs (and would
-		// double-own the ack). nack+return only if we couldn't even start
-		// (publish failed) — a clean retry via redelivery.
+		// Don't ack the upstream EOF until the cross-product is done and the client is sealed.
 		if err := a.handleEOFMessage(envelope, ack); err != nil {
 			slog.Error("Error handling EOF message", "error", err)
 			nack()
@@ -219,24 +213,66 @@ func (a *ScatterAndGather) processMessage(msg broker.Message, ack, nack func()) 
 	}
 }
 
+func (a *ScatterAndGather) processPeerMessage(pm peerMessage) {
+	// Our own publishes echo back through the fanout: nothing to persist, just drop.
+	if pm.senderID == a.workerID {
+		pm.ack()
+		return
+	}
+	// Barrier already finished and the checkpoint was deleted. A late/duplicate peer
+	// message (e.g. a peer that restarted and re-broadcast) must be dropped, not
+	// resurrect fresh state that can never complete.
+	if a.isCompleted(pm.clientID) {
+		pm.ack()
+		return
+	}
+
+	var ready bool
+	if pm.isDone {
+		ready = a.monitor.RecordDone(pm.clientID, pm.senderID)
+	} else {
+		a.monitor.RecordHeavyBatch(pm.clientID, pm.senderID, pm.role, pm.accounts)
+	}
+	if err := a.coord.SaveClient(pm.clientID); err != nil {
+		slog.Error("Error persisting peer heavy state; leaving for redelivery", "clientID", pm.clientID, "error", err)
+		pm.nack()
+		return
+	}
+	pm.ack()
+	if ready {
+		if err := a.onClientReady(pm.clientID); err != nil {
+			slog.Error("Error completing client after peer done", "clientID", pm.clientID, "error", err)
+		}
+	}
+}
+
 // Checkpoint methods
 
 func (a *ScatterAndGather) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
-	/* 	if a.monitor.IsSealed(clientID) {
-		return nil, nil
-	} */
+	if a.isCompleted(clientID) {
+		return json.Marshal(scatterGatherCheckpoint{Completed: true})
+	}
+
 	a.clientsMu.Lock()
 	client, ok := a.clients[clientID]
 	a.clientsMu.Unlock()
-	if !ok {
+
+	degree, hasDegree := a.monitor.Snapshot(clientID)
+	if !ok && !hasDegree {
 		return nil, nil
 	}
-	cp := scatterGatherCheckpoint{
-		ScatterGroups: adjacencyToSlice(client.scatterGroups),
-		GatherGroups:  adjacencyToSlice(client.gatherGroups),
-		HeavySources:  accountSetToSlice(a.monitor.HeavySources(clientID)),
-		HeavySinks:    accountSetToSlice(a.monitor.HeavySinks(clientID)),
-		Sealed:        a.monitor.IsSealed(clientID),
+
+	var cp scatterGatherCheckpoint
+	if ok {
+		cp.ScatterGroups = adjacencyToSlice(client.scatterGroups)
+		cp.GatherGroups = adjacencyToSlice(client.gatherGroups)
+	}
+	if hasDegree {
+		cp.HeavySources = degree.HeavySrcs
+		cp.HeavySinks = degree.HeavySinks
+		cp.DonePeers = degree.DonePeers
+		cp.LocalDone = degree.LocalDone
+		cp.Sealed = degree.Sealed
 	}
 	return json.Marshal(cp)
 }
@@ -250,14 +286,26 @@ func (a *ScatterAndGather) RestoreClient(clientID uuid.UUID, data []byte) error 
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return err
 	}
-	client := a.getClient(clientID)
-	client.scatterGroups = adjacencyFromSlice(cp.ScatterGroups)
-	client.gatherGroups = adjacencyFromSlice(cp.GatherGroups)
-	client.heavySources = accountSetFromSlice(cp.HeavySources)
-	client.heavySinks = accountSetFromSlice(cp.HeavySinks)
 
-	if cp.Sealed {
-		a.monitor.RestoreSealed(clientID, client.heavySources, client.heavySinks)
+	if cp.Completed {
+		a.markCompleted(clientID)
+		return nil
+	}
+
+	if len(cp.ScatterGroups) > 0 || len(cp.GatherGroups) > 0 {
+		client := a.getClient(clientID)
+		client.scatterGroups = adjacencyFromSlice(cp.ScatterGroups)
+		client.gatherGroups = adjacencyFromSlice(cp.GatherGroups)
+	}
+
+	if cp.Sealed || cp.LocalDone || len(cp.HeavySources) > 0 || len(cp.HeavySinks) > 0 || len(cp.DonePeers) > 0 {
+		a.monitor.Restore(clientID, degreeStateSnapshot{
+			HeavySrcs:  cp.HeavySources,
+			HeavySinks: cp.HeavySinks,
+			DonePeers:  cp.DonePeers,
+			LocalDone:  cp.LocalDone,
+			Sealed:     cp.Sealed,
+		})
 	}
 	return nil
 }
@@ -331,19 +379,6 @@ func (a *ScatterAndGather) getClient(clientID uuid.UUID) *client {
 	return c
 }
 
-func (a *ScatterAndGather) deleteClient(clientID uuid.UUID) error {
-	a.clientsMu.Lock()
-	delete(a.clients, clientID)
-	a.clientsMu.Unlock()
-	a.monitor.Forget(clientID)
-	if err := a.coord.Delete(clientID); err != nil {
-		slog.Error("Error deleting client", "clientID", clientID, "error", err)
-		return err
-	}
-	return nil
-}
-
-// func (a *ScatterAndGather) handleScatterTx(tx *domain.Transaction, clientID uuid.UUID) error {
 func (a *ScatterAndGather) handleScatterTx(tx *protocol.Transaction, clientID uuid.UUID) error {
 	slog.Debug("Handling scatter transaction", "clientID", clientID)
 	client := a.getClient(clientID)
@@ -479,9 +514,6 @@ func (a *ScatterAndGather) streamScatterGatherPhaseTwo(clientID uuid.UUID) int {
 	return msgSent
 }
 
-// FindHeavyAccountsForClient records which of this replica's owned accounts are
-// heavy sources (out-degree >= threshold) and heavy sinks (in-degree >= threshold).
-// Must run before streamScatterGatherPhaseTwo, which frees the groups as it goes.
 func (a *ScatterAndGather) FindHeavyAccountsForClient(clientID uuid.UUID) {
 	client := a.getClient(clientID)
 	for acc, dsts := range client.scatterGroups {
@@ -496,13 +528,13 @@ func (a *ScatterAndGather) FindHeavyAccountsForClient(clientID uuid.UUID) {
 	}
 }
 
-// handleEOFMessage starts the degree exchange for a client: compute this replica's
-// heavy sets, publish them to peers, defer the upstream-EOF ack, and merge our own
-// sets into the monitor. The cross-product runs later, in onClientReady, when the
-// barrier lifts. Returns an error only if publishing fails (a clean retry).
 func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received EOF", "clientID", clientID)
+	if a.isCompleted(clientID) {
+		ack()
+		return nil
+	}
 	if a.monitor.IsSealed(clientID) {
 		slog.Debug("Client already sealed, ignoring EOF", "clientID", clientID)
 		a.storePendingAck(clientID, ack)
@@ -541,17 +573,7 @@ func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope, 
 	return a.coord.Flush()
 }
 
-// onClientReady runs once per client when the degree barrier lifts: the global
-// heavy sets are final, so run the pruned cross-product, forward the downstream
-// EOF, ack the upstream EOF, and release the client's state. Fires on the degree
-// goroutine (a peer's done arrived last) or the main loop (this replica finished
-// last) — never under a circular wait.
 func (a *ScatterAndGather) onClientReady(clientID uuid.UUID) error {
-	err := a.coord.SaveClient(clientID)
-	if err != nil {
-		slog.Error("Error saving client", "clientID", clientID, "error", err)
-		return err
-	}
 	msgSent := a.streamScatterGatherPhaseTwo(clientID)
 	slog.Debug("Finished sending Scatter-Gather to phase two", "clientID", clientID, "messages_sent", msgSent)
 
@@ -565,15 +587,25 @@ func (a *ScatterAndGather) onClientReady(clientID uuid.UUID) error {
 		}
 	}
 
+	a.markCompleted(clientID)
+	if err := a.coord.SaveClient(clientID); err != nil {
+		slog.Error("Error persisting completed marker", "clientID", clientID, "error", err)
+		return err
+	}
 	if ack := a.takePendingAck(clientID); ack != nil {
 		ack()
 	}
-	if err := a.deleteClient(clientID); err != nil {
-		slog.Error("Error deleting client", "clientID", clientID, "error", err)
-		return err
-	}
+	a.dropClientState(clientID)
 	return nil
 }
+
+// Helper methods
+
+// Store ACK, take ACK
+// EOF ACK is deferred. Only acked if a client is Completed
+// A Client is completed if all heavy accounts were computed locally and received from other replicas,
+// the cross-product was sent to the next stage, and the downstream eof was emitted.
+// After being marked as completed, the client state is saved, the deferred ack is acked, and client state is dropped.
 
 func (a *ScatterAndGather) storePendingAck(clientID uuid.UUID, ack func()) {
 	a.acksMu.Lock()
@@ -587,6 +619,41 @@ func (a *ScatterAndGather) takePendingAck(clientID uuid.UUID) func() {
 	ack := a.pendingAcks[clientID]
 	delete(a.pendingAcks, clientID)
 	return ack
+}
+
+func (a *ScatterAndGather) markCompleted(clientID uuid.UUID) {
+	a.completedMu.Lock()
+	a.completed[clientID] = struct{}{}
+	a.completedMu.Unlock()
+}
+
+func (a *ScatterAndGather) isCompleted(clientID uuid.UUID) bool {
+	a.completedMu.Lock()
+	defer a.completedMu.Unlock()
+	_, ok := a.completed[clientID]
+	return ok
+}
+
+func (a *ScatterAndGather) forgetCompleted(clientID uuid.UUID) {
+	a.completedMu.Lock()
+	delete(a.completed, clientID)
+	a.completedMu.Unlock()
+}
+
+func (a *ScatterAndGather) dropClientState(clientID uuid.UUID) {
+	a.clientsMu.Lock()
+	delete(a.clients, clientID)
+	a.clientsMu.Unlock()
+	a.monitor.Forget(clientID)
+}
+
+func (a *ScatterAndGather) gcCompleted(clientID uuid.UUID) error {
+	a.forgetCompleted(clientID)
+	if err := a.coord.Delete(clientID); err != nil {
+		slog.Error("Error deleting completed client checkpoint", "clientID", clientID, "error", err)
+		return err
+	}
+	return nil
 }
 
 func (a *ScatterAndGather) shardByValue(value string) string {
