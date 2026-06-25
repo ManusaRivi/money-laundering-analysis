@@ -216,6 +216,7 @@ func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 
+	f.coord.Flush()
 	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
 	return nil
 }

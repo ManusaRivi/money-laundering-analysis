@@ -186,6 +186,7 @@ func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	c.coord.Flush()
 	c.syncEOFController.SyncEof(envelope.ClientId, eofCounts, c.syncEOFKey)
 	return nil
 }

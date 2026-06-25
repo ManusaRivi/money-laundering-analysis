@@ -211,6 +211,7 @@ func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	r.coord.Flush()
 	r.syncEOFController.SyncEof(envelope.ClientId, eofCounts, r.syncEOFKey)
 	return nil
 }
