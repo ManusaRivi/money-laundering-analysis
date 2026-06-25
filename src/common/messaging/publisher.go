@@ -113,15 +113,19 @@ func (p *Publisher) Forget(clientID uuid.UUID) {
 	p.dedup.forget(clientID)
 }
 
-func (p *Publisher) MarkSent(clientID uuid.UUID, key broker.KeyType, id protocol.MsgID) {
-	p.dedup.markSent(clientID, key, id)
+func (p *Publisher) MarkSent(clientID uuid.UUID, key broker.KeyType, id protocol.MsgID, count int) {
+	p.dedup.markSent(clientID, key, id, count)
 }
 
-func (p *Publisher) GetSeen(clientID uuid.UUID) map[protocol.MsgID]struct{} {
+func (p *Publisher) MarkReceived(clientID uuid.UUID, id protocol.MsgID, count int) {
+	p.dedup.markReceived(clientID, id, count)
+}
+
+func (p *Publisher) GetSeen(clientID uuid.UUID) map[protocol.MsgID]int {
 	return p.dedup.getSeen(clientID)
 }
 
-func (p *Publisher) GetSent(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{} {
+func (p *Publisher) GetSent(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]int {
 	return p.dedup.getSent(clientID)
 }
 

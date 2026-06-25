@@ -95,11 +95,11 @@ func (c *Cleaner) Run() error {
 	})
 }
 
-func (c *Cleaner) getReceivedIds(clientID uuid.UUID) map[protocol.MsgID]struct{} {
+func (c *Cleaner) getReceivedIds(clientID uuid.UUID) map[protocol.MsgID]int {
 	return c.pub.GetSeen(clientID)
 }
 
-func (c *Cleaner) getSentIds(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{} {
+func (c *Cleaner) getSentIds(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]int {
 	return c.pub.GetSent(clientID)
 }
 
@@ -160,6 +160,8 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
+	c.pub.MarkReceived(envelope.ClientId, envelope.MsgID, len(transactions))
+
 	cleanedTx := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
@@ -178,7 +180,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.pub.MarkSent(envelope.ClientId, broker.KeyNil, id)
+	c.pub.MarkSent(envelope.ClientId, broker.KeyNil, id, len(transactions))
 
 	return nil
 }

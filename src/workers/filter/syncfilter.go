@@ -198,7 +198,7 @@ func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.Msg
 	if err := f.pub.PublishInternalWithID(clientID, msgType, broker.KeyNil, payload, id); err != nil {
 		return err
 	}
-	f.pub.MarkSent(clientID, broker.KeyNil, id)
+	f.pub.MarkSent(clientID, broker.KeyNil, id, batchLength)
 
 	return nil
 }
@@ -264,6 +264,7 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 		return fmt.Errorf("decoding transaction batch: %w", err)
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
+	f.pub.MarkReceived(envelope.ClientId, envelope.MsgID, len(txBatch))
 	if f.cfg.Query == Query1 {
 		if err := f.forwardQuery1ResultBatchMessage(txBatch, envelope.ClientId, envelope.MsgID); err != nil {
 			return fmt.Errorf("forwarding query1 result batch: %w", err)

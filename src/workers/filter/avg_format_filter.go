@@ -285,6 +285,8 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 		return err
 	}
 
+	f.pub.MarkReceived(envelope.ClientId, envelope.MsgID, len(transactions))
+
 	f.waitAvgDone(envelope.ClientId)
 
 	f.mu.Lock()
@@ -314,7 +316,7 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 			return err
 		}
 
-		f.pub.MarkSent(envelope.ClientId, broker.KeyNil, envelope.MsgID)
+		f.pub.MarkSent(envelope.ClientId, broker.KeyNil, envelope.MsgID, len(results))
 	}
 
 	return nil

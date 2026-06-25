@@ -13,15 +13,15 @@ import (
 )
 
 type nodeInfo struct {
-	rcvResponseIds map[protocol.MsgID]struct{}
-	sentcountByKeyResponseIds map[broker.KeyType]map[protocol.MsgID]struct{}
-	flushResponse bool
+	rcvResponseIds            map[protocol.MsgID]int
+	sentcountByKeyResponseIds map[broker.KeyType]map[protocol.MsgID]int
+	flushResponse             bool
 }
 
 type client struct {
-	clientID    uuid.UUID
-	expectedTotal     int                    // total_messages que espera recibir el cluster para flushear
-	retryCount        int                    // cantidad de reintentos de amount request
+	clientID      uuid.UUID
+	expectedTotal int // total_messages que espera recibir el cluster para flushear
+	retryCount    int // cantidad de reintentos de amount request
 
 	nodesInfo         map[int]nodeInfo // senderID -> nodeInfo
 	flushExpectedSent map[broker.KeyType]int
@@ -36,9 +36,10 @@ type SyncEOFController struct {
 	mu      sync.Mutex
 	clients map[uuid.UUID]*client
 
-	// Callbacks para obtener los ids de mensajes recibidos y enviados por cada cliente.
-	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]struct{}
-	getSentIds     func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{}
+	// Callbacks para obtener los ids de mensajes recibidos y enviados por cada cliente,
+	// con la cantidad de transacciones de cada batch.
+	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]int
+	getSentIds     func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]int
 
 	// Callback a ejecutar cuando todos los workers terminan.
 	onFlush func(clientID uuid.UUID) error
@@ -65,8 +66,8 @@ func NewClient(clientID uuid.UUID) *client {
 // NewSyncEOFController inicializa un nuevo SyncEOFController
 func NewSyncEOFController(
 	cfg config.SyncEOFControllerConfig,
-	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]struct{},
-	getSentIds func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{},
+	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]int,
+	getSentIds func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]int,
 	onFlush func(clientID uuid.UUID) error,
 	onLeaderFlush func(clientID uuid.UUID, finalCountSentByKey map[broker.KeyType]int) error,
 	onRetryExceeded func(clientID uuid.UUID) error,
@@ -150,9 +151,9 @@ func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID) {
 		"client_id", clientID,
 	)
 	msg := ControlMessage{
-		Type:           MsgTypeFlush,
-		ClientID:       clientID,
-		RequesterID:    c.nodeID,
+		Type:        MsgTypeFlush,
+		ClientID:    clientID,
+		RequesterID: c.nodeID,
 	}
 	c.sendControlMessage(msg)
 }
@@ -208,11 +209,11 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 	)
 
 	resp := ControlMessage{
-		Type:           MsgTypeAmountResponse,
-		ClientID:       msg.ClientID,
-		RequesterID:    msg.RequesterID,
-		SenderID:       c.nodeID,
-		ReceivedIds:    rcvIds,
+		Type:              MsgTypeAmountResponse,
+		ClientID:          msg.ClientID,
+		RequesterID:       msg.RequesterID,
+		SenderID:          c.nodeID,
+		ReceivedIds:       rcvIds,
 		SentCountByKeyIds: sntAmountByKeyIds,
 	}
 	c.sendControlMessage(resp)
@@ -223,7 +224,7 @@ func (c *SyncEOFController) processAmountResponse(msg ControlMessage) {
 	client := c.clients[msg.ClientID]
 	nodeInfo := client.nodesInfo[msg.SenderID]
 	nodeInfo.rcvResponseIds = msg.ReceivedIds
-	nodeInfo.sentcountByKeyResponseIds= msg.SentCountByKeyIds
+	nodeInfo.sentcountByKeyResponseIds = msg.SentCountByKeyIds
 	client.nodesInfo[msg.SenderID] = nodeInfo
 	responsesCount := len(client.nodesInfo)
 	c.mu.Unlock()
@@ -279,17 +280,21 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 
 func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	c.mu.Lock()
-	totalRcvIdsReported := make(map[protocol.MsgID]struct{})
-	combinedSentByKey := make(map[broker.KeyType]map[protocol.MsgID]struct{})
+	unionRcv := make(map[protocol.MsgID]int)
+	unionSentByKey := make(map[broker.KeyType]map[protocol.MsgID]int)
 	client := c.clients[clientID]
 	for nodeID, info := range client.nodesInfo {
-		for id := range info.rcvResponseIds {
-			totalRcvIdsReported[id] = struct{}{}
+		for id, count := range info.rcvResponseIds {
+			unionRcv[id] = count
 		}
-		for key, count := range info.sentcountByKeyResponseIds {
-			combinedSentByKey[key] = make(map[protocol.MsgID]struct{})
-			for id := range count {
-				combinedSentByKey[key][id] = struct{}{}
+		for key, ids := range info.sentcountByKeyResponseIds {
+			merged := unionSentByKey[key]
+			if merged == nil {
+				merged = make(map[protocol.MsgID]int)
+				unionSentByKey[key] = merged
+			}
+			for id, count := range ids {
+				merged[id] = count
 			}
 		}
 		if info.flushResponse {
@@ -297,23 +302,26 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 			client.nodesInfo[nodeID] = info
 		}
 	}
+	totalRcvReported := 0
+	for _, count := range unionRcv {
+		totalRcvReported += count
+	}
 	expectedRcv := client.expectedTotal
 	c.mu.Unlock()
 
-	if len(totalRcvIdsReported) == expectedRcv {
+	if totalRcvReported == expectedRcv {
 		slog.Info("[SyncEOFController] EOF sincronizado",
 			"client_id", clientID,
 			"expected_total", expectedRcv,
-			"reported_total", len(totalRcvIdsReported),
-			// "total_sent", len(combinedSentByKey),
+			"reported_total", totalRcvReported,
 		)
-		client.flushExpectedSent = buildSentCountByKeyMap(totalRcvIdsReported, combinedSentByKey)
+		client.flushExpectedSent = buildSentCountByKeyMap(unionRcv, unionSentByKey)
 		c.broadcastFlush(clientID)
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
 			"expected_total", expectedRcv,
-			"reported_total", len(totalRcvIdsReported),
+			"reported_total", totalRcvReported,
 		)
 		c.retryAmountRequest(clientID)
 	}
@@ -478,12 +486,12 @@ func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 	)
 }
 
-func buildSentCountByKeyMap(receivedIds map[protocol.MsgID]struct{}, sentIds map[broker.KeyType]map[protocol.MsgID]struct{}) map[broker.KeyType]int {
+func buildSentCountByKeyMap(receivedIds map[protocol.MsgID]int, sentIds map[broker.KeyType]map[protocol.MsgID]int) map[broker.KeyType]int {
 	counts := make(map[broker.KeyType]int)
 	for key, ids := range sentIds {
-		for id := range ids {
+		for id, count := range ids {
 			if _, exists := receivedIds[id]; exists {
-				counts[key]++
+				counts[key] += count
 			}
 		}
 	}

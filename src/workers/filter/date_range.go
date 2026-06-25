@@ -157,7 +157,7 @@ func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
-	f.pub.MarkSent(clientId, routingKey, id)
+	f.pub.MarkSent(clientId, routingKey, id, payloadLen)
 	return true
 }
 
@@ -182,6 +182,7 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 		return err
 	}
 	slog.Debug("Received transaction batch, applying date range filter", "clientId", clientId)
+	f.pub.MarkReceived(clientId, envelope.MsgID, len(transactions))
 	dollarTx := make([]protocol.Transaction, 0)
 	nonDollarTx := make([]protocol.Transaction, 0)
 	for _, tx := range transactions {

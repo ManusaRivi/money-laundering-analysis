@@ -11,13 +11,13 @@ import (
 )
 
 type dedupClientState struct {
-	seen map[protocol.MsgID]struct{}
-	virtualSeen map[protocol.MsgID]struct{}
-	sent map[broker.KeyType]map[protocol.MsgID]struct{}
+	seen        map[protocol.MsgID]int
+	virtualSeen map[protocol.MsgID]int
+	sent        map[broker.KeyType]map[protocol.MsgID]int
 }
 
 type dedupState struct {
-	mu   sync.Mutex
+	mu      sync.Mutex
 	clients map[uuid.UUID]*dedupClientState
 }
 
@@ -29,56 +29,75 @@ func (d *dedupState) getClient(clientID uuid.UUID) *dedupClientState {
 	client, ok := d.clients[clientID]
 	if !ok {
 		client = &dedupClientState{
-			seen: make(map[protocol.MsgID]struct{}),
-			virtualSeen: make(map[protocol.MsgID]struct{}),
-			sent: make(map[broker.KeyType]map[protocol.MsgID]struct{}),
+			seen:        make(map[protocol.MsgID]int),
+			virtualSeen: make(map[protocol.MsgID]int),
+			sent:        make(map[broker.KeyType]map[protocol.MsgID]int),
 		}
 		d.clients[clientID] = client
 	}
 	return client
 }
 
-func (d *dedupState) getSent(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{} {
+func (d *dedupState) getSent(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ids := d.getClient(clientID).sent
-	return ids
-}
-
-func (d *dedupState) getSeen(clientID uuid.UUID) map[protocol.MsgID]struct{} {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	ids := d.getClient(clientID).seen
-	for id := range d.getClient(clientID).virtualSeen {
-		ids[id] = struct{}{}
+	client := d.getClient(clientID)
+	out := make(map[broker.KeyType]map[protocol.MsgID]int, len(client.sent))
+	for key, ids := range client.sent {
+		copied := make(map[protocol.MsgID]int, len(ids))
+		for id, count := range ids {
+			copied[id] = count
+		}
+		out[key] = copied
 	}
-	return ids
+	return out
 }
 
-func (d *dedupState) markSent(clientID uuid.UUID, key broker.KeyType, id protocol.MsgID) {
+func (d *dedupState) getSeen(clientID uuid.UUID) map[protocol.MsgID]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	client := d.getClient(clientID)
+	out := make(map[protocol.MsgID]int, len(client.seen)+len(client.virtualSeen))
+	for id, count := range client.seen {
+		out[id] = count
+	}
+	for id, count := range client.virtualSeen {
+		out[id] = count
+	}
+	return out
+}
+
+func (d *dedupState) markSent(clientID uuid.UUID, key broker.KeyType, id protocol.MsgID, count int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	client := d.getClient(clientID)
 	if client.sent[key] == nil {
-		client.sent[key] = make(map[protocol.MsgID]struct{})
+		client.sent[key] = make(map[protocol.MsgID]int)
 	}
-	client.sent[key][id] = struct{}{}
+	client.sent[key][id] = count
 }
 
 func (d *dedupState) alreadySeen(clientID uuid.UUID, id protocol.MsgID) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	client := d.getClient(clientID)
-	ids := client.seen
-	_, ok := ids[id]
+	_, ok := client.seen[id]
 	return ok
+}
+
+func (d *dedupState) markReceived(clientID uuid.UUID, id protocol.MsgID, count int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.getClient(clientID).virtualSeen[id] = count
 }
 
 func (d *dedupState) markSeen(clientID uuid.UUID, id protocol.MsgID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	virtualIds := d.getClient(clientID).virtualSeen
-	virtualIds[id] = struct{}{}
+	if _, ok := virtualIds[id]; !ok {
+		virtualIds[id] = 0
+	}
 }
 
 func (d *dedupState) forget(clientID uuid.UUID) {
@@ -93,42 +112,42 @@ func (d *dedupState) snapshotClient(clientID uuid.UUID) []byte {
 
 	client := d.getClient(clientID)
 
-	// ~20 bytes por mensaje (16 de ID + 1 de Flag + ~3 de Key)
-	buf := make([]byte, 0, len(client.virtualSeen)*20)
+	buf := make([]byte, 0, len(client.virtualSeen)*24)
 
-	for id := range client.virtualSeen {
+	for id, rcvCount := range client.virtualSeen {
 		buf = append(buf, id[:]...)
+		buf = binary.AppendUvarint(buf, uint64(rcvCount))
 
 		var wasSent bool
 		var sentKey broker.KeyType
+		var sentCount int
 
 		for k, idSet := range client.sent {
-			if _, ok := idSet[id]; ok {
+			if cnt, ok := idSet[id]; ok {
 				wasSent = true
 				sentKey = k
+				sentCount = cnt
 				break
 			}
 		}
 
 		if !wasSent {
-			// FLAG: 0x00 -> No enviado (conceptualmente 'nil')
 			buf = append(buf, 0x00)
 		} else {
-			// FLAG: 0x01 -> Sí fue enviado
 			buf = append(buf, 0x01)
 
 			keyBytes := []byte(sentKey)
 			var lenBuf [2]byte
 			binary.BigEndian.PutUint16(lenBuf[:], uint16(len(keyBytes)))
 			buf = append(buf, lenBuf[:]...)
-
 			buf = append(buf, keyBytes...)
+			buf = binary.AppendUvarint(buf, uint64(sentCount))
 		}
 
-		client.seen[id] = struct{}{}
+		client.seen[id] = rcvCount
 	}
 
-	client.virtualSeen = make(map[protocol.MsgID]struct{})
+	client.virtualSeen = make(map[protocol.MsgID]int)
 
 	return buf
 }
@@ -137,8 +156,8 @@ func (d *dedupState) restoreClient(clientID uuid.UUID, data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	seenSet := make(map[protocol.MsgID]struct{})
-	sentSet := make(map[broker.KeyType]map[protocol.MsgID]struct{})
+	seenSet := make(map[protocol.MsgID]int)
+	sentSet := make(map[broker.KeyType]map[protocol.MsgID]int)
 
 	idLen := len(protocol.MsgID{})
 	offset := 0
@@ -151,7 +170,12 @@ func (d *dedupState) restoreClient(clientID uuid.UUID, data []byte) {
 		copy(id[:], data[offset:offset+idLen])
 		offset += idLen
 
-		seenSet[id] = struct{}{}
+		rcvCount, n := binary.Uvarint(data[offset:])
+		if n <= 0 {
+			break
+		}
+		offset += n
+		seenSet[id] = int(rcvCount)
 
 		if offset >= len(data) {
 			break
@@ -173,16 +197,21 @@ func (d *dedupState) restoreClient(clientID uuid.UUID, data []byte) {
 			keyType := broker.KeyType(keyString)
 			offset += int(keyLen)
 
+			sentCount, n := binary.Uvarint(data[offset:])
+			if n <= 0 {
+				break
+			}
+			offset += n
 
 			if sentSet[keyType] == nil {
-				sentSet[keyType] = make(map[protocol.MsgID]struct{})
+				sentSet[keyType] = make(map[protocol.MsgID]int)
 			}
-			sentSet[keyType][id] = struct{}{}
+			sentSet[keyType][id] = int(sentCount)
 		}
 	}
 
 	client := d.getClient(clientID)
-	
+
 	client.seen = seenSet
 	client.sent = sentSet
 }

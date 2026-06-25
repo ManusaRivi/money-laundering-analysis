@@ -142,7 +142,7 @@ func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, 
 		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	r.pub.MarkSent(clientID, routingKey, parentID)
+	r.pub.MarkSent(clientID, routingKey, parentID, len(txs))
 	return nil
 }
 
@@ -171,6 +171,7 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", clientId)
+	r.pub.MarkReceived(clientId, envelope.MsgID, len(txBatch))
 
 	// Group the whole inbound batch by (type, shard) before sending, so each
 	// phase-one worker gets one message per role instead of one per transaction.

@@ -26,12 +26,12 @@ const (
 // Usa encoding binario ad-hoc (no JSON) porque los tipos map[[16]byte]struct{}
 // no son serializables con encoding/json.
 type ControlMessage struct {
-	Type               string
-	ClientID           uuid.UUID
-	RequesterID        int
-	SenderID           int
-	ReceivedIds        map[protocol.MsgID]struct{}
-	SentCountByKeyIds  map[broker.KeyType]map[protocol.MsgID]struct{}
+	Type              string
+	ClientID          uuid.UUID
+	RequesterID       int
+	SenderID          int
+	ReceivedIds       map[protocol.MsgID]int
+	SentCountByKeyIds map[broker.KeyType]map[protocol.MsgID]int
 }
 
 func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {
@@ -52,8 +52,9 @@ func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {
 
 	// ReceivedIds
 	buf = binary.AppendUvarint(buf, uint64(len(msg.ReceivedIds)))
-	for id := range msg.ReceivedIds {
+	for id, count := range msg.ReceivedIds {
 		buf = append(buf, id[:]...)
+		buf = binary.AppendUvarint(buf, uint64(count))
 	}
 
 	// SentCountByKeyIds
@@ -62,8 +63,9 @@ func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {
 		buf = binary.AppendUvarint(buf, uint64(len(key)))
 		buf = append(buf, key...)
 		buf = binary.AppendUvarint(buf, uint64(len(ids)))
-		for id := range ids {
+		for id, count := range ids {
 			buf = append(buf, id[:]...)
+			buf = binary.AppendUvarint(buf, uint64(count))
 		}
 	}
 
@@ -126,7 +128,7 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 		return nil, ErrMalformedControlMsg
 	}
 	offset += n
-	ctrlMsg.ReceivedIds = make(map[protocol.MsgID]struct{}, rcvCount)
+	ctrlMsg.ReceivedIds = make(map[protocol.MsgID]int, rcvCount)
 	const msgIDLen = len(protocol.MsgID{})
 	for i := uint64(0); i < rcvCount; i++ {
 		if offset+msgIDLen > len(data) {
@@ -135,7 +137,12 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 		var id protocol.MsgID
 		copy(id[:], data[offset:])
 		offset += msgIDLen
-		ctrlMsg.ReceivedIds[id] = struct{}{}
+		count, n := binary.Uvarint(data[offset:])
+		if n <= 0 {
+			return nil, ErrMalformedControlMsg
+		}
+		offset += n
+		ctrlMsg.ReceivedIds[id] = int(count)
 	}
 
 	// SentCountByKeyIds
@@ -145,7 +152,7 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 		return nil, ErrMalformedControlMsg
 	}
 	offset += n
-	ctrlMsg.SentCountByKeyIds = make(map[broker.KeyType]map[protocol.MsgID]struct{}, numKeys)
+	ctrlMsg.SentCountByKeyIds = make(map[broker.KeyType]map[protocol.MsgID]int, numKeys)
 	for i := uint64(0); i < numKeys; i++ {
 		readNext = data[offset:]
 		keyLen, n := binary.Uvarint(readNext)
@@ -166,7 +173,7 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 		}
 		offset += n
 
-		ids := make(map[protocol.MsgID]struct{}, numIDs)
+		ids := make(map[protocol.MsgID]int, numIDs)
 		for j := uint64(0); j < numIDs; j++ {
 			if offset+msgIDLen > len(data) {
 				return nil, ErrMalformedControlMsg
@@ -174,7 +181,12 @@ func UnmarshalControlMessage(msg broker.Message) (*ControlMessage, error) {
 			var id protocol.MsgID
 			copy(id[:], data[offset:])
 			offset += msgIDLen
-			ids[id] = struct{}{}
+			count, n := binary.Uvarint(data[offset:])
+			if n <= 0 {
+				return nil, ErrMalformedControlMsg
+			}
+			offset += n
+			ids[id] = int(count)
 		}
 		ctrlMsg.SentCountByKeyIds[key] = ids
 	}
