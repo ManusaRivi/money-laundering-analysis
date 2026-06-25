@@ -86,12 +86,15 @@ func (r *Router) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg)
 		if err != nil {
 			nack()
 			return
 		}
 		r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			r.coord.Flush()
+		}
 	})
 }
 
@@ -129,7 +132,7 @@ func parseRouteField(params map[string]any) (string, string) {
 }
 
 func (r *Router) onflush(clientID uuid.UUID) error {
-	return nil
+	return r.coord.Flush()
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -190,7 +193,7 @@ func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,

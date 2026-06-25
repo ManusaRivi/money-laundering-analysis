@@ -133,10 +133,10 @@ func (j *Join) Stop() {}
 // whole handle + Track sequence so a checkpoint flush cannot interleave with the
 // sibling goroutine's handler — which would snapshot state and dedup at
 // different instants and (for the EOF counters) double-count on restart.
-func (j *Join) process(handle func(broker.Message) (uuid.UUID, error), msg broker.Message, ack, nack func()) {
+func (j *Join) process(handle func(broker.Message) (uuid.UUID, protocol.MsgType, error), msg broker.Message, ack, nack func()) {
 	j.procMu.Lock()
 	defer j.procMu.Unlock()
-	clientID, err := handle(msg)
+	clientID, msgType, err := handle(msg)
 	if err != nil {
 		slog.Error("Error handling join message", "error", err)
 		nack()
@@ -144,6 +144,11 @@ func (j *Join) process(handle func(broker.Message) (uuid.UUID, error), msg broke
 	}
 	if err := j.coord.Track(clientID, ack); err != nil {
 		slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+	}
+	if msgType == protocol.MsgTransactionsEOF {
+		if err := j.coord.Flush(); err != nil {
+			slog.Error("Error flushing checkpoint coordinator", "error", err)
+		}
 	}
 }
 
@@ -231,7 +236,7 @@ func (j *Join) handleAccountsEOF(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgAccountsBatch: j.handleAccountsBatch,
 		protocol.MsgAccountsEOF:   j.handleAccountsEOF,
@@ -267,10 +272,10 @@ func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
 	if j.shouldFinalize(clientID) {
 		return j.finalizeClient(clientID)
 	}
-	return nil
+	return j.coord.Flush()
 }
 
-func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: j.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   j.handleTransactionsEOF,

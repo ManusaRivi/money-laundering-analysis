@@ -103,7 +103,7 @@ func (f *AvgFormatFilter) Run() error {
 
 	go func() {
 		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			clientID, err := f.handleAvgMessage(msg)
+			clientID, _, err := f.handleAvgMessage(msg)
 			if err != nil {
 				nack()
 				return
@@ -114,12 +114,15 @@ func (f *AvgFormatFilter) Run() error {
 
 	go func() {
 		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			clientID, err := f.handleTxMessage(msg)
+			clientID, msgType, err := f.handleTxMessage(msg)
 			if err != nil {
 				nack()
 				return
 			}
 			f.coord.Track(clientID, ack)
+			if msgType == protocol.MsgTransactionsEOF {
+				f.coord.Flush()
+			}
 		})
 	}()
 
@@ -200,7 +203,7 @@ func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) {
 	<-ch
 }
 
-func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleAvgBatch,
 		protocol.MsgTransactionsEOF:   f.handleAvgEOF,
@@ -266,7 +269,7 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID, client *Client)
 	}
 }
 
-func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   f.handleEOF,
@@ -339,7 +342,7 @@ func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
 }
 
 func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
-	return nil
+	return f.coord.Flush()
 }
 
 func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
