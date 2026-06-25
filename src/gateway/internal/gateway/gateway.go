@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -41,6 +42,7 @@ type Gateway struct {
 	listener       net.Listener
 	running        atomic.Bool
 	codec          codec.Codec
+	clientsMu      sync.Mutex
 	clients        map[uuid.UUID]*Client
 	// seenResults dedups inbound results by (client, MsgID). The gateway is the
 	// single-replica sink, so it sees every copy of a given id and its dedup is
@@ -108,13 +110,16 @@ func (gateway *Gateway) Run() error {
 		gateway.registry.Add(client)
 
 		// Initialize client stats
+		gateway.clientsMu.Lock()
 		gateway.clients[clientId] = &Client{
 			ID:           clientId,
 			tx_count:     0,
 			tx_usd_count: 0,
 		}
+		gateway.clientsMu.Unlock()
 
 		go func() {
+			defer gateway.forgetClient(clientId)
 			defer gateway.registry.Remove(client)
 			defer client.Conn.Close()
 
@@ -184,6 +189,18 @@ func (gateway *Gateway) handleSignals() {
 	gateway.listener.Close()
 }
 
+func (gateway *Gateway) getClient(clientId uuid.UUID) *Client {
+	gateway.clientsMu.Lock()
+	defer gateway.clientsMu.Unlock()
+	return gateway.clients[clientId]
+}
+
+func (gateway *Gateway) forgetClient(clientId uuid.UUID) {
+	gateway.clientsMu.Lock()
+	delete(gateway.clients, clientId)
+	gateway.clientsMu.Unlock()
+}
+
 // nextSourceMsgID generates the id of the next outbound message of clientId on the stream implied by msgType,
 // advancing that stream's per-client sequence. Transactions and accounts keep independent sequences so
 // their id spaces can't collide.
@@ -193,7 +210,7 @@ func (gateway *Gateway) nextSourceMsgID(clientId uuid.UUID, msgType protocol.Msg
 		stream = protocol.StreamAccounts
 	}
 	var seq uint64
-	if client := gateway.clients[clientId]; client != nil {
+	if client := gateway.getClient(clientId); client != nil {
 		if stream == protocol.StreamAccounts {
 			seq = client.accSeq
 			client.accSeq++
@@ -243,7 +260,7 @@ func (gateway *Gateway) handleAccountsEOF(c *clientconnection.ClientConnection) 
 	if !gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil) {
 		return false
 	}
-	if client := gateway.clients[c.ClientId]; client != nil {
+	if client := gateway.getClient(c.ClientId); client != nil {
 		client.accountsEOFSent = true
 	}
 	return true
@@ -284,16 +301,22 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 	if !gateway.sendTransactionBatch(c, nonDollarTx, broker.KeyNonDollarTransaction) {
 		return false
 	}
-	gateway.clients[c.ClientId].tx_count += len(transactions)
-	gateway.clients[c.ClientId].tx_usd_count += len(dollarTx)
+	if client := gateway.getClient(c.ClientId); client != nil {
+		client.tx_count += len(transactions)
+		client.tx_usd_count += len(dollarTx)
+	}
 	// ACK to Client would be sent here?
 	return true
 }
 
 func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnection) bool {
 	slog.Debug("Received transactions EOF")
-	tx_count := gateway.clients[c.ClientId].tx_count
-	tx_usd_count := gateway.clients[c.ClientId].tx_usd_count
+	client := gateway.getClient(c.ClientId)
+	if client == nil {
+		return false
+	}
+	tx_count := client.tx_count
+	tx_usd_count := client.tx_usd_count
 
 	eofPayload, err := gateway.codec.EncodeEOFCounts(map[broker.KeyType]int{
 		broker.KeyNil:                  tx_count,
@@ -309,14 +332,12 @@ func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnecti
 	if !gateway.sendMessageToBroker(protocol.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF) {
 		return false
 	}
-	if client := gateway.clients[c.ClientId]; client != nil {
-		client.transactionsEOFSent = true
-	}
+	client.transactionsEOFSent = true
 	return true
 }
 
 func (gateway *Gateway) handleClientDisconnect(c *clientconnection.ClientConnection) {
-	client := gateway.clients[c.ClientId]
+	client := gateway.getClient(c.ClientId)
 	if client == nil {
 		return
 	}
@@ -366,6 +387,7 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 	if client == nil {
 		// Cliente desconectado: descartar en lugar de requeuear infinitamente.
 		slog.Warn("Dropping result for unknown client", "clientId", envelope.ClientId, "msgType", envelope.MsgType)
+		delete(gateway.seenResults, envelope.ClientId)
 		ack()
 		return
 	}
@@ -385,6 +407,9 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 			gateway.seenResults[envelope.ClientId] = seen
 		}
 		seen[envelope.MsgID] = struct{}{}
+	}
+	if client.AllEOFSent() {
+		delete(gateway.seenResults, envelope.ClientId)
 	}
 	ack()
 }
