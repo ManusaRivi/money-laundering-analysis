@@ -1,11 +1,14 @@
 monitoring:
   port: 9000
 
+worker:
+  checkpoint_interval: 100
+
 broker:
   url: amqp://guest:guest@rabbitmq:5672/
   input:
     queue:
-      prefetch: 100
+      prefetch: 200
       durable: true
       auto_delete: false
       exclusive: false
@@ -13,7 +16,7 @@ broker:
       internal: false
   output:
     queue:
-      prefetch: 100
+      prefetch: 200
       durable: true
       auto_delete: false
       exclusive: false

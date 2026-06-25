@@ -80,19 +80,21 @@ func (c *Cleaner) Run() error {
 	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := c.handleMessage(msg)
+		clientID, msgType, err := c.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		c.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			c.coord.Flush()
+		}
 	})
 }
 
 func (c *Cleaner) onflush(clientID uuid.UUID) error {
-	// El cleaner esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
-	return nil
+	return c.coord.Flush()
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -183,7 +185,7 @@ func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   c.handleEOFMessage,

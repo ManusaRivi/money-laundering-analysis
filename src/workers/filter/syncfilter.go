@@ -109,7 +109,7 @@ func (f *SyncFilter) Run() error {
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
@@ -117,6 +117,9 @@ func (f *SyncFilter) Run() error {
 		}
 		if err := f.coord.Track(clientID, ack); err != nil {
 			slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+		}
+		if msgType == protocol.MsgTransactionsEOF {
+			f.coord.Flush()
 		}
 	})
 }
@@ -126,7 +129,7 @@ func (f *SyncFilter) Stop() {}
 // Private methods
 
 func (f *SyncFilter) onflush(clientID uuid.UUID) error {
-	return nil
+	return f.coord.Flush()
 }
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
@@ -273,9 +276,9 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 	return nil
 }
 
-func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	if msg.ContentType != broker.ContentTypeBinary {
-		return uuid.Nil, fmt.Errorf("unexpected content type: %v", msg.ContentType)
+		return uuid.Nil, protocol.MsgType(0), fmt.Errorf("unexpected content type: %v", msg.ContentType)
 	}
 
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{

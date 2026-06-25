@@ -54,7 +54,7 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if *cfg.Persistent {
+	if persistent := persistentFromOutput(cfg); persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -69,12 +69,17 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		queueName = cfg.Input.Queue.Name
 	}
 
+	exclusive := !hasNamedQueue
+	if hasNamedQueue && cfg.Input.Queue.Exclusive != nil {
+		exclusive = *cfg.Input.Queue.Exclusive
+	}
+
 	inputQueue, err := consumeChannel.QueueDeclare(
 		queueName,
-		false,
-		false,
-		!hasNamedQueue,
-		false,
+		cfg.Input.Queue.Durable != nil && *cfg.Input.Queue.Durable,
+		cfg.Input.Queue.AutoDelete != nil && *cfg.Input.Queue.AutoDelete,
+		exclusive,
+		cfg.Input.Queue.NoWait != nil && *cfg.Input.Queue.NoWait,
 		nil,
 	)
 	if err != nil {
@@ -93,8 +98,8 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, err
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if cfg.Input.Queue.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Input.Queue.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -105,10 +110,10 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 	if err := consumeChannel.ExchangeDeclare(
 		cfg.Output.Exchange.Name,
 		cfg.Output.Exchange.Type,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Internal,
-		*cfg.NoWait,
+		*cfg.Output.Exchange.Durable,
+		*cfg.Output.Exchange.AutoDelete,
+		*cfg.Output.Exchange.Internal,
+		*cfg.Output.Exchange.NoWait,
 		nil,
 	); err != nil {
 		produceChannel.Close()
@@ -211,7 +216,7 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 		return ErrBrokerMessage
 	}
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, qb.outputExchange, string(msg.RoutingKey), msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistentFromOutput(qb.config), qb.outputExchange, string(msg.RoutingKey), msg)
 }
 
 func (qb *exchangeToExchangeBroker) Close() error {

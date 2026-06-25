@@ -55,6 +55,7 @@ services:
       - ./configs/system.yaml:/app/system.yaml:ro
       - ./configs/workers.yaml:/app/workers.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./.checkpoints/{{.ContainerName}}:/app/checkpoints
     networks:
       - money-laundering-analysis-net
     depends_on:

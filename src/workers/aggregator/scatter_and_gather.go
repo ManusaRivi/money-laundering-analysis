@@ -569,7 +569,8 @@ func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope, 
 			return err
 		}
 	}
-	return nil
+
+	return a.coord.Flush()
 }
 
 func (a *ScatterAndGather) onClientReady(clientID uuid.UUID) error {

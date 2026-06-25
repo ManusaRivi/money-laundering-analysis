@@ -94,13 +94,16 @@ func (a *Aggregator) Run() error {
 	}
 
 	return a.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := a.handleMessage(msg)
+		clientID, msgType, err := a.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		a.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			a.coord.Flush()
+		}
 	})
 }
 
@@ -223,7 +226,10 @@ func (a *Aggregator) handleEOFMessage(envelope protocol.InternalEnvelope) error 
 		return err
 	}
 	slog.Debug("Flushed aggregation results", "clientID", clientID, "groups", len(results), "sent", sentCount)
-	return a.sendTransactionsEOF(clientID, sentCount)
+	if err := a.sendTransactionsEOF(clientID, sentCount); err != nil {
+		return err
+	}
+	return a.coord.Flush()
 }
 
 func (a *Aggregator) collectResults(clientID uuid.UUID) []protocol.Transaction {
@@ -281,12 +287,12 @@ func (a *Aggregator) sendTransactionsEOF(clientID uuid.UUID, sent int) error {
 	return a.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts, eofID)
 }
 
-func (a *Aggregator) handleMessage(msg broker.Message) (uuid.UUID, error) {
-	clientID, err := a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (a *Aggregator) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+	clientID, msgType, err := a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: a.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   a.handleEOFMessage,
 	})
-	return clientID, err
+	return clientID, msgType, err
 }
 
 // emitUngroupedCount emits the running count for clientID as a query-result

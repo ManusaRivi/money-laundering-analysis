@@ -52,7 +52,7 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if *cfg.Persistent {
+	if persistent := persistentFromOutput(cfg); persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -65,10 +65,10 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		cfg.Input.Queue.Name,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Exclusive,
-		*cfg.NoWait,
+		*cfg.Input.Queue.Durable,
+		*cfg.Input.Queue.AutoDelete,
+		*cfg.Input.Queue.Exclusive,
+		*cfg.Input.Queue.NoWait,
 		queueArgs,
 	)
 	if err != nil {
@@ -78,8 +78,8 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if cfg.Input.Queue.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Input.Queue.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -90,10 +90,10 @@ func buildQueueToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 	if err := consumeChannel.ExchangeDeclare(
 		cfg.Output.Exchange.Name,
 		cfg.Output.Exchange.Type,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Internal,
-		*cfg.NoWait,
+		*cfg.Output.Exchange.Durable,
+		*cfg.Output.Exchange.AutoDelete,
+		*cfg.Output.Exchange.Internal,
+		*cfg.Output.Exchange.NoWait,
 		nil,
 	); err != nil {
 		produceChannel.Close()
@@ -196,7 +196,7 @@ func (qb *queueToExchangeBroker) Send(msg Message) error {
 		return ErrBrokerMessage
 	}
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, qb.outputExchange, string(msg.RoutingKey), msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistentFromOutput(qb.config), qb.outputExchange, string(msg.RoutingKey), msg)
 }
 
 func (qb *queueToExchangeBroker) Close() error {

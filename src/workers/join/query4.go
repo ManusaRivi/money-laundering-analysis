@@ -68,13 +68,16 @@ func (j *Query4) Run() error {
 	}
 
 	return j.broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientId, err := j.handleMessage(msg)
+		clientId, msgType, err := j.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling transaction message", "error", err)
 			nack()
 			return
 		}
 		j.coord.Track(clientId, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			j.coord.Flush()
+		}
 	})
 }
 
@@ -161,10 +164,10 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 
-	return nil
+	return j.coord.Flush()
 }
 
-func (j *Query4) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Query4) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxAccounts:      j.handleAccountsMessage,
 		protocol.MsgTransactionsEOF: j.handleEOFMessage,
