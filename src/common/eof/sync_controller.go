@@ -18,22 +18,18 @@ var msgIDLen = len(protocol.MsgID{})
 const defaultRetryBaseDelay = 500 * time.Millisecond
 
 type nodeInfo struct {
-	rcvByID map[protocol.MsgID]int // batchID -> txCount recibidos reportados
-
+	rcvByID     map[protocol.MsgID]int                    // batchID -> txCount recibidos reportados
 	sentByKeyID map[broker.KeyType]map[protocol.MsgID]int // por key: batchID -> txCount enviados reportados
-
-	flushResponse bool // flush ack
 }
-type client struct {
-	clientID  uuid.UUID
-	msgRcvByID map[protocol.MsgID]int // batchID -> txCount que recibio este nodo
 
+type client struct {
+	clientID       uuid.UUID
+	msgRcvByID     map[protocol.MsgID]int                    // batchID -> txCount que recibio este nodo
 	msgSentByKeyID map[broker.KeyType]map[protocol.MsgID]int // por key: batchID -> txCount enviados
 	expectedTotal  int                                       // total_messages que espera recibir el cluster para flushear
 	retryCount     int                                       // cantidad de reintentos de amount request
 
-	nodesInfo         map[int]nodeInfo // senderID -> nodeInfo
-	flushExpectedSent map[broker.KeyType]int
+	nodesInfo map[int]nodeInfo // senderID -> nodeInfo
 }
 
 type SyncEOFController struct {
@@ -62,11 +58,10 @@ type SyncEOFController struct {
 
 func NewClient(clientID uuid.UUID) *client {
 	return &client{
-		clientID:          clientID,
-		msgRcvByID:        make(map[protocol.MsgID]int),
-		msgSentByKeyID:    make(map[broker.KeyType]map[protocol.MsgID]int),
-		nodesInfo:         make(map[int]nodeInfo),
-		flushExpectedSent: make(map[broker.KeyType]int),
+		clientID:       clientID,
+		msgRcvByID:     make(map[protocol.MsgID]int),
+		msgSentByKeyID: make(map[broker.KeyType]map[protocol.MsgID]int),
+		nodesInfo:      make(map[int]nodeInfo),
 	}
 }
 
@@ -187,16 +182,12 @@ func (c *SyncEOFController) broadcastAmountRequest(clientID uuid.UUID) {
 	c.sendControlMessage(msg)
 }
 
-func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSntByKey map[broker.KeyType]int) {
-	slog.Debug("[SyncEOFController] Broadcast flush",
-		"client_id", clientID,
-		"total_sent", totalSntByKey,
-	)
+func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID) {
+	slog.Debug("[SyncEOFController] Broadcast flush", "client_id", clientID)
 	msg := ControlMessage{
-		Type:           MsgTypeFlush,
-		ClientID:       clientID,
-		RequesterID:    c.nodeID,
-		SentCountByKey: totalSntByKey,
+		Type:        MsgTypeFlush,
+		ClientID:    clientID,
+		RequesterID: c.nodeID,
 	}
 	c.sendControlMessage(msg)
 }
@@ -223,8 +214,6 @@ func (c *SyncEOFController) handleControlMessage(msg broker.Message, ack func(),
 		c.processAmountResponse(*ctrlMsg)
 	case MsgTypeFlush:
 		c.processFlush(*ctrlMsg)
-	case MsgTypeFlushAck:
-		c.processFlushAck(*ctrlMsg)
 	case MsgTypeRetryExceeded:
 		c.processRetryExceeded(*ctrlMsg)
 	default:
@@ -323,16 +312,22 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	c.mu.Lock()
 	client := c.clients[clientID]
-	for nodeID, info := range client.nodesInfo {
-		if info.flushResponse {
-			info.flushResponse = false
-			client.nodesInfo[nodeID] = info
-		}
-	}
 	totalRcvReported := mergeReceived(client.nodesInfo)
 	combinedSentByKey := mergeSentByKey(client.nodesInfo)
 	expectedRcv := client.expectedTotal
+
+	// Si el set union de IDs está vacío, todos los esclavos ya borraron sus datos:
+	// el líder anterior completó el trabajo antes de caerse. No hay nada que hacer.
+	unionEmpty := isReceivedUnionEmpty(client.nodesInfo)
 	c.mu.Unlock()
+
+	if unionEmpty {
+		slog.Info("[SyncEOFController] Union de IDs vacia, EOF ya fue procesado por lider anterior",
+			"client_id", clientID,
+		)
+		c.cleanupClientState(clientID)
+		return
+	}
 
 	if totalRcvReported == expectedRcv {
 		slog.Info("[SyncEOFController] EOF sincronizado",
@@ -341,8 +336,17 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 			"reported_total", totalRcvReported,
 			"total_sent", combinedSentByKey,
 		)
-		client.flushExpectedSent = copyCountsMap(combinedSentByKey)
-		c.broadcastFlush(clientID, combinedSentByKey)
+		if c.onLeaderFlush != nil {
+			if err := c.onLeaderFlush(clientID, combinedSentByKey); err != nil {
+				slog.Error("[SyncEOFController] onLeaderFlush failed",
+					"client_id", clientID,
+					"final_count_sent", combinedSentByKey,
+					"err", err,
+				)
+			}
+		}
+		c.broadcastFlush(clientID)
+		c.cleanupClientState(clientID)
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
@@ -356,7 +360,6 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 func (c *SyncEOFController) processFlush(msg ControlMessage) {
 	slog.Info("[SyncEOFController] Recibido FLUSH",
 		"client_id", msg.ClientID,
-		"sent_count", msg.SentCountByKey,
 		"requester_id", msg.RequesterID,
 	)
 	if c.onFlush != nil {
@@ -364,45 +367,7 @@ func (c *SyncEOFController) processFlush(msg ControlMessage) {
 			slog.Error("[SyncEOFController] onFlush failed", "client_id", msg.ClientID, "err", err)
 		}
 	}
-	c.sendFlushAck(msg.ClientID, msg.RequesterID)
-	if msg.RequesterID != c.nodeID {
-		c.cleanupClientState(msg.ClientID)
-	}
-}
-
-func (c *SyncEOFController) processFlushAck(msg ControlMessage) {
-	if msg.RequesterID != c.nodeID {
-		return
-	}
-
-	c.mu.Lock()
-	client := c.clients[msg.ClientID]
-	info := client.nodesInfo[msg.SenderID]
-	info.flushResponse = true
-	client.nodesInfo[msg.SenderID] = info
-	responsesCount := countFlushResponses(client.nodesInfo)
-	finalCountSent := copyCountsMap(client.flushExpectedSent)
-	c.mu.Unlock()
-
-	slog.Debug("[SyncEOFController] FLUSH ack recibido",
-		"client_id", msg.ClientID,
-		"sender_id", msg.SenderID,
-		"responses_count", responsesCount,
-		"expected_nodes", c.totalNodes,
-	)
-
-	if responsesCount == c.totalNodes {
-		if c.onLeaderFlush != nil {
-			if err := c.onLeaderFlush(msg.ClientID, finalCountSent); err != nil {
-				slog.Error("[SyncEOFController] onLeaderFlush failed",
-					"client_id", msg.ClientID,
-					"final_count_sent", finalCountSent,
-					"err", err,
-				)
-			}
-		}
-		c.cleanupClientState(msg.ClientID)
-	}
+	c.cleanupClientState(msg.ClientID)
 }
 
 func (c *SyncEOFController) processRetryExceeded(msg ControlMessage) {
@@ -476,20 +441,6 @@ func (c *SyncEOFController) RestoreClient(clientID uuid.UUID, data []byte) error
 	return nil
 }
 
-func (c *SyncEOFController) sendFlushAck(clientID uuid.UUID, requesterID int) {
-	slog.Debug("[SyncEOFController] Send FLUSH ack",
-		"client_id", clientID,
-		"requester_id", requesterID,
-	)
-	msg := ControlMessage{
-		Type:        MsgTypeFlushAck,
-		ClientID:    clientID,
-		RequesterID: requesterID,
-		SenderID:    c.nodeID,
-	}
-	c.sendControlMessage(msg)
-}
-
 func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 	brokerMsg, err := MarshalControlMessage(msg)
 	if err != nil {
@@ -522,6 +473,17 @@ func mergeReceived(nodes map[int]nodeInfo) int {
 		total += count
 	}
 	return total
+}
+
+// isReceivedUnionEmpty devuelve true si ningún nodo reportó haber recibido mensajes del cliente.
+// Esto indica que todos ya borraron su estado (el líder anterior completó el flush).
+func isReceivedUnionEmpty(nodes map[int]nodeInfo) bool {
+	for _, info := range nodes {
+		if len(info.rcvByID) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func mergeSentByKey(nodes map[int]nodeInfo) map[broker.KeyType]int {
@@ -601,27 +563,6 @@ func decodeSentIDCounts(in map[broker.KeyType][]byte) map[broker.KeyType]map[pro
 		out[key] = decodeIDCounts(data)
 	}
 	return out
-}
-
-func copyCountsMap(source map[broker.KeyType]int) map[broker.KeyType]int {
-	if source == nil {
-		return map[broker.KeyType]int{}
-	}
-	copyMap := make(map[broker.KeyType]int, len(source))
-	for key, count := range source {
-		copyMap[key] = count
-	}
-	return copyMap
-}
-
-func countFlushResponses(nodesInfo map[int]nodeInfo) int {
-	count := 0
-	for _, info := range nodesInfo {
-		if info.flushResponse {
-			count++
-		}
-	}
-	return count
 }
 
 func SyncKeyFromInputKeys(inputKeys []string) broker.KeyType {
