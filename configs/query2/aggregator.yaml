@@ -4,8 +4,6 @@ broker:
     exchange:
       name: e_q2_max
       type: direct
-    queue:
-      name: q_q2_aggregator
   output:
     queue:
       name: q_q2_join

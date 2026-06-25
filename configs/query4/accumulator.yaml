@@ -4,8 +4,6 @@ broker:
     exchange:
       name: e_q4_acc
       type: direct
-    queue:
-      name: q_q4_accumulator
   output:
     queue:
       name: q_q4_filter
