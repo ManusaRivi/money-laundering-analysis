@@ -287,10 +287,10 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 			totalRcvIdsReported[id] = struct{}{}
 		}
 		for key, count := range info.sentcountByKeyResponseIds {
-			combinedSentByKey[key] += count
-		}
-		for key, count := range info.sentcountByKeyResponse {
-			combinedSentByKey[key] += count
+			combinedSentByKey[key] = make(map[protocol.MsgID]struct{})
+			for id := range count {
+				combinedSentByKey[key][id] = struct{}{}
+			}
 		}
 		if info.flushResponse {
 			info.flushResponse = false
