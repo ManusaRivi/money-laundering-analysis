@@ -124,10 +124,10 @@ func bindInputQueue(channel *amqp.Channel, cfg config.BrokerConfig, routingKeys 
 	if err := channel.ExchangeDeclare(
 		cfg.Input.Exchange.Name,
 		cfg.Input.Exchange.Type,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Internal,
-		*cfg.NoWait,
+		*cfg.Input.Exchange.Durable,
+		*cfg.Input.Exchange.AutoDelete,
+		*cfg.Input.Exchange.Internal,
+		*cfg.Input.Exchange.NoWait,
 		nil,
 	); err != nil {
 		return fmt.Errorf("failed to declare input exchange: %w", err)
@@ -155,6 +155,19 @@ func classifyPublishErr(err error) error {
 		return ErrBrokerDisconnected
 	}
 	return ErrBrokerMessage
+}
+
+func persistentFromOutput(cfg config.BrokerConfig) bool {
+	if cfg.Output != nil && cfg.Output.Queue != nil && cfg.Output.Queue.Persistent != nil {
+		return *cfg.Output.Queue.Persistent
+	}
+	if cfg.Output != nil && cfg.Output.Exchange != nil && cfg.Output.Exchange.Persistent != nil {
+		return *cfg.Output.Exchange.Persistent
+	}
+	if cfg.Input != nil && cfg.Input.Queue != nil && cfg.Input.Queue.Persistent != nil {
+		return *cfg.Input.Queue.Persistent
+	}
+	return false
 }
 
 func publishMessage(mu *sync.Mutex, ch *amqp.Channel, persistent bool, exchange, routingKey string, msg Message) error {

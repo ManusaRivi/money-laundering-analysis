@@ -55,7 +55,7 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if *cfg.Persistent {
+	if persistent := persistentFromOutput(cfg); persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -66,16 +66,16 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 
 	slog.Debug("Declaring input queue", "queue", inputQueueName)
 	queueArgs := amqp.Table{}
-	if *cfg.Lazy {
+	if cfg.Input.Queue != nil && cfg.Input.Queue.Lazy != nil && *cfg.Input.Queue.Lazy {
 		queueArgs["x-queue-mode"] = "lazy"
 	}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		inputQueueName,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Exclusive,
-		*cfg.NoWait,
+		*cfg.Input.Queue.Durable,
+		*cfg.Input.Queue.AutoDelete,
+		*cfg.Input.Queue.Exclusive,
+		*cfg.Input.Queue.NoWait,
 		queueArgs,
 	)
 	if err != nil {
@@ -85,8 +85,8 @@ func buildQueueToQueueBroker(inputQueueName string, outputQueueName string, rabb
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if cfg.Input.Queue.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Input.Queue.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -120,8 +120,8 @@ func (qb *queueToQueueBroker) StartConsuming(callbackFunc func(msg Message, ack 
 	queueName := qb.inputQueue.Name
 	tag := queueName + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	if qb.config.Prefetch > 0 {
-		if err := qb.consumeChannel.Qos(qb.config.Prefetch, 0, false); err != nil {
+	if qb.config.Input.Queue.Prefetch > 0 {
+		if err := qb.consumeChannel.Qos(qb.config.Input.Queue.Prefetch, 0, false); err != nil {
 			if errors.Is(err, amqp.ErrClosed) {
 				return ErrBrokerDisconnected
 			}
@@ -192,7 +192,7 @@ func (qb *queueToQueueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, "", qb.outputQueue, msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistentFromOutput(qb.config), "", qb.outputQueue, msg)
 }
 
 func (qb *queueToQueueBroker) Close() error {

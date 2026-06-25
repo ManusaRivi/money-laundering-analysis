@@ -13,10 +13,10 @@ broker:
   input:
     queue:
       name: q_q3_amount_filter
+      lazy: true
   output:
     queue:
       name: query_results
-  lazy: true
 
 worker:
   type: "AvgFormatFilter"

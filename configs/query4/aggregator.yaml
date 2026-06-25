@@ -4,6 +4,8 @@ broker:
     exchange:
       name: e_q4_agg
       type: direct
+    queue:
+      prefetch: 600
   output:
     exchange:
       name: e_q4_acc
@@ -11,4 +13,4 @@ broker:
 
 worker:
   type: "ScatterAndGather"
-  checkpoint_interval: 100
+  checkpoint_interval: 500

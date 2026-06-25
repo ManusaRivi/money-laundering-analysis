@@ -54,7 +54,7 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if *cfg.Persistent {
+	if persistent := persistentFromOutput(cfg); persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -63,17 +63,17 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		}
 	}
 	var queueName string
-	isExclusive := *cfg.Exclusive
 	if cfg.Input.Queue != nil && cfg.Input.Queue.Name != "" {
 		queueName = cfg.Input.Queue.Name
 	}
+	isExclusive := cfg.Input.Queue != nil && cfg.Input.Queue.Exclusive != nil && *cfg.Input.Queue.Exclusive
 
 	inputQueue, err := consumeChannel.QueueDeclare(
 		queueName,
-		*cfg.Durable,
-		*cfg.AutoDelete,
+		*cfg.Input.Queue.Durable,
+		*cfg.Input.Queue.AutoDelete,
 		isExclusive,
-		*cfg.NoWait,
+		*cfg.Input.Queue.NoWait,
 		nil,
 	)
 	if err != nil {
@@ -92,8 +92,8 @@ func buildExchangeToQueueBroker(cfg config.BrokerConfig, rabbitURL string) (Brok
 		return nil, err
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if cfg.Input.Queue.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Input.Queue.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -190,7 +190,7 @@ func (qb *exchangeToQueueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, "", qb.outputQueue, msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistentFromOutput(qb.config), "", qb.outputQueue, msg)
 }
 
 func (qb *exchangeToQueueBroker) Close() error {

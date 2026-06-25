@@ -33,13 +33,25 @@ type MonitorWorkerParams struct {
 }
 
 type QueueEndpoint struct {
-	Name string `yaml:"name"`
+	Name       string `yaml:"name"`
+	Prefetch   int    `yaml:"prefetch,omitempty"`
+	Durable    *bool  `yaml:"durable,omitempty"`
+	AutoDelete *bool  `yaml:"auto_delete,omitempty"`
+	Exclusive  *bool  `yaml:"exclusive,omitempty"`
+	NoWait     *bool  `yaml:"no_wait,omitempty"`
+	Lazy       *bool  `yaml:"lazy,omitempty"`
+	Persistent *bool  `yaml:"persistent,omitempty"`
 }
 
 type ExchangeEndpoint struct {
-	Name string   `yaml:"name"`
-	Type string   `yaml:"type,omitempty"`
-	Keys []string `yaml:"keys,omitempty"`
+	Name       string   `yaml:"name"`
+	Type       string   `yaml:"type,omitempty"`
+	Keys       []string `yaml:"keys,omitempty"`
+	Durable    *bool    `yaml:"durable,omitempty"`
+	AutoDelete *bool    `yaml:"auto_delete,omitempty"`
+	Internal   *bool    `yaml:"internal,omitempty"`
+	NoWait     *bool    `yaml:"no_wait,omitempty"`
+	Persistent *bool    `yaml:"persistent,omitempty"`
 }
 
 type Endpoint struct {
@@ -54,6 +66,7 @@ type SystemBrokerQueueDefaults struct {
 	Exclusive  bool `yaml:"exclusive"`
 	NoWait     bool `yaml:"no_wait"`
 	Internal   bool `yaml:"internal"`
+	Lazy       bool `yaml:"lazy"`
 }
 
 type SystemBrokerEndpointDefaults struct {
@@ -67,18 +80,10 @@ type SystemBrokerDefaults struct {
 }
 
 type BrokerConfig struct {
-	Type       string    `yaml:"type"`
-	RabbitURL  string    `yaml:"url"`
-	Input      *Endpoint `yaml:"input,omitempty"`
-	Output     *Endpoint `yaml:"output,omitempty"`
-	Prefetch   int       `yaml:"prefetch,omitempty"`
-	Durable    *bool     `yaml:"durable,omitempty"`
-	AutoDelete *bool     `yaml:"auto_delete,omitempty"`
-	Exclusive  *bool     `yaml:"exclusive,omitempty"`
-	NoWait     *bool     `yaml:"no_wait,omitempty"`
-	Internal   *bool     `yaml:"internal,omitempty"`
-	Lazy       *bool     `yaml:"lazy,omitempty"`
-	Persistent *bool     `yaml:"persistent,omitempty"`
+	Type      string    `yaml:"type"`
+	RabbitURL string    `yaml:"url"`
+	Input     *Endpoint `yaml:"input,omitempty"`
+	Output    *Endpoint `yaml:"output,omitempty"`
 
 	WorkerID         int    `yaml:"-"`
 	WorkerPrefix     string `yaml:"-"`
@@ -204,8 +209,8 @@ func Load(filepath string) (*Config, error) {
 	}
 	applyEOFDefaults(cfg)
 
-	if cfg.Worker.CheckpointInterval > cfg.Broker.Prefetch {
-		return nil, fmt.Errorf("worker checkpoint_interval cannot be greater than broker prefetch")
+	if cfg.Broker.Input != nil && cfg.Broker.Input.Queue != nil && cfg.Worker.CheckpointInterval > cfg.Broker.Input.Queue.Prefetch {
+		return nil, fmt.Errorf("worker checkpoint_interval cannot be greater than input queue prefetch")
 	}
 
 	return cfg, nil
@@ -368,67 +373,111 @@ func applyWorkerDefaults(cfg *Config) {
 	}
 }
 
+func systemQueueInputDefaults(sys *SystemBrokerDefaults) *SystemBrokerQueueDefaults {
+	if sys != nil && sys.Input != nil {
+		return sys.Input.Queue
+	}
+	return nil
+}
+
+func systemQueueOutputDefaults(sys *SystemBrokerDefaults) *SystemBrokerQueueDefaults {
+	if sys != nil && sys.Output != nil {
+		return sys.Output.Queue
+	}
+	return nil
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func applyQueueDefaults(cfg *BrokerConfig, q **QueueEndpoint, sys *SystemBrokerQueueDefaults) {
+	if *q == nil {
+		*q = &QueueEndpoint{}
+	}
+	if sys != nil {
+		if (*q).Prefetch == 0 {
+			(*q).Prefetch = sys.Prefetch
+		}
+		if (*q).Durable == nil {
+			(*q).Durable = boolPtr(sys.Durable)
+		}
+		if (*q).AutoDelete == nil {
+			(*q).AutoDelete = boolPtr(sys.AutoDelete)
+		}
+		if (*q).Exclusive == nil {
+			(*q).Exclusive = boolPtr(sys.Exclusive)
+		}
+		if (*q).NoWait == nil {
+			(*q).NoWait = boolPtr(sys.NoWait)
+		}
+		if (*q).Lazy == nil {
+			(*q).Lazy = boolPtr(sys.Lazy)
+		}
+	}
+	if (*q).Durable == nil {
+		(*q).Durable = boolPtr(true)
+	}
+	if (*q).AutoDelete == nil {
+		(*q).AutoDelete = boolPtr(false)
+	}
+	if (*q).Exclusive == nil {
+		(*q).Exclusive = boolPtr(false)
+	}
+	if (*q).NoWait == nil {
+		(*q).NoWait = boolPtr(false)
+	}
+	if (*q).Lazy == nil {
+		(*q).Lazy = boolPtr(false)
+	}
+	if (*q).Persistent == nil {
+		(*q).Persistent = boolPtr(false)
+	}
+}
+
+func applyExchangeDefaults(ep *Endpoint) {
+	if ep.Exchange == nil {
+		return
+	}
+	var sys *SystemBrokerQueueDefaults
+	if systemDefaults != nil && systemDefaults.Input != nil {
+		sys = systemDefaults.Input.Queue
+	}
+	if sys != nil {
+		if ep.Exchange.Durable == nil {
+			ep.Exchange.Durable = boolPtr(sys.Durable)
+		}
+		if ep.Exchange.AutoDelete == nil {
+			ep.Exchange.AutoDelete = boolPtr(sys.AutoDelete)
+		}
+		if ep.Exchange.Internal == nil {
+			ep.Exchange.Internal = boolPtr(sys.Internal)
+		}
+		if ep.Exchange.NoWait == nil {
+			ep.Exchange.NoWait = boolPtr(sys.NoWait)
+		}
+	}
+	if ep.Exchange.Durable == nil {
+		ep.Exchange.Durable = boolPtr(true)
+	}
+	if ep.Exchange.AutoDelete == nil {
+		ep.Exchange.AutoDelete = boolPtr(false)
+	}
+	if ep.Exchange.Internal == nil {
+		ep.Exchange.Internal = boolPtr(false)
+	}
+	if ep.Exchange.NoWait == nil {
+		ep.Exchange.NoWait = boolPtr(false)
+	}
+	if ep.Exchange.Persistent == nil {
+		ep.Exchange.Persistent = boolPtr(false)
+	}
+}
+
 func applyBrokerDefaults(cfg *BrokerConfig) error {
-	if systemDefaults != nil {
-		if cfg.RabbitURL == "" {
-			cfg.RabbitURL = systemDefaults.URL
-		}
-		if sq := systemDefaults.Input; sq != nil && sq.Queue != nil {
-			if cfg.Prefetch == 0 {
-				cfg.Prefetch = sq.Queue.Prefetch
-			}
-			if cfg.Durable == nil {
-				v := sq.Queue.Durable
-				cfg.Durable = &v
-			}
-			if cfg.AutoDelete == nil {
-				v := sq.Queue.AutoDelete
-				cfg.AutoDelete = &v
-			}
-			if cfg.Exclusive == nil {
-				v := sq.Queue.Exclusive
-				cfg.Exclusive = &v
-			}
-			if cfg.NoWait == nil {
-				v := sq.Queue.NoWait
-				cfg.NoWait = &v
-			}
-			if cfg.Internal == nil {
-				v := sq.Queue.Internal
-				cfg.Internal = &v
-			}
-		}
+	if systemDefaults != nil && cfg.RabbitURL == "" {
+		cfg.RabbitURL = systemDefaults.URL
 	}
 	if cfg.RabbitURL == "" {
 		cfg.RabbitURL = "amqp://guest:guest@rabbitmq:5672/"
-	}
-	if cfg.Durable == nil {
-		v := true
-		cfg.Durable = &v
-	}
-	if cfg.AutoDelete == nil {
-		v := false
-		cfg.AutoDelete = &v
-	}
-	if cfg.Exclusive == nil {
-		v := false
-		cfg.Exclusive = &v
-	}
-	if cfg.NoWait == nil {
-		v := false
-		cfg.NoWait = &v
-	}
-	if cfg.Internal == nil {
-		v := false
-		cfg.Internal = &v
-	}
-	if cfg.Lazy == nil {
-		v := false
-		cfg.Lazy = &v
-	}
-	if cfg.Persistent == nil {
-		v := false
-		cfg.Persistent = &v
 	}
 
 	if cfg.Input == nil {
@@ -438,21 +487,18 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 		cfg.Output = &Endpoint{}
 	}
 
+	applyQueueDefaults(cfg, &cfg.Input.Queue, systemQueueInputDefaults(systemDefaults))
+	applyQueueDefaults(cfg, &cfg.Output.Queue, systemQueueOutputDefaults(systemDefaults))
+
+	applyExchangeDefaults(cfg.Input)
+	applyExchangeDefaults(cfg.Output)
+
 	if cfg.Type == "queue" {
 		if cfg.Input.Queue == nil && cfg.Output.Queue == nil {
 			return fmt.Errorf("queue broker requires input.queue or output.queue")
 		}
-		if cfg.Input.Queue != nil && cfg.Input.Queue.Name == "" {
-			if cfg.WorkerPrefix == "" {
-				return fmt.Errorf("WORKER_PREFIX environment variable is required for input queue")
-			}
-			cfg.Input.Queue.Name = cfg.WorkerPrefix
-		}
-		if cfg.Output.Queue != nil && cfg.Output.Queue.Name == "" {
-			if cfg.NextWorkerPrefix == "" {
-				return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
-			}
-			cfg.Output.Queue.Name = cfg.NextWorkerPrefix
+		if cfg.Input.Queue.Name == "" && cfg.Output.Queue.Name == "" {
+			return fmt.Errorf("queue broker requires input.queue.name or output.queue.name")
 		}
 		return nil
 	}

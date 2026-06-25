@@ -24,13 +24,13 @@ type queueBroker struct {
 }
 
 func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
-	var queueName string
+	var qEp *config.QueueEndpoint
 	if cfg.Input != nil && cfg.Input.Queue != nil && cfg.Input.Queue.Name != "" {
-		queueName = cfg.Input.Queue.Name
+		qEp = cfg.Input.Queue
 	} else if cfg.Output != nil && cfg.Output.Queue != nil && cfg.Output.Queue.Name != "" {
-		queueName = cfg.Output.Queue.Name
+		qEp = cfg.Output.Queue
 	}
-	if queueName == "" {
+	if qEp == nil {
 		return nil, errors.New("input.queue or output.queue is required for queue broker")
 	}
 	if cfg.RabbitURL == "" {
@@ -49,7 +49,7 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if *cfg.Persistent {
+	if *qEp.Persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -59,11 +59,11 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 	}
 
 	queue, err := consumeChannel.QueueDeclare(
-		queueName,
-		*cfg.Durable,
-		*cfg.AutoDelete,
-		*cfg.Exclusive,
-		*cfg.NoWait,
+		qEp.Name,
+		*qEp.Durable,
+		*qEp.AutoDelete,
+		*qEp.Exclusive,
+		*qEp.NoWait,
 		amqp.Table{},
 	)
 	if err != nil {
@@ -73,8 +73,8 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if qEp.Prefetch > 0 {
+		if err := consumeChannel.Qos(qEp.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -168,7 +168,8 @@ func (qb *queueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, *qb.config.Persistent, "", qb.queue.Name, msg)
+	persistent := persistentFromOutput(qb.config)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistent, "", qb.queue.Name, msg)
 }
 
 func (qb *queueBroker) Close() error {
