@@ -62,7 +62,9 @@ func (co *Coordinator) Recover() error {
 
 func (co *Coordinator) Track(clientID uuid.UUID, ack func()) error {
 	co.mu.Lock()
-	co.seenClients[clientID] = struct{}{}
+	if clientID != uuid.Nil {
+		co.seenClients[clientID] = struct{}{}
+	}
 	co.acks = append(co.acks, ack)
 	co.pending++
 	flush := co.pending >= co.interval

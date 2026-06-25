@@ -141,7 +141,7 @@ func (f *AvgFormatFilter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
 
 	client, ok := f.clients[clientID]
 	if !ok {
-		return nil, fmt.Errorf("Client not found for snapshot: %s", clientID)
+		return nil, nil
 	}
 
 	checkpoint := AvgFormatFilterCheckpoint{
@@ -171,7 +171,7 @@ func (f *AvgFormatFilter) RestoreClient(clientID uuid.UUID, data []byte) error {
 	client.received = checkpoint.Received
 	client.done = checkpoint.Done
 
-	if client.done && client.doneCh != nil {
+	if client.done {
 		close(client.doneCh)
 	}
 
