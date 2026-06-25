@@ -26,8 +26,6 @@ func newDedupState() *dedupState {
 }
 
 func (d *dedupState) getClient(clientID uuid.UUID) *dedupClientState {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	client, ok := d.clients[clientID]
 	if !ok {
 		client = &dedupClientState{
@@ -51,6 +49,9 @@ func (d *dedupState) getSeen(clientID uuid.UUID) map[protocol.MsgID]struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ids := d.getClient(clientID).seen
+	for id := range d.getClient(clientID).virtualSeen {
+		ids[id] = struct{}{}
+	}
 	return ids
 }
 
