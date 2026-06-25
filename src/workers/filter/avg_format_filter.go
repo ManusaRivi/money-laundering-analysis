@@ -337,6 +337,7 @@ func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
+	f.coord.Flush()
 	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
 	return nil
 }
