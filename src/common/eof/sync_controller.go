@@ -309,6 +309,14 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	expectedRcv := client.expectedTotal
 	c.mu.Unlock()
 
+	if totalRcvReported == 0 {
+		slog.Info("[SyncEOFController] No messages expected, EOF already completed by previous leader",
+			"client_id", clientID,
+		)
+		c.cleanupClientState(clientID)
+		return
+	}
+
 	if totalRcvReported == expectedRcv {
 		slog.Info("[SyncEOFController] EOF sincronizado",
 			"client_id", clientID,
@@ -489,10 +497,8 @@ func (c *SyncEOFController) sendControlMessage(msg ControlMessage) {
 func buildSentCountByKeyMap(receivedIds map[protocol.MsgID]int, sentIds map[broker.KeyType]map[protocol.MsgID]int) map[broker.KeyType]int {
 	counts := make(map[broker.KeyType]int)
 	for key, ids := range sentIds {
-		for id, count := range ids {
-			if _, exists := receivedIds[id]; exists {
-				counts[key] += count
-			}
+		for _, count := range ids {
+			counts[key] += count
 		}
 	}
 	return counts

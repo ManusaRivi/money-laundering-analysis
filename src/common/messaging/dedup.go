@@ -82,6 +82,9 @@ func (d *dedupState) alreadySeen(clientID uuid.UUID, id protocol.MsgID) bool {
 	defer d.mu.Unlock()
 	client := d.getClient(clientID)
 	_, ok := client.seen[id]
+	if !ok {
+		_, ok = client.virtualSeen[id]
+	}
 	return ok
 }
 
