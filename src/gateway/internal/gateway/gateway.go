@@ -28,6 +28,9 @@ type Client struct {
 	// client's connection goroutine.
 	txSeq  uint64
 	accSeq uint64
+
+	accountsEOFSent     bool
+	transactionsEOFSent bool
 }
 
 type Gateway struct {
@@ -117,6 +120,8 @@ func (gateway *Gateway) Run() error {
 
 			if gateway.HandleClientRequest(client) {
 				<-client.Done()
+			} else {
+				gateway.handleClientDisconnect(client)
 			}
 		}()
 	}
@@ -235,7 +240,13 @@ func (gateway *Gateway) handleAccountsBatch(c *clientconnection.ClientConnection
 
 func (gateway *Gateway) handleAccountsEOF(c *clientconnection.ClientConnection) bool {
 	slog.Debug("Received accounts EOF")
-	return gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil)
+	if !gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil) {
+		return false
+	}
+	if client := gateway.clients[c.ClientId]; client != nil {
+		client.accountsEOFSent = true
+	}
+	return true
 }
 
 func (gateway *Gateway) sendTransactionBatch(c *clientconnection.ClientConnection, transactions []protocol.Transaction, routingKey broker.KeyType) bool {
@@ -295,7 +306,27 @@ func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnecti
 		slog.Error("Error marshalling EOF packet", "error", err)
 		return false
 	}
-	return gateway.sendMessageToBroker(protocol.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF)
+	if !gateway.sendMessageToBroker(protocol.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF) {
+		return false
+	}
+	if client := gateway.clients[c.ClientId]; client != nil {
+		client.transactionsEOFSent = true
+	}
+	return true
+}
+
+func (gateway *Gateway) handleClientDisconnect(c *clientconnection.ClientConnection) {
+	client := gateway.clients[c.ClientId]
+	if client == nil {
+		return
+	}
+	slog.Info("Client disconnected before finishing, synthesizing EOFs to release downstream state", "clientId", c.ClientId)
+	if !client.accountsEOFSent {
+		gateway.handleAccountsEOF(c)
+	}
+	if !client.transactionsEOFSent {
+		gateway.handleTransactionsEOF(c)
+	}
 }
 
 /*
