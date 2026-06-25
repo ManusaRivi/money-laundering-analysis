@@ -2,6 +2,7 @@ package scattergather
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
@@ -12,16 +13,9 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// heavyBatchSize caps how many accounts go in one heavy-batch message, so a
-// replica with many heavy accounts never publishes one oversized message.
 const heavyBatchSize = 1000
-
 const heavyExchangePrefetch = 16
 
-// HeavyAccountsExchange is the all-to-all fanout among ScatterAndGather replicas
-// used for the Q4 degree exchange. Each replica publishes its heavy sources/sinks
-// (batched, binary-encoded, tagged with its node id) plus a "done" marker, and
-// consumes every replica's publishes from its own queue bound to the fanout.
 type HeavyAccountsExchange struct {
 	conn  *amqp.Connection
 	ch    *amqp.Channel
@@ -84,10 +78,6 @@ func NewHeavyAccountsExchange(rabbitURL, exchangeName string, nodeID int) (*Heav
 	}, nil
 }
 
-// PublishHeavy broadcasts this replica's heavy sets for a client — sources and
-// sinks in bounded batches — followed by a done marker. The done is published
-// last, so (AMQP preserving per-publisher order) peers merge all batches before
-// they see this replica's done.
 func (e *HeavyAccountsExchange) PublishHeavy(clientID uuid.UUID, heavySrcs, heavySinks map[domain.Account]struct{}) error {
 	if err := e.publishBatches(clientID, protocol.Q4HeavyRoleSource, heavySrcs); err != nil {
 		return err
@@ -139,10 +129,6 @@ func (e *HeavyAccountsExchange) publish(body []byte) error {
 	return nil
 }
 
-// StartConsuming blocks, delivering each peer message to onBatch / onDone until
-// StopConsuming/Close is called. Messages are acked after the callback runs;
-// since merges are idempotent (set unions, done dedup by sender), at-least-once
-// redelivery is safe.
 func (e *HeavyAccountsExchange) StartConsuming(
 	onBatch func(clientID uuid.UUID, senderID int, role uint8, accounts []domain.Account, ack, nack func()),
 	onDone func(clientID uuid.UUID, senderID int, ack, nack func()),
@@ -172,7 +158,9 @@ func (e *HeavyAccountsExchange) StartConsuming(
 			if !ok {
 				return nil
 			}
-			e.dispatch(d.Body, onBatch, onDone, d.Ack(), d.Nack(false, true))
+			ack := func() { _ = d.Ack(false) }
+			nack := func() { _ = d.Nack(false, true) }
+			e.dispatch(d.Body, onBatch, onDone, ack, nack)
 		case <-e.consumeDone:
 			return nil
 		}
@@ -181,26 +169,39 @@ func (e *HeavyAccountsExchange) StartConsuming(
 
 func (e *HeavyAccountsExchange) dispatch(
 	body []byte,
-	onBatch func(uuid.UUID, int, uint8, []domain.Account, ack, nack func()),
-	onDone func(uuid.UUID, int, ack, nack func()),
+	onBatch func(uuid.UUID, int, uint8, []domain.Account, func(), func()),
+	onDone func(uuid.UUID, int, func(), func()),
+	ack, nack func(),
 ) {
+	// Decode failures are deterministic (the same bytes always fail), so requeueing
+	// would just poison-loop. Ack-drop them instead and let the callback own the ack
+	// for everything decodable.
 	envelope, err := e.codec.DecodeInternalEnvelope(body)
 	if err != nil {
+		slog.Error("HeavyAccountsExchange: dropping undecodable envelope", "error", err)
+		ack()
 		return
 	}
 	switch envelope.MsgType {
 	case protocol.MsgQ4HeavyBatch:
 		senderID, role, accounts, err := e.codec.DecodeQ4HeavyBatch(envelope.Payload)
 		if err != nil {
+			slog.Error("HeavyAccountsExchange: dropping undecodable heavy batch", "error", err)
+			ack()
 			return
 		}
-		onBatch(envelope.ClientId, senderID, role, accounts)
+		onBatch(envelope.ClientId, senderID, role, accounts, ack, nack)
 	case protocol.MsgQ4HeavyDone:
 		senderID, err := e.codec.DecodeQ4HeavyDone(envelope.Payload)
 		if err != nil {
+			slog.Error("HeavyAccountsExchange: dropping undecodable done", "error", err)
+			ack()
 			return
 		}
-		onDone(envelope.ClientId, senderID)
+		onDone(envelope.ClientId, senderID, ack, nack)
+	default:
+		slog.Warn("HeavyAccountsExchange: dropping unknown message type", "type", envelope.MsgType)
+		ack()
 	}
 }
 
