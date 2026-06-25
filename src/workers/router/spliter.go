@@ -63,6 +63,8 @@ func (r *Spliter) Run() error {
 	var err error
 	r.syncEOFController, err = eof.NewSyncEOFController(
 		r.cfg.SyncEOFConfig,
+		r.pub.GetSeen,
+		r.pub.GetSent,
 		r.onflush,
 		r.onLeaderFlush,
 		r.onRetryExceeded,
@@ -136,12 +138,11 @@ func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, 
 		slog.Error("Error encoding TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	id := protocol.DeriveMsgID(parentID, fmt.Sprintf("%v:%s", txType, routingKey), 0)
-	if err := r.pub.PublishRawWithID(routingKey, envelope, id); err != nil {
+	if err := r.pub.PublishRawWithID(routingKey, envelope, parentID); err != nil {
 		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, len(txs))
+	r.pub.MarkSent(clientID, routingKey, parentID)
 	return nil
 }
 
@@ -194,8 +195,6 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 			return err
 		}
 	}
-
-	r.syncEOFController.MessageReceived(clientId, len(txBatch))
 
 	return nil
 }

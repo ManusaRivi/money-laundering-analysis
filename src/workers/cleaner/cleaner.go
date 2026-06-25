@@ -172,13 +172,13 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	txID := protocol.DeriveMsgID(envelope.MsgID, string(broker.KeyNil), 0)
-	if err := c.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgTransactionsBatch, broker.KeyNil, txPayload, txID); err != nil {
+	id := envelope.MsgID
+	if err := c.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgTransactionsBatch, broker.KeyNil, txPayload, id); err != nil {
 		slog.Error("Error sending cleaned transaction batch to broker", "error", err)
 		return err
 	}
 
-	c.pub.MarkSent(envelope.ClientId, broker.KeyNil, txID)
+	c.pub.MarkSent(envelope.ClientId, broker.KeyNil, id)
 
 	return nil
 }

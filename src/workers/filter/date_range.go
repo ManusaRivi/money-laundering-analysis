@@ -70,6 +70,8 @@ func (f *DateRange) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.pub.GetSeen,
+		f.pub.GetSent,
 		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
@@ -155,7 +157,7 @@ func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
-	f.syncEOFController.MessageSentWithKey(clientId, routingKey, payloadLen)
+	f.pub.MarkSent(clientId, routingKey, id)
 	return true
 }
 
@@ -169,8 +171,7 @@ func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, cl
 		slog.Error("Error marshalling transaction packet", "error", err)
 		return false
 	}
-	id := protocol.DeriveMsgID(parentID, string(routingKey), 0)
-	return f.sendMessageToBroker(protocol.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions), id)
+	return f.sendMessageToBroker(protocol.MsgTransactionsBatch, clientId, txPayload, routingKey, len(transactions), parentID)
 }
 
 func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
@@ -198,7 +199,6 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction, envelope.MsgID) {
 		return fmt.Errorf("error sending non-dollar transaction batch to broker")
 	}
-	f.syncEOFController.MessageReceived(clientId, len(transactions))
 	return nil
 }
 

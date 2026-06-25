@@ -310,13 +310,13 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 		if err != nil {
 			return err
 		}
-		if err := f.pub.PublishInternal(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload); err != nil {
+		if err := f.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload, envelope.MsgID); err != nil {
 			return err
 		}
-		f.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(results))
+
+		f.pub.MarkSent(envelope.ClientId, broker.KeyNil, envelope.MsgID)
 	}
 
-	f.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
 	return nil
 }
 
@@ -354,7 +354,8 @@ func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
 
 func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Handling leader flush", "client_id", clientID, "final_sent", finalSent)
-	if err := f.pub.PublishInternal(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil); err != nil {
+	id := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	if err := f.pub.PublishInternalWithID(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil, id); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}

@@ -64,6 +64,8 @@ func (r *Router) Run() error {
 	var err error
 	r.syncEOFController, err = eof.NewSyncEOFController(
 		r.cfg.SyncEOFConfig,
+		r.pub.GetSeen,
+		r.pub.GetSent,
 		r.onflush,
 		r.onLeaderFlush,
 		r.onRetryExceeded,
@@ -107,7 +109,7 @@ func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType
 	if err := r.pub.PublishInternalWithID(clientID, msgType, routingKey, payload, id); err != nil {
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
+	r.pub.MarkSent(clientID, routingKey, id)
 	return nil
 }
 
@@ -157,7 +159,6 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
-	r.syncEOFController.MessageReceived(envelope.ClientId, len(txBatch))
 	transactionsPerRoutingKey := make(map[string][]protocol.Transaction)
 	for _, tx := range txBatch {
 		routingKey := r.shardByField(tx)
@@ -173,9 +174,8 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 
 		slog.Debug("Routing transaction", "section", r.sectionToRouteBy, "field", r.fieldToRouteBy, "routingKey", routingKey)
 		// Encode and send batch
-		txID := protocol.DeriveMsgID(envelope.MsgID, routingKey, 0)
 		key := broker.KeyType(routingKey)
-		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, key, len(transactions), txID); err != nil {
+		if err := r.encodeAndSendBatch(envelope.ClientId, protocol.MsgTransactionsBatch, transactionBytes, key, len(transactions), envelope.MsgID); err != nil {
 			return err
 		}
 	}

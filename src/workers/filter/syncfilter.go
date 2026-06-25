@@ -87,6 +87,8 @@ func (f *SyncFilter) Run() error {
 	var err error
 	f.syncEOFController, err = eof.NewSyncEOFController(
 		f.cfg.SyncEOFConfig,
+		f.pub.GetSeen,
+		f.pub.GetSent,
 		f.onflush,
 		f.onLeaderFlush,
 		f.onRetryExceeded,
@@ -196,13 +198,13 @@ func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.Msg
 	if err := f.pub.PublishInternalWithID(clientID, msgType, broker.KeyNil, payload, id); err != nil {
 		return err
 	}
-	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, batchLength)
+	f.pub.MarkSent(clientID, broker.KeyNil, id)
+
 	return nil
 }
 
 func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	filteredTx := make([]protocol.Transaction, 0, len(transactions))
-	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 			filteredTx = append(filteredTx, tx)
@@ -216,13 +218,11 @@ func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Tran
 	if err != nil {
 		return fmt.Errorf("encoding filtered transaction batch: %w", err)
 	}
-	txID := protocol.DeriveMsgID(parentID, string(broker.KeyNil), 0)
-	return f.encodeAndSendBatch(clientID, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx), txID)
+	return f.encodeAndSendBatch(clientID, protocol.MsgTransactionsBatch, filteredTxBytes, len(filteredTx), parentID)
 }
 
 func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	results := make([]protocol.Query1Result, 0)
-	f.syncEOFController.MessageReceived(clientID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 			results = append(results, protocol.Query1Result{
@@ -242,8 +242,7 @@ func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Tra
 	if err != nil {
 		return fmt.Errorf("encoding query1 result batch: %w", err)
 	}
-	resultID := protocol.DeriveMsgID(parentID, string(broker.KeyNil), 0)
-	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results), resultID)
+	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results), parentID)
 }
 
 func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
