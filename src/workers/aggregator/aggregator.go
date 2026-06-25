@@ -102,7 +102,14 @@ func (a *Aggregator) Run() error {
 		}
 		a.coord.Track(clientID, ack)
 		if msgType == protocol.MsgTransactionsEOF {
-			a.coord.Flush()
+			if err := a.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			a.pub.Forget(clientID)
+			if err := a.coord.Delete(clientID); err != nil {
+				slog.Error("Error deleting client from coordinator", "error", err)
+			}
 		}
 	})
 }

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -145,9 +144,16 @@ func (j *Join) process(handle func(broker.Message) (uuid.UUID, protocol.MsgType,
 	if err := j.coord.Track(clientID, ack); err != nil {
 		slog.Error("Error tracking message in checkpoint coordinator", "error", err)
 	}
-	if msgType == protocol.MsgTransactionsEOF {
+	finalized := j.finalized[clientID]
+	if msgType == protocol.MsgTransactionsEOF || finalized {
 		if err := j.coord.Flush(); err != nil {
 			slog.Error("Error flushing checkpoint coordinator", "error", err)
+		}
+	}
+	if finalized {
+		j.pub.Forget(clientID)
+		if err := j.coord.Delete(clientID); err != nil {
+			slog.Error("Error deleting client from coordinator", "error", err)
 		}
 	}
 }
@@ -265,8 +271,6 @@ func (j *Join) handleTransactionBatch(envelope protocol.InternalEnvelope) error 
 func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received transaction EOF for client", "clientID", clientID)
-	slog.Debug("Sleeping...")
-	time.Sleep(5 * time.Second)
 	j.workerEofReceived[clientID]++
 	slog.Debug("Current EOF count", "clientID", clientID, "workerEofReceived", j.workerEofReceived[clientID], "previousWorkerAmount", j.previousWorkerAmount)
 	if j.shouldFinalize(clientID) {
@@ -310,8 +314,6 @@ func (j *Join) finalizeClient(clientID uuid.UUID) error {
 		return err
 	}
 	slog.Debug("Emitted Query2 EOF for client", "clientID", clientID)
-	slog.Debug("Sleeping...")
-	time.Sleep(5 * time.Second)
 
 	// Keep `finalized` as the terminal marker so a redelivered EOF won't
 	// re-finalize a client we've already completed.

@@ -76,7 +76,16 @@ func (j *Query4) Run() error {
 		}
 		j.coord.Track(clientId, ack)
 		if msgType == protocol.MsgTransactionsEOF {
-			j.coord.Flush()
+			if err := j.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := j.eofCounters[clientId]; !counting {
+				j.pub.Forget(clientId)
+				if err := j.coord.Delete(clientId); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
 		}
 	})
 }
@@ -123,6 +132,7 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	client := j.clients[clientId]
 	if client == nil {
 		slog.Debug("No accounts received for this client, sending EOF only", "clientID", clientId)
+		delete(j.eofCounters, clientId)
 		eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
 		return j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	}

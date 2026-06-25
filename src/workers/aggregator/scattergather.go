@@ -15,17 +15,8 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 
-	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
-
-// Stateful
-// Va almacenando y acumulando en memoria los datos:
-//  accumulator = Map<(src_acc,dst_acc), int >>
-//  for key in scatter-gather:
-//    accumulator[key] += scatter-gather[key]
-
-// Al recibir EOF de etapa anterior envian accumulator
 
 const BATCH_SIZE = 1000
 
@@ -37,11 +28,6 @@ type clientScattergather struct {
 
 var _ checkpoint.Checkpointable = (*ScatterGather)(nil)
 
-// scatterGatherCountCheckpoint persists the per-client accumulator and EOF
-// barrier count. The accumulator is keyed by a struct (TxQ4PairKey), which
-// encoding/json can't use as a map key, so it is serialised as a slice of
-// pair-counts. `intern` is not persisted — it's a string-dedup cache that the
-// accumulator's map-key equality doesn't depend on, rebuilt lazily after restore.
 type scatterGatherCountCheckpoint struct {
 	Pairs       []domain.TxQ4PairCount `json:"pairs,omitempty"`
 	EOFCounters int                    `json:"eof_counters,omitempty"`
@@ -95,7 +81,16 @@ func (a *ScatterGather) Run() error {
 		}
 		a.coord.Track(clientID, ack)
 		if msgType == protocol.MsgTransactionsEOF {
-			a.coord.Flush()
+			if err := a.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := a.eofCounters[clientID]; !counting {
+				a.pub.Forget(clientID)
+				if err := a.coord.Delete(clientID); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
 		}
 	})
 }
@@ -138,8 +133,6 @@ func (a *ScatterGather) RestoreClient(clientID uuid.UUID, data []byte) error {
 	return nil
 }
 
-// internStr returns a single canonical copy of s, so repeated account IDs across
-// many pair keys share their backing bytes instead of each holding a copy.
 func (c *clientScattergather) internStr(s string) string {
 	if canon, ok := c.intern[s]; ok {
 		return canon
@@ -148,15 +141,11 @@ func (c *clientScattergather) internStr(s string) string {
 	return s
 }
 
-// accountFromID reverses Account.GetID ("BankID-ID"), splitting on the first
-// '-'. Bank IDs in the dataset contain no '-', so this round-trips exactly.
 func accountFromID(id string) domain.Account {
 	bankID, accID, _ := strings.Cut(id, "-")
 	return domain.Account{BankID: bankID, ID: accID}
 }
 
-// stage seeds StageMsgID; includes WorkerID because every replica emits its own
-// phase-three batches and EOF on flush.
 func (a *ScatterGather) stage() string {
 	return fmt.Sprintf("%s#%d", a.cfg.WorkerPrefix, a.cfg.WorkerID)
 }

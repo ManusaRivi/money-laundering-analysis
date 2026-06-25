@@ -132,7 +132,12 @@ func parseRouteField(params map[string]any) (string, string) {
 }
 
 func (r *Router) onflush(clientID uuid.UUID) error {
-	return r.coord.Flush()
+	if err := r.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	r.pub.Forget(clientID)
+	return r.coord.Delete(clientID)
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {

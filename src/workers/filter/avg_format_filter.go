@@ -342,7 +342,12 @@ func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
 }
 
 func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
-	return f.coord.Flush()
+	if err := f.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	f.pub.Forget(clientID)
+	return f.coord.Delete(clientID)
 }
 
 func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {

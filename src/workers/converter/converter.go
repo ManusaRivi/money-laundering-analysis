@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,11 +17,8 @@ import (
 
 const Dollar = "US Dollar"
 
-// Converter consumes non-USD transactions and republishes them with Paid
-// converted to USD using historical FX rates from the Frankfurter API.
-// Transactions in unsupported currencies (e.g. Bitcoin) are dropped with a
-// log entry — they're counted as received but not as sent, which is what the
-// downstream EOF synchronisation expects.
+var _ checkpoint.Checkpointable = (*Converter)(nil)
+
 type Converter struct {
 	cfg                       config.WorkerConfig
 	Broker                    broker.Broker
@@ -49,7 +47,7 @@ func (c *Converter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, nil, c.cfg.CheckpointInterval)
+	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, nil, c, c.cfg.CheckpointInterval)
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}
@@ -62,12 +60,41 @@ func (c *Converter) Run() error {
 		}
 		c.coord.Track(clientID, ack)
 		if msgType == protocol.MsgTransactionsEOF {
-			c.coord.Flush()
+			if err := c.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			c.pub.Forget(clientID)
+			delete(c.txProcessedCountForClient, clientID)
+			if err := c.coord.Delete(clientID); err != nil {
+				slog.Error("Error deleting client from coordinator", "error", err)
+				return
+			}
 		}
 	})
 }
 
 func (c *Converter) Stop() {}
+
+type converterCheckpoint struct {
+	TxProcessedCount int `json:"tx_processed_count,omitempty"`
+}
+
+func (c *Converter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	return json.Marshal(converterCheckpoint{TxProcessedCount: c.txProcessedCountForClient[clientID]})
+}
+
+func (c *Converter) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp converterCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	c.txProcessedCountForClient[clientID] = cp.TxProcessedCount
+	return nil
+}
 
 // Private methods
 
@@ -140,7 +167,7 @@ func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	slog.Debug("Sent EOF packet after processing conversion results", "clientID", clientID, "msg_sent", c.txProcessedCountForClient[clientID])
-	return c.coord.Flush()
+	return nil
 }
 
 func (c *Converter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {

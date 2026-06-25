@@ -129,7 +129,11 @@ func (f *SyncFilter) Stop() {}
 // Private methods
 
 func (f *SyncFilter) onflush(clientID uuid.UUID) error {
-	return f.coord.Flush()
+	if err := f.coord.Flush(); err != nil {
+		return err
+	}
+	f.pub.Forget(clientID)
+	return f.coord.Delete(clientID)
 }
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {

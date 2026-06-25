@@ -645,6 +645,7 @@ func (a *ScatterAndGather) dropClientState(clientID uuid.UUID) {
 	delete(a.clients, clientID)
 	a.clientsMu.Unlock()
 	a.monitor.Forget(clientID)
+	a.pub.Forget(clientID)
 }
 
 func (a *ScatterAndGather) gcCompleted(clientID uuid.UUID) error {

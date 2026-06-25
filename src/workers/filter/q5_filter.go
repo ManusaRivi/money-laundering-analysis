@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
+
+var _ checkpoint.Checkpointable = (*Q5Filter)(nil)
 
 type Q5Filter struct {
 	cfg    config.WorkerConfig
@@ -87,7 +90,7 @@ func (f *Q5Filter) Run() error {
 		slog.Error("Error creating checkpoint manager", "error", err)
 		return err
 	}
-	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, nil, nil, f.cfg.CheckpointInterval)
+	f.coord = checkpoint.NewCoordinator(checkpointManager, f.pub, nil, f, f.cfg.CheckpointInterval)
 	if err := f.coord.Recover(); err != nil {
 		return err
 	}
@@ -101,12 +104,52 @@ func (f *Q5Filter) Run() error {
 		}
 		f.coord.Track(clientID, ack)
 		if msgType == protocol.MsgTransactionsEOF {
-			f.coord.Flush()
+			if err := f.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := f.workerEofReceived[clientID]; !counting {
+				f.pub.Forget(clientID)
+				if err := f.coord.Delete(clientID); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
 		}
 	})
 }
 
 func (f *Q5Filter) Stop() {}
+
+type q5FilterCheckpoint struct {
+	WorkerEof        int `json:"worker_eof,omitempty"`
+	Received         int `json:"received,omitempty"`
+	Sent             int `json:"sent,omitempty"`
+	ExpectedPrevious int `json:"expected_previous,omitempty"`
+}
+
+func (f *Q5Filter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	return json.Marshal(q5FilterCheckpoint{
+		WorkerEof:        f.workerEofReceived[clientID],
+		Received:         f.receivedCount[clientID],
+		Sent:             f.sentCount[clientID],
+		ExpectedPrevious: f.expectedPreviousCount[clientID],
+	})
+}
+
+func (f *Q5Filter) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp q5FilterCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	f.workerEofReceived[clientID] = cp.WorkerEof
+	f.receivedCount[clientID] = cp.Received
+	f.sentCount[clientID] = cp.Sent
+	f.expectedPreviousCount[clientID] = cp.ExpectedPrevious
+	return nil
+}
 
 // Private methods
 

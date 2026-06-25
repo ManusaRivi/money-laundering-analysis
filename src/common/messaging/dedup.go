@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ func (d *dedupState) forget(clientID uuid.UUID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.seen, clientID)
+	slog.Debug("Dedup forgot client", "clientID", clientID, "remaining", len(d.seen))
 }
 
 func (d *dedupState) snapshotClient(clientID uuid.UUID) []byte {

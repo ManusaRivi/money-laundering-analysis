@@ -94,7 +94,12 @@ func (c *Cleaner) Run() error {
 }
 
 func (c *Cleaner) onflush(clientID uuid.UUID) error {
-	return c.coord.Flush()
+	if err := c.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	c.pub.Forget(clientID)
+	return c.coord.Delete(clientID)
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {

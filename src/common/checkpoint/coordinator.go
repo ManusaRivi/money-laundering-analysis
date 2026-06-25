@@ -99,6 +99,9 @@ func (co *Coordinator) Flush() error {
 }
 
 func (co *Coordinator) Delete(clientID uuid.UUID) error {
+	co.mu.Lock()
+	delete(co.seenClients, clientID)
+	co.mu.Unlock()
 	return co.manager.Delete(clientID.String())
 }
 
