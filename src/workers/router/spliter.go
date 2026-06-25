@@ -146,7 +146,7 @@ func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, 
 		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, len(txs))
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, id, len(txs))
 	return nil
 }
 
@@ -200,7 +200,7 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 		}
 	}
 
-	r.syncEOFController.MessageReceived(clientId, len(txBatch))
+	r.syncEOFController.MessageReceived(clientId, envelope.MsgID, len(txBatch))
 
 	return nil
 }

@@ -308,13 +308,14 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 		if err != nil {
 			return err
 		}
-		if err := f.pub.PublishInternal(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload); err != nil {
+		resultID := protocol.DeriveMsgID(envelope.MsgID, string(broker.KeyNil), 0)
+		if err := f.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload, resultID); err != nil {
 			return err
 		}
-		f.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(results))
+		f.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, resultID, len(results))
 	}
 
-	f.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	f.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(transactions))
 	return nil
 }
 

@@ -107,7 +107,7 @@ func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType
 	if err := r.pub.PublishInternalWithID(clientID, msgType, routingKey, payload, id); err != nil {
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, id, batchLength)
 	return nil
 }
 
@@ -162,7 +162,7 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
-	r.syncEOFController.MessageReceived(envelope.ClientId, len(txBatch))
+	r.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(txBatch))
 	transactionsPerRoutingKey := make(map[string][]protocol.Transaction)
 	for _, tx := range txBatch {
 		routingKey := r.shardByField(tx)

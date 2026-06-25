@@ -152,7 +152,7 @@ type WorkerConfig struct {
 	NextWorkerPrefix string `yaml:"-"`
 	Threshold        int    `yaml:"-"` // from SCATTER_GATHER_THRESHOLD; shared Q4 threshold
 
-	SyncEOFConfig      SyncEOFControllerConfig `yaml:"-"`
+	SyncEOFConfig      SyncEOFControllerConfig `yaml:"sync_eof"`
 	CheckpointDir      string                  `yaml:"-"`
 	CheckpointInterval int                     `yaml:"checkpoint_interval"`
 }

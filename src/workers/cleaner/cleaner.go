@@ -155,7 +155,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	c.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(transactions))
 	cleanedTx := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
@@ -174,7 +174,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(transactions))
+	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, txID, len(transactions))
 
 	return nil
 }

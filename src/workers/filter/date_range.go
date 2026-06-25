@@ -160,7 +160,7 @@ func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
-	f.syncEOFController.MessageSentWithKey(clientId, routingKey, payloadLen)
+	f.syncEOFController.MessageSentWithKey(clientId, routingKey, id, payloadLen)
 	return true
 }
 
@@ -203,7 +203,7 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction, envelope.MsgID) {
 		return fmt.Errorf("error sending non-dollar transaction batch to broker")
 	}
-	f.syncEOFController.MessageReceived(clientId, len(transactions))
+	f.syncEOFController.MessageReceived(clientId, envelope.MsgID, len(transactions))
 	return nil
 }
 
