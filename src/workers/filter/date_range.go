@@ -93,19 +93,21 @@ func (f *DateRange) Run() error {
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			f.coord.Flush()
+		}
 	})
 }
 
 func (f *DateRange) onflush(clientID uuid.UUID) error {
-	// El filtro sincronizado esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
-	return nil
+	return f.coord.Flush()
 }
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
@@ -213,7 +215,7 @@ func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (f *DateRange) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *DateRange) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,

@@ -87,13 +87,16 @@ func (a *ScatterGather) Run() error {
 	}
 
 	return a.broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := a.handleMessage(msg)
+		clientID, msgType, err := a.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		a.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			a.coord.Flush()
+		}
 	})
 }
 
@@ -272,10 +275,10 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 
 	a.deleteClient(clientID)
 	delete(a.eofCounters, clientID)
-	return nil
+	return a.coord.Flush()
 }
 
-func (a *ScatterGather) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (a *ScatterGather) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return a.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxQ4:            a.handleTxQ4Message,
 		protocol.MsgTransactionsEOF: a.handleEOFMessage,

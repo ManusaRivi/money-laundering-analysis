@@ -85,17 +85,20 @@ func (r *Spliter) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg)
 		if err != nil {
 			nack()
 			return
 		}
 		r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			r.coord.Flush()
+		}
 	})
 }
 
 func (r *Spliter) onflush(clientID uuid.UUID) error {
-	return nil
+	return r.coord.Flush()
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -207,7 +210,7 @@ func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionBatchMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,

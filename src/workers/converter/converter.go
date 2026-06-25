@@ -55,12 +55,15 @@ func (c *Converter) Run() error {
 	}
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := c.handleMessage(msg)
+		clientID, msgType, err := c.handleMessage(msg)
 		if err != nil {
 			nack()
 			return
 		}
 		c.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			c.coord.Flush()
+		}
 	})
 }
 
@@ -137,10 +140,10 @@ func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	slog.Debug("Sent EOF packet after processing conversion results", "clientID", clientID, "msg_sent", c.txProcessedCountForClient[clientID])
-	return nil
+	return c.coord.Flush()
 }
 
-func (c *Converter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (c *Converter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   c.handleEOFMessage,

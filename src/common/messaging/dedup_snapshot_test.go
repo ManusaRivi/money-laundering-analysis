@@ -21,7 +21,7 @@ func TestDedupSnapshotRestore(t *testing.T) {
 	seen := 0
 	handlers := countingHandlers(&seen)
 	for _, id := range ids {
-		if _, err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
+		if _,_, err := p.Dispatch(msgWith(t, clientID, id), handlers); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 	}
@@ -39,7 +39,7 @@ func TestDedupSnapshotRestore(t *testing.T) {
 	calls := 0
 	handlers2 := countingHandlers(&calls)
 	for _, id := range ids {
-		if _, err := p2.Dispatch(msgWith(t, clientID, id), handlers2); err != nil {
+		if _,_, err := p2.Dispatch(msgWith(t, clientID, id), handlers2); err != nil {
 			t.Fatalf("dispatch after restore: %v", err)
 		}
 	}
@@ -48,7 +48,7 @@ func TestDedupSnapshotRestore(t *testing.T) {
 	}
 
 	fresh := protocol.SourceMsgID(clientID, protocol.StreamTransactions, 99)
-	if _, err := p2.Dispatch(msgWith(t, clientID, fresh), handlers2); err != nil {
+	if _,_, err := p2.Dispatch(msgWith(t, clientID, fresh), handlers2); err != nil {
 		t.Fatalf("dispatch fresh: %v", err)
 	}
 	if calls != 1 {

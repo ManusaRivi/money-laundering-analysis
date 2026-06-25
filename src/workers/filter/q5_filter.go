@@ -93,13 +93,16 @@ func (f *Q5Filter) Run() error {
 	}
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			f.coord.Flush()
+		}
 	})
 }
 
@@ -186,13 +189,13 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		delete(f.sentCount, clientID)
 		delete(f.expectedPreviousCount, clientID)
 	}
-	return nil
+	return f.coord.Flush()
 }
 
-func (f *Q5Filter) handleMessage(msg broker.Message) (uuid.UUID, error) {
-	clientID, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (f *Q5Filter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+	clientID, msgType, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
 	})
-	return clientID, err
+	return clientID, msgType, err
 }

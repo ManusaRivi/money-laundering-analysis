@@ -537,7 +537,8 @@ func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope, 
 			return err
 		}
 	}
-	return nil
+
+	return a.coord.Flush()
 }
 
 // onClientReady runs once per client when the degree barrier lifts: the global
