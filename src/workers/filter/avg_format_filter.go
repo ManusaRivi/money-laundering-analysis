@@ -27,11 +27,11 @@ type Client struct {
 }
 
 type AvgFormatFilterCheckpoint struct {
-	avgByFormat map[string]float64
-	eofCount    int
-	expected    int
-	received    int
-	done        bool
+	AvgByFormat map[string]float64 `json:"avg_by_format"`
+	EofCount    int                `json:"eof_count"`
+	Expected    int                `json:"expected"`
+	Received    int                `json:"received"`
+	Done        bool               `json:"done"`
 }
 
 type AvgFormatFilter struct {
@@ -145,11 +145,11 @@ func (f *AvgFormatFilter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
 	}
 
 	checkpoint := AvgFormatFilterCheckpoint{
-		avgByFormat: client.avgByFormat,
-		eofCount:    client.eofCount,
-		expected:    client.expected,
-		received:    client.received,
-		done:        client.done,
+		AvgByFormat: client.avgByFormat,
+		EofCount:    client.eofCount,
+		Expected:    client.expected,
+		Received:    client.received,
+		Done:        client.done,
 	}
 
 	return json.Marshal(checkpoint)
@@ -165,11 +165,11 @@ func (f *AvgFormatFilter) RestoreClient(clientID uuid.UUID, data []byte) error {
 	defer f.mu.Unlock()
 
 	client := f.getOrCreateClientLocked(clientID)
-	client.avgByFormat = checkpoint.avgByFormat
-	client.eofCount = checkpoint.eofCount
-	client.expected = checkpoint.expected
-	client.received = checkpoint.received
-	client.done = checkpoint.done
+	client.avgByFormat = checkpoint.AvgByFormat
+	client.eofCount = checkpoint.EofCount
+	client.expected = checkpoint.Expected
+	client.received = checkpoint.Received
+	client.done = checkpoint.Done
 
 	if client.done && client.doneCh != nil {
 		close(client.doneCh)

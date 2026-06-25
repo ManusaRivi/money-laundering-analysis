@@ -167,11 +167,6 @@ func toQuery2Result(tx protocol.Transaction, bankName string) protocol.Query2Res
 	}
 }
 
-// joinAndEmit joins one transaction batch against the (complete) bank table and
-// emits the results as a single Query2 batch. The output id is derived from the
-// input batch's MsgID, so the same input always yields the same output id — a
-// re-emission after a restart (immediate or drained) is collapsed downstream.
-// Banks absent from the accounts dataset are dropped. Caller holds procMu.
 func (j *Join) joinAndEmit(clientID uuid.UUID, inputMsgID protocol.MsgID, txs []protocol.Transaction, bankNames map[string]string) error {
 	results := make([]protocol.Query2Result, 0, len(txs))
 	for _, tx := range txs {

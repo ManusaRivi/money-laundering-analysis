@@ -110,9 +110,9 @@ var systemDefaults *SystemBrokerDefaults
 var systemWorkerDefaults *SystemWorkerDefaults
 
 type SystemConfig struct {
-	Monitoring *MonitoringConfig       `yaml:"monitoring"`
-	Broker     *SystemBrokerDefaults    `yaml:"broker"`
-	Worker     *SystemWorkerDefaults    `yaml:"worker"`
+	Monitoring *MonitoringConfig     `yaml:"monitoring"`
+	Broker     *SystemBrokerDefaults `yaml:"broker"`
+	Worker     *SystemWorkerDefaults `yaml:"worker"`
 }
 
 func InitSystemDefaults() {
@@ -359,6 +359,16 @@ func applyEnv(cfg *Config) error {
 	brokerConfig.NextWorkerPrefix = prefix
 	workerConfig.NextWorkerPrefix = prefix
 
+	if cfg.AvgBroker != nil {
+		cfg.AvgBroker.WorkerID = brokerConfig.WorkerID
+		cfg.AvgBroker.WorkerAmount = brokerConfig.WorkerAmount
+		cfg.AvgBroker.PrevWorkerAmount = brokerConfig.PrevWorkerAmount
+		cfg.AvgBroker.NextWorkerAmount = brokerConfig.NextWorkerAmount
+		cfg.AvgBroker.WorkerPrefix = brokerConfig.WorkerPrefix
+		cfg.AvgBroker.PrevWorkerPrefix = brokerConfig.PrevWorkerPrefix
+		cfg.AvgBroker.NextWorkerPrefix = brokerConfig.NextWorkerPrefix
+	}
+
 	cfg.Worker.CheckpointDir = os.Getenv("CHECKPOINT_DIR")
 	if cfg.Worker.CheckpointDir == "" {
 		return fmt.Errorf("CHECKPOINT_DIR environment variable is required")
@@ -521,6 +531,15 @@ func applyBrokerDefaults(cfg *BrokerConfig) error {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
 			}
 			cfg.Input.Exchange.Keys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
+			if cfg.Input.Queue == nil {
+				cfg.Input.Queue = &QueueEndpoint{}
+			}
+			cfg.Input.Queue.Name = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
+		}
+		if len(cfg.Input.Exchange.Keys) == 0 && cfg.Input.Exchange.Type == "fanout" {
+			if cfg.WorkerPrefix == "" {
+				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
+			}
 			if cfg.Input.Queue == nil {
 				cfg.Input.Queue = &QueueEndpoint{}
 			}
