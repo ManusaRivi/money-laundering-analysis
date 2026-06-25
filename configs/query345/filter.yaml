@@ -20,6 +20,6 @@ worker:
     from: "2022/09/01"
     to: "2022/09/06"
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

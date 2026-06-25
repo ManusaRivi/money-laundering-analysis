@@ -18,6 +18,6 @@ worker:
     field:
       - "paid"
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

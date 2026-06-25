@@ -4,6 +4,8 @@ broker:
     exchange:
       name: e_q5_converter
       type: direct
+    queue:
+      name: q_q5_converter
   output:
     queue:
       name: q_q5_amount_filter
@@ -12,6 +14,6 @@ worker:
   type: "Converter"
   query: 5
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const defaultRetryBaseDelay = 500 * time.Millisecond
+
 type nodeInfo struct {
 	rcvResponse int // amount rcv reportado
 
@@ -75,8 +77,11 @@ func NewSyncEOFController(
 		return nil, err
 	}
 
-	retryBaseDelay := time.Duration(cfg.RetryBaseDelay * float64(time.Microsecond))
-	retryStepDelay := time.Duration(cfg.RetryStepDelay * float64(time.Microsecond))
+	retryBaseDelay := time.Duration(cfg.RetryBaseDelay * float64(time.Second))
+	retryStepDelay := time.Duration(cfg.RetryStepDelay * float64(time.Second))
+	if retryBaseDelay <= 0 {
+		retryBaseDelay = defaultRetryBaseDelay
+	}
 
 	controller := &SyncEOFController{
 		broker:          eofBroker,

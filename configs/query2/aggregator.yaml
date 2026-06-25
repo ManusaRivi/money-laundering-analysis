@@ -4,6 +4,8 @@ broker:
     exchange:
       name: e_q2_max
       type: direct
+    queue:
+      name: q_q2_aggregator
   output:
     queue:
       name: q_q2_join
@@ -16,6 +18,6 @@ worker:
     group:
       "origin": "BankID"
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

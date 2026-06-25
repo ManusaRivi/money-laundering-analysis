@@ -4,6 +4,8 @@ broker:
     exchange:
       name: e_q3_agg
       type: direct
+    queue:
+      name: q_q3_aggregator
   output:
     exchange:
       name: e_q3_avg
@@ -17,6 +19,6 @@ worker:
     group:
       format: Format
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

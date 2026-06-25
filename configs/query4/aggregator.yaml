@@ -5,6 +5,7 @@ broker:
       name: e_q4_agg
       type: direct
     queue:
+      name: q_q4_aggregator
       prefetch: 600
   output:
     exchange:
