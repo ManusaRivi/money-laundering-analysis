@@ -93,6 +93,14 @@ func (c *Cleaner) Run() error {
 	})
 }
 
+func (c *Cleaner) getReceivedIds(clientID uuid.UUID) map[protocol.MsgID]struct{} {
+	return c.pub.GetSeen(clientID)
+}
+
+func (c *Cleaner) getSentIds(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{} {
+	return c.pub.GetSent(clientID)
+}
+
 func (c *Cleaner) onflush(clientID uuid.UUID) error {
 	return c.coord.Flush()
 }
@@ -150,7 +158,6 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
 	cleanedTx := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
@@ -169,7 +176,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(transactions))
+	c.pub.MarkSent(envelope.ClientId, broker.KeyNil, txID)
 
 	return nil
 }

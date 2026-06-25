@@ -8,21 +8,18 @@ import (
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/config"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/google/uuid"
 )
 
 type nodeInfo struct {
-	rcvResponse int // amount rcv reportado
-
-	sentcountByKeyResponse map[broker.KeyType]int // amount sent reportado por key type
-
-	flushResponse bool // flush ack
+	rcvResponseIds map[protocol.MsgID]struct{}
+	sentcountByKeyResponseIds map[broker.KeyType]map[protocol.MsgID]struct{}
+	flushResponse bool
 }
+
 type client struct {
 	clientID    uuid.UUID
-	msgRcvCount int // cantidad de mensajes que recibio este nodo
-	// msgSntCount   int // cantidad de mensajes que envio este nodo al siguiente stage
-	msgSentCountByKey map[broker.KeyType]int // cantidad de mensajes enviados según key type
 	expectedTotal     int                    // total_messages que espera recibir el cluster para flushear
 	retryCount        int                    // cantidad de reintentos de amount request
 
@@ -39,8 +36,11 @@ type SyncEOFController struct {
 	mu      sync.Mutex
 	clients map[uuid.UUID]*client
 
+	// Callbacks para obtener los ids de mensajes recibidos y enviados por cada cliente.
+	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]struct{}
+	getSentIds     func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{}
+
 	// Callback a ejecutar cuando todos los workers terminan.
-	// Se llama pasando el clientID
 	onFlush func(clientID uuid.UUID) error
 
 	// Callback para que el lider emita el EOF a la siguiente etapa.
@@ -57,7 +57,6 @@ type SyncEOFController struct {
 func NewClient(clientID uuid.UUID) *client {
 	return &client{
 		clientID:          clientID,
-		msgSentCountByKey: make(map[broker.KeyType]int),
 		nodesInfo:         make(map[int]nodeInfo),
 		flushExpectedSent: make(map[broker.KeyType]int),
 	}
@@ -66,6 +65,8 @@ func NewClient(clientID uuid.UUID) *client {
 // NewSyncEOFController inicializa un nuevo SyncEOFController
 func NewSyncEOFController(
 	cfg config.SyncEOFControllerConfig,
+	getReceivedIds func(clientID uuid.UUID) map[protocol.MsgID]struct{},
+	getSentIds func(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{},
 	onFlush func(clientID uuid.UUID) error,
 	onLeaderFlush func(clientID uuid.UUID, finalCountSentByKey map[broker.KeyType]int) error,
 	onRetryExceeded func(clientID uuid.UUID) error,
@@ -83,6 +84,8 @@ func NewSyncEOFController(
 		nodeID:          cfg.WorkerID,
 		totalNodes:      cfg.WorkerAmount,
 		clients:         make(map[uuid.UUID]*client),
+		getReceivedIds:  getReceivedIds,
+		getSentIds:      getSentIds,
 		onFlush:         onFlush,
 		onLeaderFlush:   onLeaderFlush,
 		onRetryExceeded: onRetryExceeded,
@@ -106,51 +109,6 @@ func NewSyncEOFController(
 func (c *SyncEOFController) Start() error {
 	slog.Debug("[SyncEOFController] Start consuming", "worker_id", c.nodeID)
 	return c.broker.StartConsuming(c.handleControlMessage)
-}
-
-// MessageReceived incrementa el contador de mensajes recibidos para un cliente dado.
-// Se llama cada vez que este nodo recibe un mensaje de ese cliente.
-func (c *SyncEOFController) MessageReceived(clientID uuid.UUID, processedCount int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, exists := c.clients[clientID]; !exists {
-		c.clients[clientID] = NewClient(clientID)
-		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
-	}
-
-	c.clients[clientID].msgRcvCount += processedCount
-	// slog.Debug("[SyncEOFController] Message received",
-	// 	"client_id", clientID,
-	// 	"received_count", c.clients[clientID].msgRcvCount,
-	// )
-}
-
-func (c *SyncEOFController) MessageSent(clientID uuid.UUID, sentCount int) {
-	c.MessageSentWithKey(clientID, broker.KeyNil, sentCount)
-}
-
-func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broker.KeyType, sentCount int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, exists := c.clients[clientID]; !exists {
-		c.clients[clientID] = NewClient(clientID)
-		slog.Debug("[SyncEOFController] Added client state", "client_id", clientID)
-	}
-	// c.clients[clientID].msgSntCount++
-	client := c.clients[clientID]
-	if keyType == broker.KeyNil {
-		client.msgSentCountByKey[broker.KeyNil] += sentCount
-	} else {
-		client.msgSentCountByKey[keyType] += sentCount
-		client.msgSentCountByKey[broker.KeyNil] += sentCount
-	}
-	// slog.Debug("[SyncEOFController] Message sent",
-	// 	"client_id", clientID,
-	// 	"sent_count", client.msgSentCountByKey[keyType],
-	// 	"key_type", keyType,
-	// )
 }
 
 // SyncEof inicia el proceso de sincronizacion con key Nil. Se llama cuando un nodo asume el rol de lider.
@@ -187,16 +145,14 @@ func (c *SyncEOFController) broadcastAmountRequest(clientID uuid.UUID) {
 	c.sendControlMessage(msg)
 }
 
-func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID, totalSntByKey map[broker.KeyType]int) {
+func (c *SyncEOFController) broadcastFlush(clientID uuid.UUID) {
 	slog.Debug("[SyncEOFController] Broadcast flush",
 		"client_id", clientID,
-		"total_sent", totalSntByKey,
 	)
 	msg := ControlMessage{
 		Type:           MsgTypeFlush,
 		ClientID:       clientID,
 		RequesterID:    c.nodeID,
-		SentCountByKey: totalSntByKey,
 	}
 	c.sendControlMessage(msg)
 }
@@ -240,16 +196,14 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 		c.clients[msg.ClientID] = NewClient(msg.ClientID)
 		slog.Debug("[SyncEOFController] Added client state", "client_id", msg.ClientID)
 	}
-	client := c.clients[msg.ClientID]
-	rcvAmount := client.msgRcvCount
-	// sntAmount := client.msgSntCount
-	sntAmountByKey := copyCountsMap(client.msgSentCountByKey)
+	rcvIds := c.getReceivedIds(msg.ClientID)
+	sntAmountByKeyIds := c.getSentIds(msg.ClientID)
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] Process amount request",
 		"client_id", msg.ClientID,
-		"received_count", rcvAmount,
-		"sent_count", sntAmountByKey,
+		"received_count", len(rcvIds),
+		"sent_count", len(sntAmountByKeyIds),
 		"requester_id", msg.RequesterID,
 	)
 
@@ -258,8 +212,8 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 		ClientID:       msg.ClientID,
 		RequesterID:    msg.RequesterID,
 		SenderID:       c.nodeID,
-		ReceivedCount:  rcvAmount,
-		SentCountByKey: sntAmountByKey,
+		ReceivedIds:    rcvIds,
+		SentCountByKeyIds: sntAmountByKeyIds,
 	}
 	c.sendControlMessage(resp)
 }
@@ -267,18 +221,18 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 func (c *SyncEOFController) processAmountResponse(msg ControlMessage) {
 	c.mu.Lock()
 	client := c.clients[msg.ClientID]
-	info := client.nodesInfo[msg.SenderID]
-	info.rcvResponse = msg.ReceivedCount
-	info.sentcountByKeyResponse = copyCountsMap(msg.SentCountByKey)
-	client.nodesInfo[msg.SenderID] = info
+	nodeInfo := client.nodesInfo[msg.SenderID]
+	nodeInfo.rcvResponseIds = msg.ReceivedIds
+	nodeInfo.sentcountByKeyResponseIds= msg.SentCountByKeyIds
+	client.nodesInfo[msg.SenderID] = nodeInfo
 	responsesCount := len(client.nodesInfo)
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] Process amount response",
 		"client_id", msg.ClientID,
 		"sender_id", msg.SenderID,
-		"received_count", msg.ReceivedCount,
-		"sent_count", msg.SentCountByKey,
+		"received_count", len(msg.ReceivedIds),
+		"sent_count", len(msg.SentCountByKeyIds),
 		"responses_count", responsesCount,
 	)
 
@@ -325,11 +279,16 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 
 func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	c.mu.Lock()
-	totalRcvReported := 0
-	combinedSentByKey := make(map[broker.KeyType]int)
+	totalRcvIdsReported := make(map[protocol.MsgID]struct{})
+	combinedSentByKey := make(map[broker.KeyType]map[protocol.MsgID]struct{})
 	client := c.clients[clientID]
 	for nodeID, info := range client.nodesInfo {
-		totalRcvReported += info.rcvResponse
+		for id := range info.rcvResponseIds {
+			totalRcvIdsReported[id] = struct{}{}
+		}
+		for key, count := range info.sentcountByKeyResponseIds {
+			combinedSentByKey[key] += count
+		}
 		for key, count := range info.sentcountByKeyResponse {
 			combinedSentByKey[key] += count
 		}

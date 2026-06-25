@@ -113,6 +113,18 @@ func (p *Publisher) Forget(clientID uuid.UUID) {
 	p.dedup.forget(clientID)
 }
 
+func (p *Publisher) MarkSent(clientID uuid.UUID, key broker.KeyType, id protocol.MsgID) {
+	p.dedup.markSent(clientID, key, id)
+}
+
+func (p *Publisher) GetSeen(clientID uuid.UUID) map[protocol.MsgID]struct{} {
+	return p.dedup.getSeen(clientID)
+}
+
+func (p *Publisher) GetSent(clientID uuid.UUID) map[broker.KeyType]map[protocol.MsgID]struct{} {
+	return p.dedup.getSent(clientID)
+}
+
 func (p *Publisher) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
 	return p.dedup.snapshotClient(clientID), nil
 }

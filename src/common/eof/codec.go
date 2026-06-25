@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/google/uuid"
 )
 
@@ -26,8 +27,8 @@ type ControlMessage struct {
 	ClientID      uuid.UUID `json:"client_id"`
 	RequesterID   int       `json:"requester_id"`
 	SenderID      int       `json:"sender_id"`
-	ReceivedCount int       `json:"received_count,omitempty"`
-	SentCountByKey map[broker.KeyType]int `json:"sent_count_by_key,omitempty"`
+	ReceivedIds map[protocol.MsgID]struct{} `json:"received_ids,omitempty"`
+	SentCountByKeyIds map[broker.KeyType]map[protocol.MsgID]struct{} `json:"sent_count_by_key_ids,omitempty"`
 }
 
 func MarshalControlMessage(msg ControlMessage) (*broker.Message, error) {
