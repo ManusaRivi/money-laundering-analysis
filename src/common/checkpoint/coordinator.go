@@ -76,22 +76,23 @@ func (co *Coordinator) Track(clientID uuid.UUID, ack func()) error {
 
 func (co *Coordinator) Flush() error {
 	co.mu.Lock()
-	clients := co.seenClients
+	for clientID := range co.seenClients {
+		cp, err := co.snapshot(clientID)
+		if err != nil {
+			co.mu.Unlock()
+			return err
+		}
+		if err := co.manager.Save(clientID.String(), cp); err != nil {
+			co.mu.Unlock()
+			return err
+		}
+	}
 	acks := co.acks
 	co.seenClients = make(map[uuid.UUID]struct{})
 	co.acks = nil
 	co.pending = 0
 	co.mu.Unlock()
 
-	for clientID := range clients {
-		cp, err := co.snapshot(clientID)
-		if err != nil {
-			return err
-		}
-		if err := co.manager.Save(clientID.String(), cp); err != nil {
-			return err
-		}
-	}
 	for _, ack := range acks {
 		ack()
 	}
@@ -100,8 +101,8 @@ func (co *Coordinator) Flush() error {
 
 func (co *Coordinator) Delete(clientID uuid.UUID) error {
 	co.mu.Lock()
+	defer co.mu.Unlock()
 	delete(co.seenClients, clientID)
-	co.mu.Unlock()
 	return co.manager.Delete(clientID.String())
 }
 
