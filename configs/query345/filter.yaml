@@ -1,18 +1,17 @@
 broker:
   type: e-e
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: e_entry
-  input_queue: q_q345_filter # de input
-  output: e_q345_cleaner
-  exchange_type: topic # de outpt
-  input_keys: # de input
-    - tx.*
-  prefetch: 300 
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    exchange:
+      name: e_entry
+      type: topic
+      keys:
+        - tx.*
+    queue:
+      name: q_q345_filter
+  output:
+    exchange:
+      name: e_q345_cleaner
+      type: topic
 
 worker:
   type: "DateRangeFilter"
@@ -21,6 +20,6 @@ worker:
     from: "2022/09/01"
     to: "2022/09/06"
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

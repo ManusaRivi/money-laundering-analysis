@@ -68,13 +68,25 @@ func (j *Query4) Run() error {
 	}
 
 	return j.broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientId, err := j.handleMessage(msg)
+		clientId, msgType, err := j.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling transaction message", "error", err)
 			nack()
 			return
 		}
 		j.coord.Track(clientId, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			if err := j.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := j.eofCounters[clientId]; !counting {
+				j.pub.Forget(clientId)
+				if err := j.coord.Delete(clientId); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
+		}
 	})
 }
 
@@ -120,6 +132,7 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	client := j.clients[clientId]
 	if client == nil {
 		slog.Debug("No accounts received for this client, sending EOF only", "clientID", clientId)
+		delete(j.eofCounters, clientId)
 		eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
 		return j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	}
@@ -161,10 +174,10 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 
-	return nil
+	return j.coord.Flush()
 }
 
-func (j *Query4) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Query4) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxAccounts:      j.handleAccountsMessage,
 		protocol.MsgTransactionsEOF: j.handleEOFMessage,

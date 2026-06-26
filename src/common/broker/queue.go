@@ -11,14 +11,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// queueBroker connects to a single queue and supports both publishing and
-// consuming on it. It is intended for direct point-to-point flows between two
-// components (e.g. gateway -> join) where there is no routing or fanout.
-//
-// The queue name is taken from cfg.Input (preferred) or cfg.Output. Producers
-// and consumers share the same broker shape so either side can be configured
-// the same way; the side that does not call Send/StartConsuming simply
-// declares the queue and is otherwise idle.
 type queueBroker struct {
 	conn           *amqp.Connection
 	produceChannel *amqp.Channel
@@ -32,12 +24,14 @@ type queueBroker struct {
 }
 
 func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
-	queueName := cfg.Input
-	if queueName == "" {
-		queueName = cfg.Output
+	var qEp *config.QueueEndpoint
+	if cfg.Input != nil && cfg.Input.Queue != nil && cfg.Input.Queue.Name != "" {
+		qEp = cfg.Input.Queue
+	} else if cfg.Output != nil && cfg.Output.Queue != nil && cfg.Output.Queue.Name != "" {
+		qEp = cfg.Output.Queue
 	}
-	if queueName == "" {
-		return nil, errors.New("input or output is required for queue broker")
+	if qEp == nil {
+		return nil, errors.New("input.queue or output.queue is required for queue broker")
 	}
 	if cfg.RabbitURL == "" {
 		return nil, errors.New("url is required for queue broker")
@@ -55,7 +49,7 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if cfg.Persistent {
+	if *qEp.Persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -65,11 +59,11 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 	}
 
 	queue, err := consumeChannel.QueueDeclare(
-		queueName,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
+		qEp.Name,
+		*qEp.Durable,
+		*qEp.AutoDelete,
+		*qEp.Exclusive,
+		*qEp.NoWait,
 		amqp.Table{},
 	)
 	if err != nil {
@@ -79,8 +73,8 @@ func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if qEp.Prefetch > 0 {
+		if err := consumeChannel.Qos(qEp.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -174,7 +168,8 @@ func (qb *queueBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, qb.config.Persistent, "", qb.queue.Name, msg)
+	persistent := persistentFromOutput(qb.config)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistent, "", qb.queue.Name, msg)
 }
 
 func (qb *queueBroker) Close() error {

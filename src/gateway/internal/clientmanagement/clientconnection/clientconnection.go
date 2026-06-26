@@ -50,6 +50,10 @@ func (c *ClientConnection) Done() <-chan struct{} {
 	return c.done
 }
 
+func (c *ClientConnection) AllEOFSent() bool {
+	return c.allEOFSent()
+}
+
 // Without decoding the actual payload, creates an external envelope with the given
 // Msg type and forwards it to the client.
 func (c *ClientConnection) ForwardEnvelope(envelope protocol.ExternalEnvelope) error {

@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 )
+
+var _ checkpoint.Checkpointable = (*Q5Filter)(nil)
 
 type Q5Filter struct {
 	cfg    config.WorkerConfig
@@ -93,17 +96,60 @@ func (f *Q5Filter) Run() error {
 	}
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			if err := f.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := f.workerEofReceived[clientID]; !counting {
+				f.pub.Forget(clientID)
+				if err := f.coord.Delete(clientID); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
+		}
 	})
 }
 
 func (f *Q5Filter) Stop() {}
+
+type q5FilterCheckpoint struct {
+	WorkerEof        int `json:"worker_eof,omitempty"`
+	Received         int `json:"received,omitempty"`
+	Sent             int `json:"sent,omitempty"`
+	ExpectedPrevious int `json:"expected_previous,omitempty"`
+}
+
+func (f *Q5Filter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	return json.Marshal(q5FilterCheckpoint{
+		WorkerEof:        f.workerEofReceived[clientID],
+		Received:         f.receivedCount[clientID],
+		Sent:             f.sentCount[clientID],
+		ExpectedPrevious: f.expectedPreviousCount[clientID],
+	})
+}
+
+func (f *Q5Filter) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp q5FilterCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	f.workerEofReceived[clientID] = cp.WorkerEof
+	f.receivedCount[clientID] = cp.Received
+	f.sentCount[clientID] = cp.Sent
+	f.expectedPreviousCount[clientID] = cp.ExpectedPrevious
+	return nil
+}
 
 // Private methods
 
@@ -186,13 +232,13 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		delete(f.sentCount, clientID)
 		delete(f.expectedPreviousCount, clientID)
 	}
-	return nil
+	return f.coord.Flush()
 }
 
-func (f *Q5Filter) handleMessage(msg broker.Message) (uuid.UUID, error) {
-	clientID, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (f *Q5Filter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+	clientID, msgType, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
 	})
-	return clientID, err
+	return clientID, msgType, err
 }

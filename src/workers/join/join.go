@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -133,10 +132,10 @@ func (j *Join) Stop() {}
 // whole handle + Track sequence so a checkpoint flush cannot interleave with the
 // sibling goroutine's handler — which would snapshot state and dedup at
 // different instants and (for the EOF counters) double-count on restart.
-func (j *Join) process(handle func(broker.Message) (uuid.UUID, error), msg broker.Message, ack, nack func()) {
+func (j *Join) process(handle func(broker.Message) (uuid.UUID, protocol.MsgType, error), msg broker.Message, ack, nack func()) {
 	j.procMu.Lock()
 	defer j.procMu.Unlock()
-	clientID, err := handle(msg)
+	clientID, msgType, err := handle(msg)
 	if err != nil {
 		slog.Error("Error handling join message", "error", err)
 		nack()
@@ -144,6 +143,18 @@ func (j *Join) process(handle func(broker.Message) (uuid.UUID, error), msg broke
 	}
 	if err := j.coord.Track(clientID, ack); err != nil {
 		slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+	}
+	finalized := j.finalized[clientID]
+	if msgType == protocol.MsgTransactionsEOF || finalized {
+		if err := j.coord.Flush(); err != nil {
+			slog.Error("Error flushing checkpoint coordinator", "error", err)
+		}
+	}
+	if finalized {
+		j.pub.Forget(clientID)
+		if err := j.coord.Delete(clientID); err != nil {
+			slog.Error("Error deleting client from coordinator", "error", err)
+		}
 	}
 }
 
@@ -156,11 +167,6 @@ func toQuery2Result(tx protocol.Transaction, bankName string) protocol.Query2Res
 	}
 }
 
-// joinAndEmit joins one transaction batch against the (complete) bank table and
-// emits the results as a single Query2 batch. The output id is derived from the
-// input batch's MsgID, so the same input always yields the same output id — a
-// re-emission after a restart (immediate or drained) is collapsed downstream.
-// Banks absent from the accounts dataset are dropped. Caller holds procMu.
 func (j *Join) joinAndEmit(clientID uuid.UUID, inputMsgID protocol.MsgID, txs []protocol.Transaction, bankNames map[string]string) error {
 	results := make([]protocol.Query2Result, 0, len(txs))
 	for _, tx := range txs {
@@ -231,7 +237,7 @@ func (j *Join) handleAccountsEOF(envelope protocol.InternalEnvelope) error {
 	return nil
 }
 
-func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Join) handleAccountsMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgAccountsBatch: j.handleAccountsBatch,
 		protocol.MsgAccountsEOF:   j.handleAccountsEOF,
@@ -260,17 +266,15 @@ func (j *Join) handleTransactionBatch(envelope protocol.InternalEnvelope) error 
 func (j *Join) handleTransactionsEOF(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received transaction EOF for client", "clientID", clientID)
-	slog.Debug("Sleeping...")
-	time.Sleep(5 * time.Second)
 	j.workerEofReceived[clientID]++
 	slog.Debug("Current EOF count", "clientID", clientID, "workerEofReceived", j.workerEofReceived[clientID], "previousWorkerAmount", j.previousWorkerAmount)
 	if j.shouldFinalize(clientID) {
 		return j.finalizeClient(clientID)
 	}
-	return nil
+	return j.coord.Flush()
 }
 
-func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, error) {
+func (j *Join) handleTransactionMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return j.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: j.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   j.handleTransactionsEOF,
@@ -305,8 +309,6 @@ func (j *Join) finalizeClient(clientID uuid.UUID) error {
 		return err
 	}
 	slog.Debug("Emitted Query2 EOF for client", "clientID", clientID)
-	slog.Debug("Sleeping...")
-	time.Sleep(5 * time.Second)
 
 	// Keep `finalized` as the terminal marker so a redelivered EOF won't
 	// re-finalize a client we've already completed.

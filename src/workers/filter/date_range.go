@@ -93,19 +93,26 @@ func (f *DateRange) Run() error {
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			f.coord.Flush()
+		}
 	})
 }
 
 func (f *DateRange) onflush(clientID uuid.UUID) error {
-	// El filtro sincronizado esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
-	return nil
+	if err := f.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	f.pub.Forget(clientID)
+	return f.coord.Delete(clientID)
 }
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
@@ -153,7 +160,7 @@ func (f *DateRange) sendMessageToBroker(msgType protocol.MsgType, clientId uuid.
 		slog.Error("Error sending message to broker", "error", err)
 		return false
 	}
-	f.syncEOFController.MessageSentWithKey(clientId, routingKey, payloadLen)
+	f.syncEOFController.MessageSentWithKey(clientId, routingKey, id, payloadLen)
 	return true
 }
 
@@ -196,7 +203,7 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 	if !f.sendTransactionBatch(nonDollarTx, clientId, broker.KeyNonDollarTransaction, envelope.MsgID) {
 		return fmt.Errorf("error sending non-dollar transaction batch to broker")
 	}
-	f.syncEOFController.MessageReceived(clientId, len(transactions))
+	f.syncEOFController.MessageReceived(clientId, envelope.MsgID, len(transactions))
 	return nil
 }
 
@@ -209,11 +216,12 @@ func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 
+	f.coord.Flush()
 	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
 	return nil
 }
 
-func (f *DateRange) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *DateRange) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
 		protocol.MsgTransactionsEOF:   f.handleEOFMessage,

@@ -2,6 +2,7 @@ package codec
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/google/uuid"
@@ -79,7 +80,38 @@ func TestSetEnvelopeMsgID(t *testing.T) {
 
 func TestDecodeInternalEnvelopeTooShort(t *testing.T) {
 	c := New()
-	if _, err := c.DecodeInternalEnvelope(make([]byte, InternalHeaderSize-1)); err == nil {
-		t.Fatal("expected error decoding a buffer shorter than the internal header")
+	// The decoder also accepts the pre-MsgID old format (21-byte header), so
+	// the minimum valid buffer is oldInternalHeaderSize. Anything shorter must
+	// always fail.
+	if _, err := c.DecodeInternalEnvelope(make([]byte, oldInternalHeaderSize-1)); err == nil {
+		t.Fatal("expected error decoding a buffer shorter than any known header format")
+	}
+}
+
+func TestDecodeInternalEnvelopeOldFormat(t *testing.T) {
+	c := New()
+	clientID := uuid.New()
+	payload := []byte("old-format payload")
+	buf := make([]byte, oldInternalHeaderSize+len(payload))
+	buf[0] = byte(protocol.MsgTransactionsBatch)
+	copy(buf[1:], clientID[:])
+	binary.BigEndian.PutUint32(buf[oldPayloadLenOffset:], uint32(len(payload)))
+	copy(buf[oldInternalHeaderSize:], payload)
+
+	got, err := c.DecodeInternalEnvelope(buf)
+	if err != nil {
+		t.Fatalf("DecodeInternalEnvelope old format: %v", err)
+	}
+	if got.MsgType != protocol.MsgTransactionsBatch {
+		t.Errorf("MsgType = %v, want %v", got.MsgType, protocol.MsgTransactionsBatch)
+	}
+	if got.ClientId != clientID {
+		t.Errorf("ClientId = %v, want %v", got.ClientId, clientID)
+	}
+	if got.MsgID != (protocol.MsgID{}) {
+		t.Errorf("MsgID = %x, want zero", got.MsgID)
+	}
+	if !bytes.Equal(got.Payload, payload) {
+		t.Errorf("Payload = %q, want %q", got.Payload, payload)
 	}
 }

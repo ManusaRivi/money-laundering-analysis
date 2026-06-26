@@ -109,7 +109,7 @@ func (f *SyncFilter) Run() error {
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
@@ -117,6 +117,9 @@ func (f *SyncFilter) Run() error {
 		}
 		if err := f.coord.Track(clientID, ack); err != nil {
 			slog.Error("Error tracking message in checkpoint coordinator", "error", err)
+		}
+		if msgType == protocol.MsgTransactionsEOF {
+			f.coord.Flush()
 		}
 	})
 }
@@ -126,7 +129,11 @@ func (f *SyncFilter) Stop() {}
 // Private methods
 
 func (f *SyncFilter) onflush(clientID uuid.UUID) error {
-	return nil
+	if err := f.coord.Flush(); err != nil {
+		return err
+	}
+	f.pub.Forget(clientID)
+	return f.coord.Delete(clientID)
 }
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
@@ -193,13 +200,13 @@ func (f *SyncFilter) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.Msg
 	if err := f.pub.PublishInternalWithID(clientID, msgType, broker.KeyNil, payload, id); err != nil {
 		return err
 	}
-	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, batchLength)
+	f.syncEOFController.MessageSentWithKey(clientID, broker.KeyNil, id, batchLength)
 	return nil
 }
 
 func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	filteredTx := make([]protocol.Transaction, 0, len(transactions))
-	f.syncEOFController.MessageReceived(clientID, len(transactions))
+	f.syncEOFController.MessageReceived(clientID, parentID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 			filteredTx = append(filteredTx, tx)
@@ -219,7 +226,7 @@ func (f *SyncFilter) forwardTransactionBatchMessage(transactions []protocol.Tran
 
 func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Transaction, clientID uuid.UUID, parentID protocol.MsgID) error {
 	results := make([]protocol.Query1Result, 0)
-	f.syncEOFController.MessageReceived(clientID, len(transactions))
+	f.syncEOFController.MessageReceived(clientID, parentID, len(transactions))
 	for _, tx := range transactions {
 		if filterTransaction(tx, f.Type, f.Operator, f.ValueFloat, f.ValueStrings) {
 			results = append(results, protocol.Query1Result{
@@ -251,6 +258,7 @@ func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error 
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	f.coord.Flush()
 	f.syncEOFController.SyncEof(envelope.ClientId, counts, f.syncEOFKey)
 	return nil
 }
@@ -273,9 +281,9 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 	return nil
 }
 
-func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	if msg.ContentType != broker.ContentTypeBinary {
-		return uuid.Nil, fmt.Errorf("unexpected content type: %v", msg.ContentType)
+		return uuid.Nil, protocol.MsgType(0), fmt.Errorf("unexpected content type: %v", msg.ContentType)
 	}
 
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{

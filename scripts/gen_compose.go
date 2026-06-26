@@ -108,7 +108,9 @@ func main() {
 					WorkerAmount:  wd.Amount,
 					ConfigPath:    "/app/config.yaml",
 					VolumeMapping: fmt.Sprintf("./configs/%s/%s.yaml:/app/config.yaml", stage, wd.Name),
-					ExtraVolumes:  wd.Volumes,
+					ExtraVolumes: append(wd.Volumes,
+						fmt.Sprintf("./.checkpoints/%s_%s_%d:/app/checkpoints", stage, wd.Name, id),
+					),
 				}
 
 				if i > 0 {
@@ -126,11 +128,12 @@ func main() {
 				}
 
 				env := map[string]string{
-					"LOG_LEVEL":     "debug",
-					"CONFIG_PATH":   "/app/config.yaml",
-					"WORKER_PREFIX": wi.WorkerPrefix,
-					"ID":            strconv.Itoa(id),
-					"WORKER_AMOUNT": strconv.Itoa(wd.Amount),
+					"LOG_LEVEL":      "debug",
+					"CONFIG_PATH":    "/app/config.yaml",
+					"WORKER_PREFIX":  wi.WorkerPrefix,
+					"ID":             strconv.Itoa(id),
+					"WORKER_AMOUNT":  strconv.Itoa(wd.Amount),
+					"CHECKPOINT_DIR": "/app/checkpoints",
 				}
 				if wi.HasPrev {
 					env["PREV_WORKER_PREFIX"] = wi.PrevWorkerPrefix
@@ -200,6 +203,7 @@ func main() {
 			"WORKER_PREFIX":      "monitor",
 			"ID":                 strconv.Itoa(id),
 			"WORKER_AMOUNT":      strconv.Itoa(topo.Monitors.Amount),
+			"CHECKPOINT_DIR":     "/app/checkpoints",
 		}
 		keys := make([]string, 0, len(env))
 		for k := range env {

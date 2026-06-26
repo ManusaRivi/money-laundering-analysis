@@ -12,12 +12,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// exchangeToExchangeBroker consumes from an anonymous queue bound to an input
-// exchange (via cfg.InputKeys) and publishes to an output exchange with one
-// or more routing keys. It owns a single AMQP connection but separates the
-// consumer and publisher onto two dedicated channels so that publisher flow
-// control cannot stall consumer acks, and a channel-level error on one side
-// does not tear down the other.
 type exchangeToExchangeBroker struct {
 	conn           *amqp.Connection
 	produceChannel *amqp.Channel
@@ -32,17 +26,17 @@ type exchangeToExchangeBroker struct {
 }
 
 func newExchangeToExchangeBroker(cfg config.BrokerConfig) (Broker, error) {
-	if cfg.Input == "" {
-		return nil, errors.New("input is required for e-e broker")
+	if cfg.Input == nil || cfg.Input.Exchange == nil || cfg.Input.Exchange.Name == "" {
+		return nil, errors.New("input.exchange.name is required for e-e broker")
 	}
-	if cfg.Output == "" {
-		return nil, errors.New("output is required for e-e broker")
+	if cfg.Output == nil || cfg.Output.Exchange == nil || cfg.Output.Exchange.Name == "" {
+		return nil, errors.New("output.exchange.name is required for e-e broker")
 	}
 	if cfg.RabbitURL == "" {
 		return nil, errors.New("url is required for e-e broker")
 	}
-	if len(cfg.InputKeys) == 0 {
-		return nil, errors.New("input_keys is required for e-e broker")
+	if len(cfg.Input.Exchange.Keys) == 0 {
+		return nil, errors.New("input.exchange.keys is required for e-e broker")
 	}
 	return buildExchangeToExchangeBroker(cfg, cfg.RabbitURL)
 }
@@ -60,7 +54,7 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, fmt.Errorf("failed to open producer channel: %w", err)
 	}
 
-	if cfg.Persistent {
+	if persistent := persistentFromOutput(cfg); persistent {
 		if err := produceChannel.Confirm(false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
@@ -68,21 +62,24 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 			return nil, fmt.Errorf("failed to enable publisher confirms: %w", err)
 		}
 	}
-
-	if cfg.Prefetch == 0 {
-		cfg.Prefetch = 30
+	
+	var queueName string
+	hasNamedQueue := cfg.Input.Queue != nil && cfg.Input.Queue.Name != ""
+	if hasNamedQueue {
+		queueName = cfg.Input.Queue.Name
 	}
 
-	if cfg.InputQueue == "" {
-		cfg.Exclusive = true
+	exclusive := !hasNamedQueue
+	if hasNamedQueue && cfg.Input.Queue.Exclusive != nil {
+		exclusive = *cfg.Input.Queue.Exclusive
 	}
 
 	inputQueue, err := consumeChannel.QueueDeclare(
-		cfg.InputQueue,
-		false,
-		false,
-		cfg.Exclusive,
-		false,
+		queueName,
+		cfg.Input.Queue.Durable != nil && *cfg.Input.Queue.Durable,
+		cfg.Input.Queue.AutoDelete != nil && *cfg.Input.Queue.AutoDelete,
+		exclusive,
+		cfg.Input.Queue.NoWait != nil && *cfg.Input.Queue.NoWait,
 		nil,
 	)
 	if err != nil {
@@ -92,7 +89,7 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, fmt.Errorf("failed to declare input queue: %w", err)
 	}
 
-	routingKeys := StringsToKeyType(cfg.InputKeys)
+	routingKeys := StringsToKeyType(cfg.Input.Exchange.Keys)
 
 	if err := bindInputQueue(consumeChannel, cfg, routingKeys, inputQueue.Name); err != nil {
 		produceChannel.Close()
@@ -101,8 +98,8 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		return nil, err
 	}
 
-	if cfg.Prefetch > 0 {
-		if err := consumeChannel.Qos(cfg.Prefetch, 0, false); err != nil {
+	if cfg.Input.Queue.Prefetch > 0 {
+		if err := consumeChannel.Qos(cfg.Input.Queue.Prefetch, 0, false); err != nil {
 			produceChannel.Close()
 			consumeChannel.Close()
 			conn.Close()
@@ -111,12 +108,12 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 	}
 
 	if err := consumeChannel.ExchangeDeclare(
-		cfg.Output,
-		cfg.OutputExchangeType,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Internal,
-		cfg.NoWait,
+		cfg.Output.Exchange.Name,
+		cfg.Output.Exchange.Type,
+		*cfg.Output.Exchange.Durable,
+		*cfg.Output.Exchange.AutoDelete,
+		*cfg.Output.Exchange.Internal,
+		*cfg.Output.Exchange.NoWait,
 		nil,
 	); err != nil {
 		produceChannel.Close()
@@ -130,7 +127,7 @@ func buildExchangeToExchangeBroker(cfg config.BrokerConfig, rabbitURL string) (B
 		produceChannel: produceChannel,
 		consumeChannel: consumeChannel,
 		inputQueue:     inputQueue,
-		outputExchange: cfg.Output,
+		outputExchange: cfg.Output.Exchange.Name,
 		state:          idle,
 		config:         cfg,
 	}, nil
@@ -214,12 +211,12 @@ func (qb *exchangeToExchangeBroker) Send(msg Message) error {
 	}
 	qb.mu.Unlock()
 
-	if msg.RoutingKey == KeyNil && qb.config.OutputExchangeType != "fanout" {
+	if msg.RoutingKey == KeyNil && qb.config.Output.Exchange.Type != "fanout" {
 		slog.Error("Message missing routing key", "message", msg)
 		return ErrBrokerMessage
 	}
 
-	return publishMessage(&qb.publishMu, qb.produceChannel, qb.config.Persistent, qb.outputExchange, string(msg.RoutingKey), msg)
+	return publishMessage(&qb.publishMu, qb.produceChannel, persistentFromOutput(qb.config), qb.outputExchange, string(msg.RoutingKey), msg)
 }
 
 func (qb *exchangeToExchangeBroker) Close() error {

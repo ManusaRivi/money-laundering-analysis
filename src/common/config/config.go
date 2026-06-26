@@ -32,12 +32,94 @@ type MonitorWorkerParams struct {
 	Monitoring MonitoringParams `yaml:"monitoring"`
 }
 
+type QueueEndpoint struct {
+	Name       string `yaml:"name"`
+	Prefetch   int    `yaml:"prefetch,omitempty"`
+	Durable    *bool  `yaml:"durable,omitempty"`
+	AutoDelete *bool  `yaml:"auto_delete,omitempty"`
+	Exclusive  *bool  `yaml:"exclusive,omitempty"`
+	NoWait     *bool  `yaml:"no_wait,omitempty"`
+	Lazy       *bool  `yaml:"lazy,omitempty"`
+	Persistent *bool  `yaml:"persistent,omitempty"`
+}
+
+type ExchangeEndpoint struct {
+	Name       string   `yaml:"name"`
+	Type       string   `yaml:"type,omitempty"`
+	Keys       []string `yaml:"keys,omitempty"`
+	Durable    *bool    `yaml:"durable,omitempty"`
+	AutoDelete *bool    `yaml:"auto_delete,omitempty"`
+	Internal   *bool    `yaml:"internal,omitempty"`
+	NoWait     *bool    `yaml:"no_wait,omitempty"`
+	Persistent *bool    `yaml:"persistent,omitempty"`
+}
+
+type Endpoint struct {
+	Queue    *QueueEndpoint    `yaml:"queue,omitempty"`
+	Exchange *ExchangeEndpoint `yaml:"exchange,omitempty"`
+}
+
+type SystemBrokerQueueDefaults struct {
+	Prefetch   int  `yaml:"prefetch"`
+	Durable    bool `yaml:"durable"`
+	AutoDelete bool `yaml:"auto_delete"`
+	Exclusive  bool `yaml:"exclusive"`
+	NoWait     bool `yaml:"no_wait"`
+	Internal   bool `yaml:"internal"`
+	Lazy       bool `yaml:"lazy"`
+}
+
+type SystemBrokerEndpointDefaults struct {
+	Queue *SystemBrokerQueueDefaults `yaml:"queue"`
+}
+
+type SystemBrokerDefaults struct {
+	URL    string                        `yaml:"url"`
+	Input  *SystemBrokerEndpointDefaults `yaml:"input"`
+	Output *SystemBrokerEndpointDefaults `yaml:"output"`
+}
+
+type BrokerConfig struct {
+	Type      string    `yaml:"type"`
+	RabbitURL string    `yaml:"url"`
+	Input     *Endpoint `yaml:"input,omitempty"`
+	Output    *Endpoint `yaml:"output,omitempty"`
+
+	WorkerID         int    `yaml:"-"`
+	WorkerPrefix     string `yaml:"-"`
+	WorkerAmount     int    `yaml:"-"`
+	PrevWorkerAmount int    `yaml:"-"`
+	PrevWorkerPrefix string `yaml:"-"`
+	NextWorkerAmount int    `yaml:"-"`
+	NextWorkerPrefix string `yaml:"-"`
+}
+
 type Config struct {
 	Broker        BrokerConfig      `yaml:"broker,omitempty"`
 	AvgBroker     *BrokerConfig     `yaml:"avg_broker,omitempty"`
 	Worker        WorkerConfig      `yaml:"worker"`
 	CheckpointDir string            `yaml:"-"`
 	Monitoring    *MonitoringConfig `yaml:"monitoring,omitempty"`
+}
+
+type SystemWorkerDefaults struct {
+	CheckpointInterval int `yaml:"checkpoint_interval"`
+}
+
+var systemDefaults *SystemBrokerDefaults
+var systemWorkerDefaults *SystemWorkerDefaults
+
+type SystemConfig struct {
+	Monitoring *MonitoringConfig     `yaml:"monitoring"`
+	Broker     *SystemBrokerDefaults `yaml:"broker"`
+	Worker     *SystemWorkerDefaults `yaml:"worker"`
+}
+
+func InitSystemDefaults() {
+	cfg := &Config{}
+	if err := loadSystemDefaults(cfg); err != nil {
+		slog.Warn("failed to load system defaults", "error", err)
+	}
 }
 
 func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
@@ -52,34 +134,8 @@ func ParseMonitorParams(params map[string]any) (*MonitorWorkerParams, error) {
 	return &p, nil
 }
 
-const defaultCheckpointDir = "/app/checkpoints"
-const defaultCheckpointInterval = 20
-
-type BrokerConfig struct {
-	Type               string   `yaml:"type"`
-	RabbitURL          string   `yaml:"url"`
-	Input              string   `yaml:"input"`
-	InputQueue         string   `yaml:"input_queue"`
-	Output             string   `yaml:"output"`
-	InputKeys          []string `yaml:"input_keys"`
-	ExchangeType       string   `yaml:"exchange_type"`
-	OutputExchangeType string   `yaml:"output_exchange_type"`
-	Prefetch           int      `yaml:"prefetch"`
-	Durable            bool     `yaml:"durable"`
-	AutoDelete         bool     `yaml:"auto_delete"`
-	Exclusive          bool     `yaml:"exclusive"`
-	NoWait             bool     `yaml:"no_wait"`
-	Internal           bool     `yaml:"internal"`
-	Lazy               bool     `yaml:"lazy"`
-	Persistent         bool     `yaml:"persistent"`
-
-	WorkerID         int    `yaml:"-"`
-	WorkerPrefix     string `yaml:"-"`
-	WorkerAmount     int    `yaml:"-"`
-	PrevWorkerAmount int    `yaml:"-"`
-	PrevWorkerPrefix string `yaml:"-"`
-	NextWorkerAmount int    `yaml:"-"`
-	NextWorkerPrefix string `yaml:"-"`
+func LoadSystemDefaultsForBroker(cfg *BrokerConfig) {
+	applyBrokerDefaults(cfg)
 }
 
 type WorkerConfig struct {
@@ -96,7 +152,7 @@ type WorkerConfig struct {
 	NextWorkerPrefix string `yaml:"-"`
 	Threshold        int    `yaml:"-"` // from SCATTER_GATHER_THRESHOLD; shared Q4 threshold
 
-	SyncEOFConfig      SyncEOFControllerConfig `yaml:"-"`
+	SyncEOFConfig      SyncEOFControllerConfig `yaml:"sync_eof"`
 	CheckpointDir      string                  `yaml:"-"`
 	CheckpointInterval int                     `yaml:"checkpoint_interval"`
 }
@@ -132,6 +188,9 @@ func Load(filepath string) (*Config, error) {
 	if err := applyEnv(cfg); err != nil {
 		return nil, err
 	}
+
+	applyWorkerDefaults(cfg)
+
 	if err := verifyConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -149,6 +208,10 @@ func Load(filepath string) (*Config, error) {
 		}
 	}
 	applyEOFDefaults(cfg)
+
+	if cfg.Broker.Input != nil && cfg.Broker.Input.Queue != nil && cfg.Worker.CheckpointInterval > cfg.Broker.Input.Queue.Prefetch {
+		return nil, fmt.Errorf("worker checkpoint_interval cannot be greater than input queue prefetch")
+	}
 
 	return cfg, nil
 }
@@ -187,7 +250,20 @@ func loadSystemDefaults(cfg *Config) error {
 		return err
 	}
 
-	return yaml.Unmarshal(data, cfg)
+	var sysCfg SystemConfig
+	if err := yaml.Unmarshal(data, &sysCfg); err != nil {
+		return err
+	}
+	if sysCfg.Monitoring != nil {
+		cfg.Monitoring = sysCfg.Monitoring
+	}
+	if sysCfg.Broker != nil {
+		systemDefaults = sysCfg.Broker
+	}
+	if sysCfg.Worker != nil {
+		systemWorkerDefaults = sysCfg.Worker
+	}
+	return nil
 }
 
 func verifyConfig(cfg *Config) error {
@@ -209,20 +285,17 @@ func verifyConfig(cfg *Config) error {
 	if cfg.Broker.Type == "" {
 		return fmt.Errorf("broker type is required")
 	}
-	if cfg.Broker.RabbitURL == "" {
-		return fmt.Errorf("broker url is required")
-	}
-	if cfg.Broker.Input == "" {
+	if cfg.Broker.Input == nil {
 		return fmt.Errorf("broker input is required")
 	}
-	if cfg.Broker.Output == "" {
+	if cfg.Broker.Output == nil {
 		return fmt.Errorf("broker output is required")
 	}
 	if cfg.Worker.Type == "" {
 		return fmt.Errorf("worker type is required")
 	}
 	if cfg.Worker.CheckpointInterval == 0 {
-		cfg.Worker.CheckpointInterval = defaultCheckpointInterval
+		return fmt.Errorf("worker checkpoint_interval is required (set in config yaml or system.yaml)")
 	}
 	return nil
 }
@@ -286,76 +359,230 @@ func applyEnv(cfg *Config) error {
 	brokerConfig.NextWorkerPrefix = prefix
 	workerConfig.NextWorkerPrefix = prefix
 
+	if cfg.AvgBroker != nil {
+		cfg.AvgBroker.WorkerID = brokerConfig.WorkerID
+		cfg.AvgBroker.WorkerAmount = brokerConfig.WorkerAmount
+		cfg.AvgBroker.PrevWorkerAmount = brokerConfig.PrevWorkerAmount
+		cfg.AvgBroker.NextWorkerAmount = brokerConfig.NextWorkerAmount
+		cfg.AvgBroker.WorkerPrefix = brokerConfig.WorkerPrefix
+		cfg.AvgBroker.PrevWorkerPrefix = brokerConfig.PrevWorkerPrefix
+		cfg.AvgBroker.NextWorkerPrefix = brokerConfig.NextWorkerPrefix
+	}
+
 	cfg.Worker.CheckpointDir = os.Getenv("CHECKPOINT_DIR")
 	if cfg.Worker.CheckpointDir == "" {
-		cfg.Worker.CheckpointDir = defaultCheckpointDir
+		return fmt.Errorf("CHECKPOINT_DIR environment variable is required")
 	}
 
 	return nil
 }
 
-func applyBrokerDefaults(cfg *BrokerConfig) error {
-	if cfg.ExchangeType == "" {
-		cfg.ExchangeType = "direct"
+func applyWorkerDefaults(cfg *Config) {
+	if systemWorkerDefaults != nil && cfg.Worker.CheckpointInterval == 0 {
+		cfg.Worker.CheckpointInterval = systemWorkerDefaults.CheckpointInterval
 	}
-	if cfg.Prefetch == 0 {
-		cfg.Prefetch = 30
+}
+
+func systemQueueInputDefaults(sys *SystemBrokerDefaults) *SystemBrokerQueueDefaults {
+	if sys != nil && sys.Input != nil {
+		return sys.Input.Queue
+	}
+	return nil
+}
+
+func systemQueueOutputDefaults(sys *SystemBrokerDefaults) *SystemBrokerQueueDefaults {
+	if sys != nil && sys.Output != nil {
+		return sys.Output.Queue
+	}
+	return nil
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func applyQueueDefaults(cfg *BrokerConfig, q **QueueEndpoint, sys *SystemBrokerQueueDefaults) {
+	if *q == nil {
+		*q = &QueueEndpoint{}
+	}
+	if sys != nil {
+		if (*q).Prefetch == 0 {
+			(*q).Prefetch = sys.Prefetch
+		}
+		if (*q).Durable == nil {
+			(*q).Durable = boolPtr(sys.Durable)
+		}
+		if (*q).AutoDelete == nil {
+			(*q).AutoDelete = boolPtr(sys.AutoDelete)
+		}
+		if (*q).Exclusive == nil {
+			(*q).Exclusive = boolPtr(sys.Exclusive)
+		}
+		if (*q).NoWait == nil {
+			(*q).NoWait = boolPtr(sys.NoWait)
+		}
+		if (*q).Lazy == nil {
+			(*q).Lazy = boolPtr(sys.Lazy)
+		}
+	}
+	if (*q).Durable == nil {
+		(*q).Durable = boolPtr(true)
+	}
+	if (*q).AutoDelete == nil {
+		(*q).AutoDelete = boolPtr(false)
+	}
+	if (*q).Exclusive == nil {
+		(*q).Exclusive = boolPtr(false)
+	}
+	if (*q).NoWait == nil {
+		(*q).NoWait = boolPtr(false)
+	}
+	if (*q).Lazy == nil {
+		(*q).Lazy = boolPtr(false)
+	}
+	if (*q).Persistent == nil {
+		(*q).Persistent = boolPtr(false)
+	}
+}
+
+func applyExchangeDefaults(ep *Endpoint) {
+	if ep.Exchange == nil {
+		return
+	}
+	var sys *SystemBrokerQueueDefaults
+	if systemDefaults != nil && systemDefaults.Input != nil {
+		sys = systemDefaults.Input.Queue
+	}
+	if sys != nil {
+		if ep.Exchange.Durable == nil {
+			ep.Exchange.Durable = boolPtr(sys.Durable)
+		}
+		if ep.Exchange.AutoDelete == nil {
+			ep.Exchange.AutoDelete = boolPtr(sys.AutoDelete)
+		}
+		if ep.Exchange.Internal == nil {
+			ep.Exchange.Internal = boolPtr(sys.Internal)
+		}
+		if ep.Exchange.NoWait == nil {
+			ep.Exchange.NoWait = boolPtr(sys.NoWait)
+		}
+	}
+	if ep.Exchange.Durable == nil {
+		ep.Exchange.Durable = boolPtr(true)
+	}
+	if ep.Exchange.AutoDelete == nil {
+		ep.Exchange.AutoDelete = boolPtr(false)
+	}
+	if ep.Exchange.Internal == nil {
+		ep.Exchange.Internal = boolPtr(false)
+	}
+	if ep.Exchange.NoWait == nil {
+		ep.Exchange.NoWait = boolPtr(false)
+	}
+	if ep.Exchange.Persistent == nil {
+		ep.Exchange.Persistent = boolPtr(false)
+	}
+}
+
+func applyBrokerDefaults(cfg *BrokerConfig) error {
+	if systemDefaults != nil && cfg.RabbitURL == "" {
+		cfg.RabbitURL = systemDefaults.URL
+	}
+	if cfg.RabbitURL == "" {
+		cfg.RabbitURL = "amqp://guest:guest@rabbitmq:5672/"
 	}
 
-	// A "queue" broker is a single point-to-point queue. Only one of
-	// input/output needs to be set — whichever is set names the queue.
+	if cfg.Input == nil {
+		cfg.Input = &Endpoint{}
+	}
+	if cfg.Output == nil {
+		cfg.Output = &Endpoint{}
+	}
+
+	applyQueueDefaults(cfg, &cfg.Input.Queue, systemQueueInputDefaults(systemDefaults))
+	applyQueueDefaults(cfg, &cfg.Output.Queue, systemQueueOutputDefaults(systemDefaults))
+
+	applyExchangeDefaults(cfg.Input)
+	applyExchangeDefaults(cfg.Output)
+
 	if cfg.Type == "queue" {
-		if cfg.Input == "" && cfg.Output == "" {
-			return fmt.Errorf("queue broker requires either input or output")
+		if cfg.Input.Queue == nil && cfg.Output.Queue == nil {
+			return fmt.Errorf("queue broker requires input.queue or output.queue")
+		}
+		if cfg.Input.Queue.Name == "" && cfg.Output.Queue.Name == "" {
+			return fmt.Errorf("queue broker requires input.queue.name or output.queue.name")
 		}
 		return nil
 	}
 
 	if isInputExchangeType(cfg.Type) {
-		if cfg.Input == "" {
+		if cfg.Input.Exchange == nil {
+			cfg.Input.Exchange = &ExchangeEndpoint{}
+		}
+		if cfg.Input.Exchange.Name == "" {
 			if cfg.WorkerPrefix == "" {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input exchange")
 			}
-			cfg.Input = cfg.WorkerPrefix
+			cfg.Input.Exchange.Name = cfg.WorkerPrefix
 		}
-		if len(cfg.InputKeys) == 0 {
+		if cfg.Input.Exchange.Type == "" {
+			return fmt.Errorf("input exchange type is required for exchange input")
+		}
+		if len(cfg.Input.Exchange.Keys) == 0 && cfg.Input.Exchange.Type != "fanout" {
 			if cfg.WorkerPrefix == "" {
 				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
 			}
-			cfg.InputKeys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
-			// Defaulted keys mean this consumer is sharded: each replica owns a
-			// distinct binding key. Give it a stable, named queue so a restart
-			// re-attaches to the same inbox (keeping its un-acked messages and
-			// its binding alive while it was down) instead of an anonymous,
-			// exclusive queue that the broker deletes on disconnect. An explicit
-			// input_queue still wins.
-			if cfg.InputQueue == "" {
-				cfg.InputQueue = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
+			cfg.Input.Exchange.Keys = []string{fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)}
+			if cfg.Input.Queue == nil {
+				cfg.Input.Queue = &QueueEndpoint{}
 			}
+			cfg.Input.Queue.Name = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
 		}
-	} else if cfg.Input == "" {
-		if cfg.WorkerPrefix == "" {
-			return fmt.Errorf("WORKER_PREFIX environment variable is required for input queue")
+		if len(cfg.Input.Exchange.Keys) == 0 && cfg.Input.Exchange.Type == "fanout" {
+			if cfg.WorkerPrefix == "" {
+				return fmt.Errorf("WORKER_PREFIX environment variable is required for input keys")
+			}
+			if cfg.Input.Queue == nil {
+				cfg.Input.Queue = &QueueEndpoint{}
+			}
+			cfg.Input.Queue.Name = fmt.Sprintf("%s_%d", cfg.WorkerPrefix, cfg.WorkerID)
 		}
-		cfg.Input = cfg.WorkerPrefix
+		if cfg.Input.Queue == nil {
+			cfg.Input.Queue = &QueueEndpoint{}
+		}
+	} else {
+		if cfg.Input.Queue == nil {
+			cfg.Input.Queue = &QueueEndpoint{}
+		}
+		if cfg.Input.Queue.Name == "" {
+			if cfg.WorkerPrefix == "" {
+				return fmt.Errorf("WORKER_PREFIX environment variable is required for input queue")
+			}
+			cfg.Input.Queue.Name = cfg.WorkerPrefix
+		}
 	}
 
 	if isOutputExchangeType(cfg.Type) {
-		if cfg.Output == "" {
+		if cfg.Output.Exchange == nil {
+			cfg.Output.Exchange = &ExchangeEndpoint{}
+		}
+		if cfg.Output.Exchange.Name == "" {
 			if cfg.NextWorkerPrefix == "" {
 				return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output exchange")
 			}
-			cfg.Output = cfg.NextWorkerPrefix
+			cfg.Output.Exchange.Name = cfg.NextWorkerPrefix
 		}
-	} else if cfg.Output == "" {
-		if cfg.NextWorkerPrefix == "" {
-			return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
+		if cfg.Output.Exchange.Type == "" {
+			return fmt.Errorf("output exchange type is required for exchange output")
 		}
-		cfg.Output = cfg.NextWorkerPrefix
-	}
-
-	if cfg.OutputExchangeType == "" {
-		cfg.OutputExchangeType = cfg.ExchangeType
+	} else {
+		if cfg.Output.Queue == nil {
+			cfg.Output.Queue = &QueueEndpoint{}
+		}
+		if cfg.Output.Queue.Name == "" {
+			if cfg.NextWorkerPrefix == "" {
+				return fmt.Errorf("NEXT_WORKER_PREFIX environment variable is required for output queue")
+			}
+			cfg.Output.Queue.Name = cfg.NextWorkerPrefix
+		}
 	}
 
 	return nil
@@ -371,7 +598,9 @@ func applyEOFDefaults(cfg *Config) {
 	eofConfig.EOFPrefix = fmt.Sprintf("%s_eof", brokerConfig.WorkerPrefix)
 	eofConfig.WorkerAmount = brokerConfig.WorkerAmount
 	eofConfig.BroadcastExchange = fmt.Sprintf("%s_eof_broadcast", brokerConfig.WorkerPrefix)
-	eofConfig.InputKeys = cfg.Broker.InputKeys
+	if isInputExchangeType(brokerConfig.Type) && brokerConfig.Input != nil && brokerConfig.Input.Exchange != nil {
+		eofConfig.InputKeys = brokerConfig.Input.Exchange.Keys
+	}
 }
 
 func isInputExchangeType(brokerType string) bool {

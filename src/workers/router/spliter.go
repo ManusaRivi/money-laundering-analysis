@@ -85,17 +85,25 @@ func (r *Spliter) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg)
 		if err != nil {
 			nack()
 			return
 		}
 		r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			r.coord.Flush()
+		}
 	})
 }
 
 func (r *Spliter) onflush(clientID uuid.UUID) error {
-	return nil
+	if err := r.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	r.pub.Forget(clientID)
+	return r.coord.Delete(clientID)
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -138,7 +146,7 @@ func (r *Spliter) sendPhaseOneBatch(clientID uuid.UUID, txType domain.TypeTxQ4, 
 		slog.Error("Error sending TxQ4 phase-one batch", "error", err, "routing_key", routingKey)
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, len(txs))
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, id, len(txs))
 	return nil
 }
 
@@ -192,7 +200,7 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 		}
 	}
 
-	r.syncEOFController.MessageReceived(clientId, len(txBatch))
+	r.syncEOFController.MessageReceived(clientId, envelope.MsgID, len(txBatch))
 
 	return nil
 }
@@ -203,11 +211,12 @@ func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	r.coord.Flush()
 	r.syncEOFController.SyncEof(envelope.ClientId, eofCounts, r.syncEOFKey)
 	return nil
 }
 
-func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionBatchMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,

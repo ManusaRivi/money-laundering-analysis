@@ -1,16 +1,12 @@
 broker:
   type: q-e
-  url: amqp://guest:guest@rabbitmq:5672/
-  input: q_q4_router
-  output: e_q4_agg
-  exchange_type: direct
-  
-  prefetch: 300
-  durable: true
-  auto_delete: false
-  exclusive: false
-  no_wait: false
-  internal: false
+  input:
+    queue:
+      name: q_q4_router
+  output:
+    exchange:
+      name: e_q4_agg
+      type: direct
 
 worker:
   type: "Spliter"
@@ -19,6 +15,6 @@ worker:
       - "origin"
       - "dest"
   sync_eof:
-    - retries_base_delay: 0.5
-    - retries_step_delay: 0.5
-    - max_retries: 5
+    retries_base_delay: 0.5
+    retries_step_delay: 0.5
+    max_retries: 5

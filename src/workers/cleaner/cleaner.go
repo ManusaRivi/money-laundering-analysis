@@ -80,19 +80,26 @@ func (c *Cleaner) Run() error {
 	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := c.handleMessage(msg)
+		clientID, msgType, err := c.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		c.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			c.coord.Flush()
+		}
 	})
 }
 
 func (c *Cleaner) onflush(clientID uuid.UUID) error {
-	// El cleaner esta constantemente haciendo flush, no tiene nada que hacer cuando recibe el callback de flush.
-	return nil
+	if err := c.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	c.pub.Forget(clientID)
+	return c.coord.Delete(clientID)
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -148,7 +155,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	c.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(transactions))
 	cleanedTx := make([]protocol.Transaction, 0, len(transactions))
 
 	for _, tx := range transactions {
@@ -167,7 +174,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 		return err
 	}
 
-	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(transactions))
+	c.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, txID, len(transactions))
 
 	return nil
 }
@@ -179,11 +186,12 @@ func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	c.coord.Flush()
 	c.syncEOFController.SyncEof(envelope.ClientId, eofCounts, c.syncEOFKey)
 	return nil
 }
 
-func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   c.handleEOFMessage,

@@ -27,11 +27,11 @@ type Client struct {
 }
 
 type AvgFormatFilterCheckpoint struct {
-	avgByFormat map[string]float64
-	eofCount    int
-	expected    int
-	received    int
-	done        bool
+	AvgByFormat map[string]float64 `json:"avg_by_format"`
+	EofCount    int                `json:"eof_count"`
+	Expected    int                `json:"expected"`
+	Received    int                `json:"received"`
+	Done        bool               `json:"done"`
 }
 
 type AvgFormatFilter struct {
@@ -103,7 +103,7 @@ func (f *AvgFormatFilter) Run() error {
 
 	go func() {
 		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			clientID, err := f.handleAvgMessage(msg)
+			clientID, _, err := f.handleAvgMessage(msg)
 			if err != nil {
 				nack()
 				return
@@ -114,12 +114,15 @@ func (f *AvgFormatFilter) Run() error {
 
 	go func() {
 		errCh <- f.txBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			clientID, err := f.handleTxMessage(msg)
+			clientID, msgType, err := f.handleTxMessage(msg)
 			if err != nil {
 				nack()
 				return
 			}
 			f.coord.Track(clientID, ack)
+			if msgType == protocol.MsgTransactionsEOF {
+				f.coord.Flush()
+			}
 		})
 	}()
 
@@ -138,15 +141,15 @@ func (f *AvgFormatFilter) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
 
 	client, ok := f.clients[clientID]
 	if !ok {
-		return nil, fmt.Errorf("Client not found for snapshot: %s", clientID)
+		return nil, nil
 	}
 
 	checkpoint := AvgFormatFilterCheckpoint{
-		avgByFormat: client.avgByFormat,
-		eofCount:    client.eofCount,
-		expected:    client.expected,
-		received:    client.received,
-		done:        client.done,
+		AvgByFormat: client.avgByFormat,
+		EofCount:    client.eofCount,
+		Expected:    client.expected,
+		Received:    client.received,
+		Done:        client.done,
 	}
 
 	return json.Marshal(checkpoint)
@@ -162,13 +165,13 @@ func (f *AvgFormatFilter) RestoreClient(clientID uuid.UUID, data []byte) error {
 	defer f.mu.Unlock()
 
 	client := f.getOrCreateClientLocked(clientID)
-	client.avgByFormat = checkpoint.avgByFormat
-	client.eofCount = checkpoint.eofCount
-	client.expected = checkpoint.expected
-	client.received = checkpoint.received
-	client.done = checkpoint.done
+	client.avgByFormat = checkpoint.AvgByFormat
+	client.eofCount = checkpoint.EofCount
+	client.expected = checkpoint.Expected
+	client.received = checkpoint.Received
+	client.done = checkpoint.Done
 
-	if client.done && client.doneCh != nil {
+	if client.done {
 		close(client.doneCh)
 	}
 
@@ -200,7 +203,7 @@ func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) {
 	<-ch
 }
 
-func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleAvgBatch,
 		protocol.MsgTransactionsEOF:   f.handleAvgEOF,
@@ -266,7 +269,7 @@ func (f *AvgFormatFilter) checkAvgDoneLocked(clientID uuid.UUID, client *Client)
 	}
 }
 
-func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, error) {
+func (f *AvgFormatFilter) handleTxMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionBatch,
 		protocol.MsgTransactionsEOF:   f.handleEOF,
@@ -305,13 +308,14 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 		if err != nil {
 			return err
 		}
-		if err := f.pub.PublishInternal(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload); err != nil {
+		resultID := protocol.DeriveMsgID(envelope.MsgID, string(broker.KeyNil), 0)
+		if err := f.pub.PublishInternalWithID(envelope.ClientId, protocol.MsgQuery3Result, broker.KeyNil, payload, resultID); err != nil {
 			return err
 		}
-		f.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, len(results))
+		f.syncEOFController.MessageSentWithKey(envelope.ClientId, broker.KeyNil, resultID, len(results))
 	}
 
-	f.syncEOFController.MessageReceived(envelope.ClientId, len(transactions))
+	f.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(transactions))
 	return nil
 }
 
@@ -334,12 +338,18 @@ func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
 		return err
 	}
+	f.coord.Flush()
 	f.syncEOFController.SyncEof(envelope.ClientId, eofCounts, f.syncEOFKey)
 	return nil
 }
 
 func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
-	return nil
+	if err := f.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	f.pub.Forget(clientID)
+	return f.coord.Delete(clientID)
 }
 
 func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {

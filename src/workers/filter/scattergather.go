@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -12,9 +13,10 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 
-	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/google/uuid"
 )
+
+var _ checkpoint.Checkpointable = (*ScatterGatherThreshold)(nil)
 
 type ScatterGatherThreshold struct {
 	pub              *messaging.Publisher
@@ -42,6 +44,7 @@ func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGatherT
 	}, nil
 }
 
+// Este tiene state: cuenta EOFs
 func (f *ScatterGatherThreshold) Run() error {
 	defer f.broker.StopConsuming()
 
@@ -56,13 +59,25 @@ func (f *ScatterGatherThreshold) Run() error {
 	}
 
 	return f.broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
 		f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			if err := f.coord.Flush(); err != nil {
+				slog.Error("Error flushing coordinator", "error", err)
+				return
+			}
+			if _, counting := f.eofCounters[clientID]; !counting {
+				f.pub.Forget(clientID)
+				if err := f.coord.Delete(clientID); err != nil {
+					slog.Error("Error deleting client from coordinator", "error", err)
+				}
+			}
+		}
 	})
 }
 
@@ -71,13 +86,29 @@ func (f *ScatterGatherThreshold) Stop() {
 	f.broker.Close()
 }
 
+type scatterGatherThresholdCheckpoint struct {
+	EOFCounters int `json:"eof_counters,omitempty"`
+}
+
+func (f *ScatterGatherThreshold) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
+	return json.Marshal(scatterGatherThresholdCheckpoint{EOFCounters: f.eofCounters[clientID]})
+}
+
+func (f *ScatterGatherThreshold) RestoreClient(clientID uuid.UUID, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var cp scatterGatherThresholdCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return err
+	}
+	f.eofCounters[clientID] = cp.EOFCounters
+	return nil
+}
+
 // Private methods
 
 func (f *ScatterGatherThreshold) handleTxQ4Message(envelope protocol.InternalEnvelope) error {
-	// var txQ4 domain.TxQ4PhaseThree
-	// if err := pkt.UnmarshalData(&txQ4); err != nil {
-	// 	return err
-	// }
 	clientID := envelope.ClientId
 	parentID := envelope.MsgID
 	txQ4, err := f.pub.DecodeTxQ4PhaseThreeEnvelope(envelope.Payload)
@@ -135,13 +166,13 @@ func (f *ScatterGatherThreshold) handleEOFMessage(envelope protocol.InternalEnve
 	}
 
 	delete(f.eofCounters, clientID)
-	return nil
+	return f.coord.Flush()
 }
 
-func (f *ScatterGatherThreshold) handleMessage(msg broker.Message) (uuid.UUID, error) {
-	clientID, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
+func (f *ScatterGatherThreshold) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+	clientID, msgType, err := f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTxQ4:            f.handleTxQ4Message,
 		protocol.MsgTransactionsEOF: f.handleEOFMessage,
 	})
-	return clientID, err
+	return clientID, msgType, err
 }

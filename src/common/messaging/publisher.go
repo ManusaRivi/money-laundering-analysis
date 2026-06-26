@@ -59,28 +59,28 @@ func (p *Publisher) send(key broker.KeyType, envelope []byte) error {
 	return nil
 }
 
-func (p *Publisher) Dispatch(msg broker.Message, handlers map[protocol.MsgType]Handler) (uuid.UUID, error) {
+func (p *Publisher) Dispatch(msg broker.Message, handlers map[protocol.MsgType]Handler) (uuid.UUID, protocol.MsgType, error) {
 	envelope, err := p.DecodeInternalEnvelope(msg.Body)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("decoding internal envelope: %w", err)
+		return uuid.Nil, 0, fmt.Errorf("decoding internal envelope: %w", err)
 	}
 	handler, ok := handlers[envelope.MsgType]
 	if !ok {
-		return uuid.Nil, fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
+		return uuid.Nil, envelope.MsgType, fmt.Errorf("unexpected inbound packet type: %v", envelope.MsgType)
 	}
 
 	deduped := envelope.MsgID != (protocol.MsgID{})
 	if deduped && p.dedup.alreadySeen(envelope.ClientId, envelope.MsgID) {
 		slog.Debug("Dropping already-seen message", "clientID", envelope.ClientId, "msgType", envelope.MsgType)
-		return uuid.Nil, nil
+		return uuid.Nil, envelope.MsgType, nil
 	}
 	if err := handler(envelope); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, envelope.MsgType, err
 	}
 	if deduped {
 		p.dedup.markSeen(envelope.ClientId, envelope.MsgID)
 	}
-	return envelope.ClientId, nil
+	return envelope.ClientId, envelope.MsgType, nil
 }
 
 func (p *Publisher) Forget(clientID uuid.UUID) {

@@ -86,12 +86,15 @@ func (r *Router) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg)
 		if err != nil {
 			nack()
 			return
 		}
 		r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			r.coord.Flush()
+		}
 	})
 }
 
@@ -104,7 +107,7 @@ func (r *Router) encodeAndSendBatch(clientID uuid.UUID, msgType protocol.MsgType
 	if err := r.pub.PublishInternalWithID(clientID, msgType, routingKey, payload, id); err != nil {
 		return err
 	}
-	r.syncEOFController.MessageSentWithKey(clientID, routingKey, batchLength)
+	r.syncEOFController.MessageSentWithKey(clientID, routingKey, id, batchLength)
 	return nil
 }
 
@@ -129,7 +132,12 @@ func parseRouteField(params map[string]any) (string, string) {
 }
 
 func (r *Router) onflush(clientID uuid.UUID) error {
-	return nil
+	if err := r.coord.Flush(); err != nil {
+		slog.Error("Error flushing coordinator", "error", err)
+		return err
+	}
+	r.pub.Forget(clientID)
+	return r.coord.Delete(clientID)
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -154,7 +162,7 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 		return err
 	}
 	slog.Debug("Received transactions batch", "batchSize", len(txBatch), "clientId", envelope.ClientId)
-	r.syncEOFController.MessageReceived(envelope.ClientId, len(txBatch))
+	r.syncEOFController.MessageReceived(envelope.ClientId, envelope.MsgID, len(txBatch))
 	transactionsPerRoutingKey := make(map[string][]protocol.Transaction)
 	for _, tx := range txBatch {
 		routingKey := r.shardByField(tx)
@@ -186,11 +194,12 @@ func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
+	r.coord.Flush()
 	r.syncEOFController.SyncEof(envelope.ClientId, counts, r.syncEOFKey)
 	return nil
 }
 
-func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, error) {
+func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionMessage,
 		protocol.MsgTransactionsEOF:   r.handleEOFMessage,
