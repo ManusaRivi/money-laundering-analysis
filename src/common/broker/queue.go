@@ -21,6 +21,7 @@ type queueBroker struct {
 	mu             sync.Mutex
 	publishMu      sync.Mutex
 	config         config.BrokerConfig
+	consumeDone    chan struct{}
 }
 
 func newQueueBroker(cfg config.BrokerConfig) (Broker, error) {
@@ -125,19 +126,25 @@ func (qb *queueBroker) StartConsuming(callbackFunc func(msg Message, ack func(),
 	qb.mu.Lock()
 	qb.consumerTag = tag
 	qb.state = consuming
+	qb.consumeDone = make(chan struct{})
 	qb.mu.Unlock()
 
-	for d := range msgs {
-		callbackFunc(Message{Body: d.Body, ContentType: d.ContentType}, func() { d.Ack(false) }, func() { d.Nack(false, true) })
+	for {
+		select {
+		case d, ok := <-msgs:
+			if !ok {
+				qb.mu.Lock()
+				if qb.state == consuming {
+					qb.state = closed
+				}
+				qb.mu.Unlock()
+				return ErrBrokerDisconnected
+			}
+			callbackFunc(Message{Body: d.Body, ContentType: d.ContentType}, func() { d.Ack(false) }, func() { d.Nack(false, true) })
+		case <-qb.consumeDone:
+			return nil
+		}
 	}
-
-	qb.mu.Lock()
-	defer qb.mu.Unlock()
-	if qb.state == consuming {
-		qb.state = closed
-		return ErrBrokerDisconnected
-	}
-	return nil
 }
 
 func (qb *queueBroker) StopConsuming() error {
@@ -147,16 +154,15 @@ func (qb *queueBroker) StopConsuming() error {
 		return nil
 	}
 	consumerTag := qb.consumerTag
+	close(qb.consumeDone)
+	qb.state = idle
+	qb.consumerTag = ""
 	qb.mu.Unlock()
 
 	if err := qb.consumeChannel.Cancel(consumerTag, false); err != nil {
 		return ErrBrokerDisconnected
 	}
 
-	qb.mu.Lock()
-	qb.state = idle
-	qb.consumerTag = ""
-	qb.mu.Unlock()
 	return nil
 }
 

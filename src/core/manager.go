@@ -89,12 +89,16 @@ func (m *Manager) Run() error {
 		if m.mlCancel != nil {
 			m.mlCancel()
 		}
-		m.Worker.Stop()
-		if m.broker != nil {
-			m.broker.Close()
-		}
+		go func() {
+			m.Worker.Stop()
+			if m.broker != nil {
+				m.broker.Close()
+			}
+		}()
+
 		select {
 		case <-errCh:
+			slog.Info("Worker stopped successfully")
 		case <-time.After(5 * time.Second):
 			slog.Warn("Shutdown timed out, exiting forcefully")
 		}

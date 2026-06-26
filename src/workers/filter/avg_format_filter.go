@@ -129,7 +129,11 @@ func (f *AvgFormatFilter) Run() error {
 	return <-errCh
 }
 
-func (f *AvgFormatFilter) Stop() {}
+func (f *AvgFormatFilter) Stop() {
+	if f.syncEOFController != nil {
+		f.syncEOFController.Stop()
+	}
+}
 
 // Private methods
 

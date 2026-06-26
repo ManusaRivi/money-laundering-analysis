@@ -124,7 +124,11 @@ func (f *SyncFilter) Run() error {
 	})
 }
 
-func (f *SyncFilter) Stop() {}
+func (f *SyncFilter) Stop() {
+	if f.syncEOFController != nil {
+		f.syncEOFController.Stop()
+	}
+}
 
 // Private methods
 

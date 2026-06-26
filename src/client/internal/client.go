@@ -40,8 +40,13 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 
 	connection := network.NewConnection(conn)
 
-	sender := NewSender(&connection, codec)
-	receiver := NewReceiver(&connection, codec, config.OutputPath)
+	c := &Client{
+		config: config,
+		conn:   connection,
+	}
+
+	c.sender = NewSender(&connection, codec)
+	c.receiver = NewReceiver(&connection, codec, config.OutputPath, &c.running)
 
 	accountsReader, err := data.NewBatchReader(
 		config.AccountsDatasetPath,
@@ -65,14 +70,10 @@ func NewClient(config *config.ClientConfig) (*Client, error) {
 
 	transactionsStream := data.NewTransactionStream(transactionsReader, codec)
 
-	return &Client{
-		config:             config,
-		sender:             sender,
-		receiver:           receiver,
-		conn:               connection,
-		AccountsStream:     *accountsStream,
-		TransactionsStream: *transactionsStream,
-	}, nil
+	c.AccountsStream = *accountsStream
+	c.TransactionsStream = *transactionsStream
+
+	return c, nil
 }
 
 func connectToServer(host, port string, connectionAttempts int, connectionAttemptDelayMs int) (net.Conn, error) {
@@ -112,16 +113,17 @@ func (c *Client) Start() error {
 	}()
 
 	start := time.Now()
+	c.running.Store(true)
 
 	go c.handleSignals()
 
 	go c.receiver.Listen()
 
-	if err := c.sender.StreamDataset(&c.AccountsStream); err != nil {
+	if err := c.sender.StreamDataset(&c.AccountsStream, &c.running); err != nil {
 		return err
 	}
 
-	if err := c.sender.StreamDataset(&c.TransactionsStream); err != nil {
+	if err := c.sender.StreamDataset(&c.TransactionsStream, &c.running); err != nil {
 		return err
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/network"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
@@ -27,9 +28,13 @@ func NewSender(conn *network.Connection, codec codec.Codec) *Sender {
 	return &Sender{conn: conn, codec: codec}
 }
 
-func (s *Sender) StreamDataset(ds DatasetStream) error {
+func (s *Sender) StreamDataset(ds DatasetStream, running *atomic.Bool) error {
 	slog.Debug("Started streaming dataset batches", "dataset", ds.Name())
 	for {
+		if !running.Load() {
+			return fmt.Errorf("client stopped by signal")
+		}
+
 		payload, err := ds.GetNextBatch()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

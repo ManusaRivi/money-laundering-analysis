@@ -126,8 +126,9 @@ func (r *Spliter) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (r *Spliter) Stop() {
-	r.Broker.StopConsuming()
-	r.Broker.Close()
+	if r.syncEOFController != nil {
+		r.syncEOFController.Stop()
+	}
 }
 
 // Private methods

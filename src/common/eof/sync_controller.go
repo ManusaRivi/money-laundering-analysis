@@ -113,6 +113,12 @@ func (c *SyncEOFController) Start() error {
 	return c.broker.StartConsuming(c.handleControlMessage)
 }
 
+func (c *SyncEOFController) Stop() {
+	slog.Debug("[SyncEOFController] Stopping", "worker_id", c.nodeID)
+	c.broker.StopConsuming()
+	c.broker.Close()
+}
+
 // MessageReceived incrementa el contador de mensajes recibidos para un cliente dado.
 // Se llama cada vez que este nodo recibe un mensaje de ese cliente.
 func (c *SyncEOFController) MessageReceived(clientID uuid.UUID, msgID protocol.MsgID, processedCount int) {

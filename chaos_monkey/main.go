@@ -202,10 +202,12 @@ func runRandom(interval time.Duration, killable []string) {
 		case <-time.After(interval):
 			idx := rand.Intn(len(killable))
 			target := killable[idx]
-			slog.Info("random kill: selected target", "target", target)
-			if err := dockerKill(target); err != nil {
-				slog.Error("docker kill failed", "target", target, "error", err)
-			}
+			slog.Info("random kill: selected target", "TARGET", target)
+			go func() {
+				if err := dockerKill(target); err != nil {
+					slog.Error("docker kill failed", "CONTAINER", target, "error", err)
+				}
+			}()
 		}
 	}
 }

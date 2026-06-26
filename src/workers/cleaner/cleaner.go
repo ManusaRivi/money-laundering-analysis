@@ -123,8 +123,9 @@ func (c *Cleaner) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (c *Cleaner) Stop() {
-	c.Broker.StopConsuming()
-	c.Broker.Close()
+	if c.syncEOFController != nil {
+		c.syncEOFController.Stop()
+	}
 }
 
 func (c *Cleaner) cleanTransaction(tx protocol.Transaction) protocol.Transaction {
