@@ -103,6 +103,13 @@ func (m *Manager) Run() error {
 			slog.Warn("Shutdown timed out, exiting forcefully")
 		}
 	case err := <-errCh:
+		if m.mlCancel != nil {
+			m.mlCancel()
+		}
+		m.Worker.Stop()
+		if m.broker != nil {
+			m.broker.Close()
+		}
 		return err
 	}
 

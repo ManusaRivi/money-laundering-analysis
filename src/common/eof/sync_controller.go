@@ -298,19 +298,19 @@ func (c *SyncEOFController) retryAmountRequest(clientID uuid.UUID) {
 	client.retryCount++
 	attempt := client.retryCount
 	maxRetries := c.maxRetries
+	lastKnownSentByKey := mergeSentByKey(client.nodesInfo)
 	client.nodesInfo = make(map[int]nodeInfo)
 	baseDelay := c.retryBaseDelay
 	stepDelay := c.retryStepDelay
 	c.mu.Unlock()
 
 	if maxRetries > 0 && attempt > maxRetries {
-		slog.Warn("[SyncEOFController] Max retries exceeded",
+		slog.Warn("[SyncEOFController] Max retries exceeded, force-flushing EOF downstream (best-effort)",
 			"client_id", clientID,
 			"attempt", attempt,
 			"max_retries", maxRetries,
 		)
-		c.broadcastRetryExceeded(clientID)
-		c.runRetryExceededCallback(clientID)
+		c.leaderFlush(clientID, lastKnownSentByKey)
 		return
 	}
 
@@ -355,17 +355,7 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 			"reported_total", totalRcvReported,
 			"total_sent", combinedSentByKey,
 		)
-		if c.onLeaderFlush != nil {
-			if err := c.onLeaderFlush(clientID, combinedSentByKey); err != nil {
-				slog.Error("[SyncEOFController] onLeaderFlush failed",
-					"client_id", clientID,
-					"final_count_sent", combinedSentByKey,
-					"err", err,
-				)
-			}
-		}
-		c.broadcastFlush(clientID)
-		c.cleanupClientState(clientID)
+		c.leaderFlush(clientID, combinedSentByKey)
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
@@ -374,6 +364,20 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 		)
 		c.retryAmountRequest(clientID)
 	}
+}
+
+func (c *SyncEOFController) leaderFlush(clientID uuid.UUID, sentByKey map[broker.KeyType]int) {
+	if c.onLeaderFlush != nil {
+		if err := c.onLeaderFlush(clientID, sentByKey); err != nil {
+			slog.Error("[SyncEOFController] onLeaderFlush failed",
+				"client_id", clientID,
+				"final_count_sent", sentByKey,
+				"err", err,
+			)
+		}
+	}
+	c.broadcastFlush(clientID)
+	c.cleanupClientState(clientID)
 }
 
 func (c *SyncEOFController) processFlush(msg ControlMessage) {
@@ -395,15 +399,6 @@ func (c *SyncEOFController) processRetryExceeded(msg ControlMessage) {
 		"requester_id", msg.RequesterID,
 	)
 	c.runRetryExceededCallback(msg.ClientID)
-}
-
-func (c *SyncEOFController) broadcastRetryExceeded(clientID uuid.UUID) {
-	slog.Warn("[SyncEOFController] Broadcast retry exceeded", "client_id", clientID)
-	msg := ControlMessage{
-		Type:     MsgTypeRetryExceeded,
-		ClientID: clientID,
-	}
-	c.sendControlMessage(msg)
 }
 
 func (c *SyncEOFController) runRetryExceededCallback(clientID uuid.UUID) {
