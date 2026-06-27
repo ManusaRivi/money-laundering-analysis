@@ -137,8 +137,9 @@ func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyTy
 }
 
 func (f *DateRange) Stop() {
-	f.Broker.StopConsuming()
-	f.Broker.Close()
+	if f.syncEOFController != nil {
+		f.syncEOFController.Close()
+	}
 }
 
 // Private methods

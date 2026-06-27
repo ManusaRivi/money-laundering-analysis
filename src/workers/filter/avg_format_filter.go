@@ -103,12 +103,15 @@ func (f *AvgFormatFilter) Run() error {
 
 	go func() {
 		errCh <- f.avgBroker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-			clientID, _, err := f.handleAvgMessage(msg)
+			clientID, msgType, err := f.handleAvgMessage(msg)
 			if err != nil {
 				nack()
 				return
 			}
 			f.coord.Track(clientID, ack)
+			if msgType == protocol.MsgTransactionsEOF {
+				f.coord.Flush()
+			}
 		})
 	}()
 
@@ -129,7 +132,12 @@ func (f *AvgFormatFilter) Run() error {
 	return <-errCh
 }
 
-func (f *AvgFormatFilter) Stop() {}
+func (f *AvgFormatFilter) Stop() {
+	if f.syncEOFController != nil {
+		f.syncEOFController.Close()
+	}
+	f.avgBroker.Close()
+}
 
 // Private methods
 
@@ -199,7 +207,6 @@ func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) {
 	}
 	ch := client.doneCh
 	f.mu.Unlock()
-
 	<-ch
 }
 
@@ -349,7 +356,13 @@ func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	f.pub.Forget(clientID)
-	return f.coord.Delete(clientID)
+	if err := f.coord.Delete(clientID); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	delete(f.clients, clientID)
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
@@ -358,7 +371,8 @@ func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
 
 func (f *AvgFormatFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
 	slog.Debug("Handling leader flush", "client_id", clientID, "final_sent", finalSent)
-	if err := f.pub.PublishInternal(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil); err != nil {
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	if err := f.pub.PublishInternalWithID(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil, eofID); err != nil {
 		slog.Error("Error sending EOF packet to broker", "error", err)
 		return err
 	}

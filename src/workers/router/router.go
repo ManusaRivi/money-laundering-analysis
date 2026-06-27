@@ -98,7 +98,11 @@ func (r *Router) Run() error {
 	})
 }
 
-func (r *Router) Stop() {}
+func (r *Router) Stop() {
+	if r.syncEOFController != nil {
+		r.syncEOFController.Close()
+	}
+}
 
 // Private methods
 

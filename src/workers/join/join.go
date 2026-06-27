@@ -124,7 +124,9 @@ func (j *Join) Run() error {
 	return <-errCh
 }
 
-func (j *Join) Stop() {}
+func (j *Join) Stop() {
+	j.accountsBroker.Close()
+}
 
 // Private Methods
 
