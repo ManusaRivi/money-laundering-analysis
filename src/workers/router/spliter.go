@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
@@ -13,7 +14,6 @@ import (
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/messaging"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 
-	// "github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/inner"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/google/uuid"
 )
@@ -27,6 +27,8 @@ type Spliter struct {
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
 	coord             *checkpoint.Coordinator
+	mu                sync.Mutex
+	flushed           map[uuid.UUID]struct{}
 }
 
 func NewSpliter(cfg config.WorkerConfig, broker broker.Broker) (*Spliter, error) {
@@ -52,6 +54,7 @@ func NewSpliter(cfg config.WorkerConfig, broker broker.Broker) (*Spliter, error)
 		fieldsToRouteBy:   fieldsToRouteBy,
 		nextWorkerAmount:  cfg.NextWorkerAmount,
 		syncEOFKey:        syncEOFKey,
+		flushed:           make(map[uuid.UUID]struct{}),
 	}, nil
 }
 
@@ -90,10 +93,17 @@ func (r *Spliter) Run() error {
 			nack()
 			return
 		}
-		// Avoid tracking an EOF message so it's not flushed. The eof ack is called by the syncEOFController.
-		if msgType != protocol.MsgTransactionsEOF {
-			r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			return
 		}
+		r.mu.Lock()
+		_, isFlushed := r.flushed[clientID]
+		r.mu.Unlock()
+		if isFlushed {
+			ack()
+			return
+		}
+		r.coord.Track(clientID, ack)
 	})
 }
 
@@ -103,7 +113,13 @@ func (r *Spliter) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	r.pub.Forget(clientID)
-	return r.coord.Delete(clientID)
+	if err := r.coord.Delete(clientID); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.flushed[clientID] = struct{}{}
+	r.mu.Unlock()
+	return nil
 }
 
 func (r *Spliter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -170,6 +186,15 @@ type bucketKey struct {
 
 func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
+
+	r.mu.Lock()
+	_, isFlushed := r.flushed[clientId]
+	r.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "client_id", clientId)
+		return nil
+	}
+
 	txBatch, err := r.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
@@ -207,6 +232,15 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 }
 
 func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
+	r.mu.Lock()
+	_, isFlushed := r.flushed[envelope.ClientId]
+	r.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "client_id", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	eofCounts, err := r.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)

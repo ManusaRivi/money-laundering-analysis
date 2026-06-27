@@ -3,6 +3,7 @@ package filter
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
@@ -27,6 +28,9 @@ type DateRange struct {
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
 	coord             *checkpoint.Coordinator
+
+	mu      sync.Mutex
+	flushed map[uuid.UUID]struct{}
 }
 
 func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) {
@@ -59,6 +63,7 @@ func NewDateRange(cfg config.WorkerConfig, b broker.Broker) (*DateRange, error) 
 		toDate:            toDate,
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
+		flushed:           make(map[uuid.UUID]struct{}),
 	}, nil
 }
 
@@ -99,9 +104,17 @@ func (f *DateRange) Run() error {
 			nack()
 			return
 		}
-		if msgType != protocol.MsgTransactionsEOF {
-			f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			return
 		}
+		f.mu.Lock()
+		_, isFlushed := f.flushed[clientID]
+		f.mu.Unlock()
+		if isFlushed {
+			ack()
+			return
+		}
+		f.coord.Track(clientID, ack)
 	})
 }
 
@@ -111,7 +124,13 @@ func (f *DateRange) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	f.pub.Forget(clientID)
-	return f.coord.Delete(clientID)
+	if err := f.coord.Delete(clientID); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.flushed[clientID] = struct{}{}
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
@@ -180,6 +199,15 @@ func (f *DateRange) sendTransactionBatch(transactions []protocol.Transaction, cl
 
 func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
+
+	f.mu.Lock()
+	_, isFlushed := f.flushed[clientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "clientId", clientId)
+		return nil
+	}
+
 	transactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
@@ -208,7 +236,15 @@ func (f *DateRange) handleTransactionsBatchMessage(envelope protocol.InternalEnv
 }
 
 func (f *DateRange) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
-	// El filtro sincronizado no necesita hacer nada especial con los mensajes EOF, simplemente los propaga usando el EOFBroker.
+	f.mu.Lock()
+	_, isFlushed := f.flushed[envelope.ClientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "clientID", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	slog.Debug("Received EOF packet, beginning syncing...", "clientID", envelope.ClientId)
 	eofCounts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {

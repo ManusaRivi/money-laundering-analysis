@@ -45,6 +45,7 @@ type AvgFormatFilter struct {
 
 	mu      sync.Mutex
 	clients map[uuid.UUID]*Client
+	flushed map[uuid.UUID]struct{}
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
@@ -64,6 +65,7 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		avgMultiplier: multiplier,
 		pub:           messaging.New(codec.New(), txBroker),
 		clients:       make(map[uuid.UUID]*Client),
+		flushed:       make(map[uuid.UUID]struct{}),
 		syncEOFKey:    eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
 	}
 	return f, nil
@@ -218,12 +220,18 @@ func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, proto
 
 func (f *AvgFormatFilter) handleAvgBatch(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Received avg batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
+
 	avgTransactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		return err
 	}
 
 	f.mu.Lock()
+	if _, isFlushed := f.flushed[envelope.ClientId]; isFlushed {
+		f.mu.Unlock()
+		slog.Debug("Skipping avg batch for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
 	client := f.getOrCreateClientLocked(envelope.ClientId)
 	for _, tx := range avgTransactions {
 		if tx.PaymentFormat == "" {
@@ -241,12 +249,18 @@ func (f *AvgFormatFilter) handleAvgBatch(envelope protocol.InternalEnvelope) err
 
 func (f *AvgFormatFilter) handleAvgEOF(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Received avg EOF", "client_id", envelope.ClientId)
+
 	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		return err
 	}
 
 	f.mu.Lock()
+	if _, isFlushed := f.flushed[envelope.ClientId]; isFlushed {
+		f.mu.Unlock()
+		slog.Debug("Skipping avg EOF for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
 	client := f.getOrCreateClientLocked(envelope.ClientId)
 
 	if codec.IsFlushEOF(counts) {
@@ -295,6 +309,15 @@ func (f *AvgFormatFilter) handleTxMessage(msg broker.Message, ack func()) (uuid.
 
 func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvelope) error {
 	slog.Debug("Received transaction batch", "client_id", envelope.ClientId, "payload_size", len(envelope.Payload))
+
+	f.mu.Lock()
+	_, isFlushed := f.flushed[envelope.ClientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
+
 	transactions, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		return err
@@ -303,7 +326,15 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 	f.waitAvgDone(envelope.ClientId)
 
 	f.mu.Lock()
-	client := f.clients[envelope.ClientId]
+	if _, isFlushed := f.flushed[envelope.ClientId]; isFlushed {
+		f.mu.Unlock()
+		return nil
+	}
+	client, exists := f.clients[envelope.ClientId]
+	if !exists {
+		f.mu.Unlock()
+		return nil
+	}
 	results := make([]protocol.Query3Result, 0)
 	for _, tx := range transactions {
 		if tx.PaymentFormat == "" {
@@ -350,6 +381,16 @@ func (f *AvgFormatFilter) evaluateTransaction(tx protocol.Transaction, avg float
 
 func (f *AvgFormatFilter) handleEOF(envelope protocol.InternalEnvelope, ack func()) error {
 	slog.Debug("Received transaction EOF", "client_id", envelope.ClientId)
+
+	f.mu.Lock()
+	_, isFlushed := f.flushed[envelope.ClientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "client_id", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	eofCounts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error unmarshalling EOF counts", "error", err)
@@ -370,7 +411,11 @@ func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	f.mu.Lock()
+	if client, ok := f.clients[clientID]; ok && !client.done {
+		close(client.doneCh)
+	}
 	delete(f.clients, clientID)
+	f.flushed[clientID] = struct{}{}
 	f.mu.Unlock()
 	return nil
 }

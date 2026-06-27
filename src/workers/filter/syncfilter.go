@@ -3,6 +3,7 @@ package filter
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/batch"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
@@ -20,10 +21,9 @@ const Query1 = 1
 type SyncFilter struct {
 	cfg    config.WorkerConfig
 	Broker broker.Broker
-	Type   string `json:"type"`  // Tipo de filtro: "amount", "date_range", etc.
-	Field  string `json:"field"` // Campo a filtrar: "Amount", "Timestamp"
+	Type   string `json:"type"`
+	Field  string `json:"field"`
 
-	// Campos para filtros simples (amount, string)
 	Operator     string   `json:"operator"`
 	ValueFloat   float64  `json:"value_float"`
 	ValueStrings []string `json:"value_string"`
@@ -32,10 +32,11 @@ type SyncFilter struct {
 	syncEOFKey        broker.KeyType
 	coord             *checkpoint.Coordinator
 
-	// Query 1: los resultados se acumulan y publican como lotes binarios del
-	// protocolo external, que el gateway reenvía al cliente sin decodificar.
 	pub      *messaging.Publisher
 	q1Buffer *batch.Buffer[protocol.Query1Result]
+
+	mu      sync.Mutex
+	flushed map[uuid.UUID]struct{}
 }
 
 func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, error) {
@@ -76,6 +77,7 @@ func NewSyncFilter(cfg config.WorkerConfig, broker broker.Broker) (*SyncFilter, 
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
 		pub:               messaging.New(codec.New(), broker),
+		flushed:           make(map[uuid.UUID]struct{}),
 	}, nil
 }
 
@@ -115,9 +117,17 @@ func (f *SyncFilter) Run() error {
 			nack()
 			return
 		}
-		if msgType != protocol.MsgTransactionsEOF {
-			f.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			return
 		}
+		f.mu.Lock()
+		_, isFlushed := f.flushed[clientID]
+		f.mu.Unlock()
+		if isFlushed {
+			ack()
+			return
+		}
+		f.coord.Track(clientID, ack)
 	})
 }
 
@@ -134,7 +144,13 @@ func (f *SyncFilter) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	f.pub.Forget(clientID)
-	return f.coord.Delete(clientID)
+	if err := f.coord.Delete(clientID); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.flushed[clientID] = struct{}{}
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
@@ -252,7 +268,15 @@ func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Tra
 }
 
 func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
-	// El filtro sincronizado no necesita hacer nada especial con los mensajes EOF, simplemente los propaga usando el EOFBroker.
+	f.mu.Lock()
+	_, isFlushed := f.flushed[envelope.ClientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "client_id", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	slog.Debug("Received EOF packet, beginning syncing...")
 	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
@@ -265,6 +289,14 @@ func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope, ack fu
 }
 
 func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEnvelope) error {
+	f.mu.Lock()
+	_, isFlushed := f.flushed[envelope.ClientId]
+	f.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
+
 	txBatch, err := f.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		return fmt.Errorf("decoding transaction batch: %w", err)

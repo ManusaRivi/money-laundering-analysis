@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
@@ -26,6 +27,8 @@ type Router struct {
 	nextWorkerAmount  int
 	syncEOFKey        broker.KeyType
 	coord             *checkpoint.Coordinator
+	mu                sync.Mutex
+	flushed           map[uuid.UUID]struct{}
 }
 
 func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
@@ -53,6 +56,7 @@ func NewRouter(cfg config.WorkerConfig, broker broker.Broker) (*Router, error) {
 		fieldToRouteBy:    field,
 		nextWorkerAmount:  nextWorkerAmountInt,
 		syncEOFKey:        syncEOFKey,
+		flushed:           make(map[uuid.UUID]struct{}),
 	}, nil
 }
 
@@ -91,9 +95,17 @@ func (r *Router) Run() error {
 			nack()
 			return
 		}
-		if msgType != protocol.MsgTransactionsEOF {
-			r.coord.Track(clientID, ack)
+		if msgType == protocol.MsgTransactionsEOF {
+			return
 		}
+		r.mu.Lock()
+		_, isFlushed := r.flushed[clientID]
+		r.mu.Unlock()
+		if isFlushed {
+			ack()
+			return
+		}
+		r.coord.Track(clientID, ack)
 	})
 }
 
@@ -140,7 +152,13 @@ func (r *Router) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	r.pub.Forget(clientID)
-	return r.coord.Delete(clientID)
+	if err := r.coord.Delete(clientID); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.flushed[clientID] = struct{}{}
+	r.mu.Unlock()
+	return nil
 }
 
 func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -159,6 +177,14 @@ func (r *Router) onRetryExceeded(clientID uuid.UUID) error {
 }
 
 func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
+	r.mu.Lock()
+	_, isFlushed := r.flushed[envelope.ClientId]
+	r.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
+
 	txBatch, err := r.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
@@ -191,6 +217,15 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 }
 
 func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
+	r.mu.Lock()
+	_, isFlushed := r.flushed[envelope.ClientId]
+	r.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "client_id", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	slog.Debug("Received EOF packet, beginning syncing...", "clientId", envelope.ClientId)
 	counts, err := r.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {

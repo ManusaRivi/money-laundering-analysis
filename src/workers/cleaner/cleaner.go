@@ -2,6 +2,7 @@ package cleaner
 
 import (
 	"log/slog"
+	"sync"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
@@ -21,6 +22,8 @@ type Cleaner struct {
 	fieldsToClean     []string
 	syncEOFKey        broker.KeyType
 	coord             *checkpoint.Coordinator
+	mu                sync.Mutex
+	flushed           map[uuid.UUID]struct{}
 }
 
 func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
@@ -47,6 +50,7 @@ func NewCleaner(cfg config.WorkerConfig, b broker.Broker) *Cleaner {
 		fieldsToClean:     fieldsToClean,
 		syncEOFController: nil,
 		syncEOFKey:        syncEOFKey,
+		flushed:           make(map[uuid.UUID]struct{}),
 	}
 }
 
@@ -98,7 +102,13 @@ func (c *Cleaner) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	c.pub.Forget(clientID)
-	return c.coord.Delete(clientID)
+	if err := c.coord.Delete(clientID); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.flushed[clientID] = struct{}{}
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -149,6 +159,14 @@ func (c *Cleaner) cleanTransaction(tx protocol.Transaction) protocol.Transaction
 }
 
 func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) error {
+	c.mu.Lock()
+	_, isFlushed := c.flushed[envelope.ClientId]
+	c.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping transaction batch for flushed client", "client_id", envelope.ClientId)
+		return nil
+	}
+
 	transactions, err := c.pub.DecodeTransactionBatch(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding transaction batch", "error", err)
@@ -180,6 +198,15 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 }
 
 func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
+	c.mu.Lock()
+	_, isFlushed := c.flushed[envelope.ClientId]
+	c.mu.Unlock()
+	if isFlushed {
+		slog.Debug("Skipping EOF for flushed client", "client_id", envelope.ClientId)
+		ack()
+		return nil
+	}
+
 	slog.Debug("Received EOF packet, starting EOF sync...")
 	eofCounts, err := c.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
