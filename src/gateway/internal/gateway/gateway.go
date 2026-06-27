@@ -83,13 +83,11 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	registry := clientregistry.NewClientRegistry()
 
-	cpManager, err := checkpoint.NewManager(config.CheckpointDir)
+	gateway := &Gateway{config: config, registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
+	gateway.checkpoint, err = checkpoint.NewCoordinator(config.CheckpointDir, &noopCheckpointable{}, nil, newGatewayStateCheckpointable(gateway), config.CheckpointInterval)
 	if err != nil {
 		return nil, err
 	}
-
-	gateway := &Gateway{config: config, registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
-	gateway.checkpoint = checkpoint.NewCoordinator(cpManager, &noopCheckpointable{}, nil, newGatewayStateCheckpointable(gateway), config.CheckpointInterval)
 	gateway.running.Store(true)
 	return gateway, nil
 }

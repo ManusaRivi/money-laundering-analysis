@@ -17,6 +17,18 @@ func (n *noopCheckpointable) RestoreClient(_ uuid.UUID, _ []byte) error {
 	return nil
 }
 
+func (n *noopCheckpointable) DrainClient(_ uuid.UUID) ([]byte, error) {
+	return nil, nil
+}
+
+func (n *noopCheckpointable) CommitClient(_ uuid.UUID) error {
+	return nil
+}
+
+func (n *noopCheckpointable) ReplayClient(_ uuid.UUID, _ []byte) error {
+	return nil
+}
+
 type clientStateSnapshot struct {
 	TxCount             int    `json:"tx_count"`
 	TxUSDCount          int    `json:"tx_usd_count"`
