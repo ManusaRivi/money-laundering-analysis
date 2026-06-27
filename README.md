@@ -31,3 +31,19 @@ Variables de entorno inyectadas en cada worker:
 
 - Workers: `./configs/<pipeline>/<worker>.yaml:/app/config.yaml`
 - Clientes: `./.data:/app/.data` y `./.output/client<ID>:/app/.output`
+
+
+### Para SNIPER
+En `topology.yaml`:
+```
+env:
+  SNIPER: "true"
+```
+En donde se quiera matar un worker:
+```
+if os.Getenv("SNIPER") == "true" {
+    slog.Warn("[SNIPER] Sleeping to allow sniper to acquire target...")
+    time.Sleep(5 * time.Second)
+    slog.Info("I survived the Sniper")
+}
+```

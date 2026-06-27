@@ -1,6 +1,6 @@
 DC := docker compose -f docker-compose-dev.yaml
 
-docker-compose-dev.yaml: topology.yaml configs/base-compose.yaml.tmpl scripts/gen_compose.go
+docker-compose-dev.yaml: topology.yaml configs/base-compose.yaml.tmpl configs/workers.yaml scripts/gen_compose.go
 	go run scripts/gen_compose.go
 
 compose:
@@ -62,8 +62,11 @@ chaos-i-%:
 chaos-q-%:
 	go run ./chaos_monkey -q $*
 
+chaos-s-%:
+	go run ./chaos_monkey -s $*
+
 chaos-nuke:
-	go run ./chaos_monkey -m nuke
+	go run ./chaos_monkey -nuke
 
 verify:
 	cd ./scripts && . .venv/bin/activate && python3 verify_output.py

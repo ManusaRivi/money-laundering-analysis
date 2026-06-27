@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -23,28 +25,39 @@ type workersFile struct {
 }
 
 var (
-	mode     string
-	interval time.Duration
-	shielded string
-	queryNum int
+	interval     time.Duration
+	nukeMode     bool
+	queryNum     int
+	sniperTarget string
 )
 
 func init() {
-	flag.StringVar(&mode, "m", "random", "Modo: random, nuke")
 	flag.DurationVar(&interval, "i", 5*time.Second, "Intervalo entre kills")
-	flag.StringVar(&shielded, "s", "last", "Monitor blindado: 'last' o numero de ID")
+	flag.BoolVar(&nukeMode, "n", false, "Nuke all killable workers")
+	flag.BoolVar(&nukeMode, "nuke", false, "Nuke all killable workers")
 	flag.IntVar(&queryNum, "q", 0, "Numero de query a matar (activa modo query)")
+	flag.StringVar(&sniperTarget, "s", "", "Contenedor objetivo en modo sniper")
 }
 
 func main() {
 	flag.Parse()
 
-	if queryNum > 0 {
+	mode := "random"
+	if sniperTarget != "" {
+		mode = "sniper"
+	} else if nukeMode {
+		mode = "nuke"
+	} else if queryNum > 0 {
 		mode = "query"
 	}
 
 	slog.SetDefault(slog.New(newDemoHandler(os.Stderr, slog.LevelInfo)))
-	slog.Info("chaos-monkey starting", "mode", mode, "interval", interval, "shielded", shielded)
+	slog.Info("chaos-monkey starting", "mode", mode, "interval", interval, "query_number", queryNum, "sniper_target", sniperTarget)
+
+	if sniperTarget != "" {
+		runSniper(sniperTarget)
+		return
+	}
 
 	workers, err := loadWorkers()
 	if err != nil {
@@ -56,7 +69,7 @@ func main() {
 	monitors, regulars := splitMonitors(workers)
 	slog.Info("workers categorized", "monitors", len(monitors), "regular", len(regulars))
 
-	shieldedID, err := resolveShielded(monitors, shielded)
+	shieldedID, err := resolveShielded(monitors, "last")
 	if err != nil {
 		slog.Error("invalid shielded configuration", "error", err)
 		os.Exit(1)
@@ -66,12 +79,12 @@ func main() {
 	killable := buildKillable(regulars, monitors, shieldedID)
 	slog.Info("killable pool", "count", len(killable))
 
-	switch mode {
-	case "random":
-		runRandom(interval, killable)
-	case "nuke":
+	if nukeMode {
 		runNuke(killable)
-	case "query":
+		return
+	}
+
+	if queryNum > 0 {
 		slog.Info("query mode activated", "query_number", queryNum)
 		targets := filterQuery(killable, queryNum)
 		if len(targets) == 0 {
@@ -80,11 +93,10 @@ func main() {
 		}
 		slog.Info("query mode: killing workers", "query", queryNum, "targets", targets)
 		bulkKill(targets)
-	default:
-		slog.Error("unknown mode", "mode", mode)
-		flag.Usage()
-		os.Exit(1)
+		return
 	}
+
+	runRandom(interval, killable)
 }
 
 func loadWorkers() ([]string, error) {
@@ -236,6 +248,59 @@ func bulkKill(targets []string) {
 	}
 	wg.Wait()
 }
+
+func runSniper(container string) {
+	slog.Info("sniper mode: watching container", "target", container)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "logs", "-f", "--tail=0", container)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		slog.Error("sniper: failed to create stdout pipe", "error", err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		slog.Error("sniper: failed to start docker logs", "error", err)
+		return
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "SNIPER") {
+			slog.Warn("SNIPER TARGET ACQUIRED", "container", container, "log_line", line)
+			if err := dockerKill(container); err != nil {
+				slog.Error("sniper: docker kill failed", "container", container, "error", err)
+			} else {
+				slog.Warn("SNIPER SHOT TAKEN", "container", container)
+			}
+			break
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Error("sniper: error reading docker logs", "error", err)
+	}
+
+	cmd.Wait()
+}
+/* ------------------ En topology.yaml: ----------------- */
+/*
+env:
+  SNIPER: "true"
+*/
+
+/* ---------------- En cualquier worker: ---------------- */
+/*
+if os.Getenv("SNIPER") == "true" {
+		slog.Warn("[SNIPER] Sleeping to allow sniper to acquire target...")
+		time.Sleep(5 * time.Second)
+		slog.Info("I survived the Sniper")
+}
+*/
 
 func dockerKill(container string) error {
 	cmd := exec.Command("docker", "kill", container)
