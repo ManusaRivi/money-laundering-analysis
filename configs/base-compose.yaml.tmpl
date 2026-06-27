@@ -27,10 +27,12 @@ services:
     environment:
       - LOG_LEVEL=debug
       - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
+      - CHECKPOINT_DIR=/app/checkpoints
     volumes:
       - ./configs/gateway.yaml:/app/config.yaml
       - ./configs/system.yaml:/app/system.yaml:ro
       - ./configs/query2/join_account_queue.yaml:/app/accounts_queue_config.yaml
+      - ./.checkpoints/gateway:/app/checkpoints
     networks:
       - money-laundering-analysis-net
     depends_on:
