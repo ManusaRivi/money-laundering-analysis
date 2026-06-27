@@ -87,11 +87,16 @@ func (p *Publisher) Forget(clientID uuid.UUID) {
 	p.dedup.forget(clientID)
 }
 
-func (p *Publisher) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
-	return p.dedup.snapshotClient(clientID), nil
+func (p *Publisher) DrainClient(clientID uuid.UUID) ([]byte, error) {
+	return p.dedup.drainClient(clientID), nil
 }
 
-func (p *Publisher) RestoreClient(clientID uuid.UUID, data []byte) error {
-	p.dedup.restoreClient(clientID, data)
+func (p *Publisher) CommitClient(clientID uuid.UUID) error {
+	p.dedup.commitDrained(clientID)
+	return nil
+}
+
+func (p *Publisher) ReplayClient(clientID uuid.UUID, record []byte) error {
+	p.dedup.replayClient(clientID, record)
 	return nil
 }

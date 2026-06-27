@@ -62,12 +62,12 @@ func NewScatterGather(cfg config.WorkerConfig, b broker.Broker) (*ScatterGather,
 func (a *ScatterGather) Run() error {
 	defer a.broker.StopConsuming()
 
-	checkpointManager, err := checkpoint.NewManager(a.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(a.cfg.CheckpointDir, a.pub, nil, a, a.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, a, a.cfg.CheckpointInterval)
+	a.coord = coord
 	if err := a.coord.Recover(); err != nil {
 		return err
 	}

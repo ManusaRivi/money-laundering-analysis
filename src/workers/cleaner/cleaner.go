@@ -67,12 +67,12 @@ func (c *Cleaner) Run() error {
 		return err
 	}
 
-	checkpointManager, err := checkpoint.NewManager(c.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(c.cfg.CheckpointDir, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	c.coord = checkpoint.NewCoordinator(checkpointManager, c.pub, c.syncEOFController, nil, c.cfg.CheckpointInterval)
+	c.coord = coord
 	if err := c.coord.Recover(); err != nil {
 		return err
 	}
@@ -80,15 +80,14 @@ func (c *Cleaner) Run() error {
 	go c.syncEOFController.Start()
 
 	return c.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, msgType, err := c.handleMessage(msg)
+		clientID, msgType, err := c.handleMessage(msg, ack)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
 			return
 		}
-		c.coord.Track(clientID, ack)
-		if msgType == protocol.MsgTransactionsEOF {
-			c.coord.Flush()
+		if msgType != protocol.MsgTransactionsEOF {
+			c.coord.Track(clientID, ack)
 		}
 	})
 }
@@ -180,7 +179,7 @@ func (c *Cleaner) handleTransactionMessage(envelope protocol.InternalEnvelope) e
 	return nil
 }
 
-func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
+func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	slog.Debug("Received EOF packet, starting EOF sync...")
 	eofCounts, err := c.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
@@ -188,13 +187,13 @@ func (c *Cleaner) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	c.coord.Flush()
-	c.syncEOFController.SyncEof(envelope.ClientId, eofCounts, c.syncEOFKey)
+	c.syncEOFController.SyncEof(envelope.ClientId, eofCounts, c.syncEOFKey, ack)
 	return nil
 }
 
-func (c *Cleaner) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+func (c *Cleaner) handleMessage(msg broker.Message, ack func()) (uuid.UUID, protocol.MsgType, error) {
 	return c.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: c.handleTransactionMessage,
-		protocol.MsgTransactionsEOF:   c.handleEOFMessage,
+		protocol.MsgTransactionsEOF:   func(envelope protocol.InternalEnvelope) error { return c.handleEOFMessage(envelope, ack) },
 	})
 }
