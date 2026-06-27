@@ -8,7 +8,7 @@ compose:
 	$(MAKE) docker-compose-dev.yaml
 .PHONY: compose
 
-up: docker-compose-dev.yaml
+up: docker-compose-dev.yaml clean
 	$(DC) up -d --build
 .PHONY: up
 

@@ -519,6 +519,8 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 		Payload: envelope.Payload,
 	}); err != nil {
 		slog.Error("Error forwarding binary result to client", "clientId", envelope.ClientId, "err", err)
+		gateway.handleClientDisconnect(client)
+		client.Conn.Close()
 		gateway.registry.Remove(client)
 		gateway.forgetClient(envelope.ClientId)
 		delete(gateway.seenResults, envelope.ClientId)
