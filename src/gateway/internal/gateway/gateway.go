@@ -348,6 +348,13 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 	if !gateway.sendTransactionBatch(c, nonDollarTx, broker.KeyNonDollarTransaction) {
 		return false
 	}
+	
+	// if os.Getenv("SNIPER") == "true" {
+	// 	slog.Warn("[SNIPER] Sleeping to allow sniper to acquire target...")
+	// 	time.Sleep(500 * time.Millisecond)
+	// 	slog.Info("I survived the Sniper")
+	// }
+	
 	if client := gateway.getClient(c.ClientId); client != nil {
 		client.tx_count += len(transactions)
 		client.tx_usd_count += len(dollarTx)
@@ -437,6 +444,20 @@ func (gateway *Gateway) recoverPendingClients() error {
 	gateway.clientsMu.Unlock()
 
 	for _, clientID := range ids {
+		// Bump per-stream sequences by 2 so the EOF messages injected during
+		// recovery get MsgIDs that cannot collide with any batch that was
+		// sent (and possibly deduped downstream) before the crash.
+		gateway.clientsMu.Lock()
+		if c := gateway.clients[clientID]; c != nil {
+			if !c.accountsEOFSent {
+				c.accSeq += 2
+			}
+			if !c.transactionsEOFSent {
+				c.txSeq += 2
+			}
+		}
+		gateway.clientsMu.Unlock()
+
 		client := &clientconnection.ClientConnection{ClientId: clientID}
 		slog.Info("Recovering client by injecting pending EOFs", "clientId", clientID)
 		if !gateway.handleClientDisconnect(client) {

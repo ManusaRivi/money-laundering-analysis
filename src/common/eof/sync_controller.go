@@ -340,15 +340,9 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 	unionEmpty := isReceivedUnionEmpty(client.nodesInfo)
 	c.mu.Unlock()
 
-	if unionEmpty {
-		slog.Info("[SyncEOFController] Union de IDs vacia, EOF ya fue procesado por lider anterior",
-			"client_id", clientID,
-		)
-		c.cleanupClientState(clientID)
-		return
-	}
 
-	if totalRcvReported == expectedRcv {
+
+	if totalRcvReported >= expectedRcv {
 		slog.Info("[SyncEOFController] EOF sincronizado",
 			"client_id", clientID,
 			"expected_total", expectedRcv,
@@ -366,6 +360,12 @@ func (c *SyncEOFController) checkTotalAndFlush(clientID uuid.UUID) {
 		}
 		c.broadcastFlush(clientID)
 		c.cleanupClientState(clientID)
+	} else if unionEmpty {
+		slog.Info("[SyncEOFController] Union de IDs vacia, EOF ya fue procesado por lider anterior",
+			"client_id", clientID,
+		)
+		c.cleanupClientState(clientID)
+		return
 	} else {
 		slog.Warn("[SyncEOFController] EOF no matchea, reintentando",
 			"client_id", clientID,
