@@ -411,22 +411,22 @@ func encodeRecord(gen uint64, payload []byte) []byte {
 	return rec
 }
 
-func decodeRecordAt(raw []byte, off int) (gen uint64, payload []byte, next int, ok bool) {
-	if off+recordHeaderLen > len(raw) {
-		return 0, nil, off, false
+func decodeRecordAt(raw []byte, offset int) (gen uint64, payload []byte, next int, ok bool) {
+	if offset+recordHeaderLen > len(raw) {
+		return 0, nil, offset, false
 	}
-	plen := int(binary.BigEndian.Uint32(raw[off : off+4]))
-	end := off + recordHeaderLen + plen
-	if plen < 0 || end > len(raw) {
-		return 0, nil, off, false
+	payloadLen := int(binary.BigEndian.Uint32(raw[offset : offset+4]))
+	end := offset + recordHeaderLen + payloadLen
+	if payloadLen < 0 || end > len(raw) {
+		return 0, nil, offset, false
 	}
-	gen = binary.BigEndian.Uint64(raw[off+4 : off+12])
-	crc := binary.BigEndian.Uint32(raw[off+12 : off+16])
-	payload = raw[off+recordHeaderLen : end]
-	want := crc32.Update(0, crcTable, raw[off+4:off+12])
+	gen = binary.BigEndian.Uint64(raw[offset+4 : offset+12])
+	crc := binary.BigEndian.Uint32(raw[offset+12 : offset+16])
+	payload = raw[offset+recordHeaderLen : end]
+	want := crc32.Update(0, crcTable, raw[offset+4:offset+12])
 	want = crc32.Update(want, crcTable, payload)
 	if want != crc {
-		return 0, nil, off, false
+		return 0, nil, offset, false
 	}
 	return gen, payload, end, true
 }
