@@ -35,6 +35,9 @@ type workersFile struct {
 	Workers []string `yaml:"workers"`
 }
 
+const gatewayMonitorAddress = "gateway"
+const gatewayMonitorReportedKey = "gateway_0"
+
 func New(mp *config.MonitorWorkerParams, selfKey string, selfID int, workerPrefix string, workerAmount int) (*Monitor, error) {
 	if mp.Monitoring.FailureThreshold == 0 {
 		mp.Monitoring.FailureThreshold = 3
@@ -192,6 +195,9 @@ func (m *Monitor) startPinger(ctx context.Context, workers []string, pingInterva
 			filtered = append(filtered, w)
 		}
 	}
+	if !containsWorker(filtered, gatewayMonitorAddress) {
+		filtered = append(filtered, gatewayMonitorAddress)
+	}
 	if len(filtered) == 0 {
 		slog.Warn("monitor: no workers to ping (all filtered out)")
 		return
@@ -219,6 +225,7 @@ func (m *Monitor) stopPinger() {
 }
 
 func (m *Monitor) handleResult(key string, ok bool) {
+	key = normalizeMonitorKey(key)
 	if ok {
 		m.state.mu.Lock()
 		m.state.failures[key] = 0
@@ -248,4 +255,20 @@ func (m *Monitor) restartContainer(key string) {
 	if err := cmd.Run(); err != nil {
 		slog.Error("monitor: docker start failed", "CONTAINER", key, "error", err)
 	}
+}
+
+func containsWorker(workers []string, worker string) bool {
+	for _, w := range workers {
+		if w == worker {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeMonitorKey(key string) string {
+	if key == gatewayMonitorReportedKey {
+		return gatewayMonitorAddress
+	}
+	return key
 }
