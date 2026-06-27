@@ -248,6 +248,17 @@ func (f *AvgFormatFilter) handleAvgEOF(envelope protocol.InternalEnvelope) error
 
 	f.mu.Lock()
 	client := f.getOrCreateClientLocked(envelope.ClientId)
+
+	if codec.IsFlushEOF(counts) {
+		if !client.done {
+			client.done = true
+			close(client.doneCh)
+			slog.Debug("Avg flush EOF for client", "client_id", envelope.ClientId)
+		}
+		f.mu.Unlock()
+		return nil
+	}
+
 	client.eofCount++
 	for _, c := range counts {
 		client.expected += c

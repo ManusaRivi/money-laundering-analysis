@@ -8,6 +8,6 @@ worker:
       ping_timeout: "500ms"
     monitoring:
       udp_port: 9000
-      ping_interval: "3s"
+      ping_interval: "5s"
       ping_timeout: "1s"
       failure_threshold: 3
