@@ -124,7 +124,7 @@ func (c *Cleaner) onRetryExceeded(clientID uuid.UUID) error {
 
 func (c *Cleaner) Stop() {
 	if c.syncEOFController != nil {
-		c.syncEOFController.Close()
+		c.syncEOFController.Stop()
 	}
 }
 

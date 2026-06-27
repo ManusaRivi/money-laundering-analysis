@@ -3,6 +3,7 @@ package client
 import (
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/client/internal/data"
@@ -17,15 +18,17 @@ type Receiver struct {
 	outputDir string
 	done      chan struct{}
 	writers   map[protocol.MsgType]*data.QueryWriter
+	running   *atomic.Bool
 }
 
-func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string) *Receiver {
+func NewReceiver(conn *network.Connection, codec codec.Codec, outputDir string, running *atomic.Bool) *Receiver {
 	return &Receiver{
 		conn:      conn,
 		codec:     codec,
 		outputDir: outputDir,
 		done:      make(chan struct{}),
 		writers:   make(map[protocol.MsgType]*data.QueryWriter),
+		running:   running,
 	}
 }
 
@@ -48,6 +51,11 @@ func (r *Receiver) Listen() {
 	start := time.Now()
 
 	for pendingEOFs > 0 {
+		if !r.running.Load() {
+			slog.Info("Receiver stopping by signal")
+			return
+		}
+
 		header, err := r.conn.Receive(codec.ExternalHeaderSize)
 		if err != nil {
 			slog.Info("Receiver stopping", "err", err)

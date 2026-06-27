@@ -133,7 +133,7 @@ func (f *AvgFormatFilter) Run() error {
 
 func (f *AvgFormatFilter) Stop() {
 	if f.syncEOFController != nil {
-		f.syncEOFController.Close()
+		f.syncEOFController.Stop()
 	}
 	f.avgBroker.Close()
 }

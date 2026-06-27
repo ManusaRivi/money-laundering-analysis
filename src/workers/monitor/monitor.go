@@ -231,7 +231,7 @@ func (m *Monitor) handleResult(key string, ok bool) {
 	fails := m.state.failures[key]
 	m.state.mu.Unlock()
 
-	slog.Warn("monitor: ping failed", "container", key, "failure", fails, "threshold", m.failureThreshold)
+	slog.Debug("monitor: ping failed", "container", key, "failure", fails, "threshold", m.failureThreshold)
 
 	if fails >= m.failureThreshold {
 		m.state.mu.Lock()
@@ -243,9 +243,9 @@ func (m *Monitor) handleResult(key string, ok bool) {
 }
 
 func (m *Monitor) restartContainer(key string) {
-	slog.Info("monitor: executing docker start", "container", key)
+	slog.Warn("monitor: executing docker start", "CONTAINER", key)
 	cmd := exec.Command("docker", "start", key)
 	if err := cmd.Run(); err != nil {
-		slog.Error("monitor: docker start failed", "container", key, "error", err)
+		slog.Error("monitor: docker start failed", "CONTAINER", key, "error", err)
 	}
 }

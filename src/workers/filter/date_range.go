@@ -138,7 +138,7 @@ func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyTy
 
 func (f *DateRange) Stop() {
 	if f.syncEOFController != nil {
-		f.syncEOFController.Close()
+		f.syncEOFController.Stop()
 	}
 }
 

@@ -126,7 +126,7 @@ func (f *SyncFilter) Run() error {
 
 func (f *SyncFilter) Stop() {
 	if f.syncEOFController != nil {
-		f.syncEOFController.Close()
+		f.syncEOFController.Stop()
 	}
 }
 
