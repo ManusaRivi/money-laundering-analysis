@@ -143,6 +143,13 @@ func (f *ScatterGatherThreshold) handleTxQ4Message(envelope protocol.InternalEnv
 
 func (f *ScatterGatherThreshold) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
+
+	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(counts) {
+		delete(f.eofCounters, clientID)
+		return f.forwardFlushEOF(clientID)
+	}
+
 	f.eofCounters[clientID]++
 	slog.Debug("Received EOF packet", "clientID", clientID, "counter", f.eofCounters[clientID], "target", f.prevWorkerAmount)
 
@@ -151,7 +158,6 @@ func (f *ScatterGatherThreshold) handleEOFMessage(envelope protocol.InternalEnve
 	}
 
 	slog.Debug("All upstream EOFs received, forwarding EOF downstream", "clientID", clientID)
-	// eofMsg, err := inner.MarshalEOFPacket(clientID, domain.EOFCounts{
 
 	eofCounts := map[broker.KeyType]int{broker.KeyNil: 0}
 	eofEnvelope, err := f.pub.EncodeEOFCountsEnvelope(clientID, eofCounts)
@@ -166,6 +172,18 @@ func (f *ScatterGatherThreshold) handleEOFMessage(envelope protocol.InternalEnve
 	}
 
 	delete(f.eofCounters, clientID)
+	return f.coord.Flush()
+}
+
+func (f *ScatterGatherThreshold) forwardFlushEOF(clientID uuid.UUID) error {
+	eofEnvelope, err := f.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return fmt.Errorf("encoding flush EOF: %w", err)
+	}
+	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", f.cfg.WorkerPrefix, f.cfg.WorkerID), "eof", 0)
+	if err := f.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
+		return fmt.Errorf("sending flush EOF: %w", err)
+	}
 	return f.coord.Flush()
 }
 

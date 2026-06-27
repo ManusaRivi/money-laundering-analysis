@@ -165,6 +165,24 @@ func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyTyp
 		expectedTotal = counts[keyType]
 	}
 
+	if counts != nil && expectedTotal == -1 {
+		slog.Info("[SyncEOFController] Flush signal (-1) received, broadcasting flush",
+			"client_id", clientID,
+		)
+		c.broadcastFlush(clientID)
+		if c.onLeaderFlush != nil {
+			if err := c.onLeaderFlush(clientID, counts); err != nil {
+				slog.Error("[SyncEOFController] onLeaderFlush failed during flush signal",
+					"client_id", clientID, "err", err)
+			}
+		}
+		c.cleanupClientState(clientID)
+		if ack != nil {
+			ack()
+		}
+		return
+	}
+
 	c.mu.Lock()
 	if _, exists := c.clients[clientID]; !exists {
 		c.clients[clientID] = NewClient(clientID)

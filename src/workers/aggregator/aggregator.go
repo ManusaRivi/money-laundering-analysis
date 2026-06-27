@@ -222,6 +222,13 @@ func (a *Aggregator) handleEOFMessage(envelope protocol.InternalEnvelope) error 
 	clientID := envelope.ClientId
 	slog.Debug("Received EOF packet, processing aggregation results", "clientID", clientID)
 
+	flushCounts, err := a.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(flushCounts) {
+		delete(a.state, clientID)
+		delete(a.avgState, clientID)
+		return a.sendTransactionsEOF(clientID, -1)
+	}
+
 	if !a.grouped && a.aggFunction == opCount {
 		return a.emitUngroupedCount(clientID)
 	}

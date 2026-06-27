@@ -570,6 +570,22 @@ func (a *ScatterAndGather) FindHeavyAccountsForClient(clientID uuid.UUID) {
 func (a *ScatterAndGather) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	clientID := envelope.ClientId
 	slog.Debug("Received EOF", "clientID", clientID)
+
+	flushCounts, err := a.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(flushCounts) {
+		a.dropClientState(clientID)
+		eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: -1})
+		if err != nil {
+			return fmt.Errorf("encoding flush EOF: %w", err)
+		}
+		eofID := protocol.StageMsgID(clientID, a.stage(), "eof", 0)
+		if err := a.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
+			return fmt.Errorf("sending flush EOF: %w", err)
+		}
+		ack()
+		return a.coord.Flush()
+	}
+
 	if a.isCompleted(clientID) {
 		ack()
 		return nil

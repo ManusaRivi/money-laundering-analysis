@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -36,9 +35,6 @@ type Client struct {
 	// client's connection goroutine.
 	txSeq  uint64
 	accSeq uint64
-
-	accountsEOFSent     bool
-	transactionsEOFSent bool
 }
 
 type Gateway struct {
@@ -85,7 +81,7 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 	registry := clientregistry.NewClientRegistry()
 
 	gateway := &Gateway{config: config, registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
-	gateway.checkpoint, err = checkpoint.NewCoordinator(config.CheckpointDir, &noopCheckpointable{}, nil, newGatewayStateCheckpointable(gateway), config.CheckpointInterval)
+	gateway.checkpoint, err = checkpoint.NewCoordinator(config.CheckpointDir, &noopAppendSource{}, nil, newGatewayStateCheckpointable(gateway), config.CheckpointInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -301,17 +297,7 @@ func (gateway *Gateway) handleAccountsBatch(c *clientconnection.ClientConnection
 
 func (gateway *Gateway) handleAccountsEOF(c *clientconnection.ClientConnection) bool {
 	slog.Debug("Received accounts EOF")
-	if !gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil) {
-		return false
-	}
-	if client := gateway.getClient(c.ClientId); client != nil {
-		client.accountsEOFSent = true
-	}
-	if !gateway.persistClientState(c.ClientId) {
-		return false
-	}
-	gateway.tryDeleteCheckpoint(c.ClientId)
-	return true
+	return gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil)
 }
 
 func (gateway *Gateway) sendTransactionBatch(c *clientconnection.ClientConnection, transactions []protocol.Transaction, routingKey broker.KeyType) bool {
@@ -360,9 +346,6 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 		client.tx_count += len(transactions)
 		client.tx_usd_count += len(dollarTx)
 	}
-	if !gateway.persistClientState(c.ClientId) {
-		return false
-	}
 	// ACK to Client would be sent here?
 	return true
 }
@@ -390,29 +373,49 @@ func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnecti
 	if !gateway.sendMessageToBroker(protocol.MsgTransactionsEOF, c.ClientId, eofPayload, broker.KeyControlEOF) {
 		return false
 	}
-	client.transactionsEOFSent = true
-	if !gateway.persistClientState(c.ClientId) {
-		return false
-	}
 	gateway.tryDeleteCheckpoint(c.ClientId)
 	return true
 }
 
 func (gateway *Gateway) handleClientDisconnect(c *clientconnection.ClientConnection) bool {
-	client := gateway.getClient(c.ClientId)
-	if client == nil {
-		return true
-	}
-	slog.Info("Client disconnected before finishing, synthesizing EOFs to release downstream state", "clientId", c.ClientId)
-	ok := true
-	if !client.accountsEOFSent {
-		ok = gateway.handleAccountsEOF(c) && ok
-	}
-	if !client.transactionsEOFSent {
-		ok = gateway.handleTransactionsEOF(c) && ok
-	}
+	slog.Info("Client disconnected, sending flush EOF to release downstream state", "clientId", c.ClientId)
+	ok := gateway.sendMessageToBroker(protocol.MsgAccountsEOF, c.ClientId, nil, broker.KeyNil)
+	ok = gateway.sendFlushEOF(c.ClientId) && ok
 	gateway.tryDeleteCheckpoint(c.ClientId)
 	return ok
+}
+
+func (gateway *Gateway) sendFlushEOF(clientID uuid.UUID) bool {
+	eofPayload, err := gateway.codec.EncodeEOFCounts(map[broker.KeyType]int{
+		broker.KeyNil:                  -1,
+		broker.KeyDollarTransaction:    -1,
+		broker.KeyNonDollarTransaction: -1,
+		broker.KeyAllTransaction:       -1,
+	})
+	if err != nil {
+		slog.Error("Error marshalling flush EOF packet", "error", err)
+		return false
+	}
+	envelope, err := gateway.codec.EncodeInternalEnvelope(protocol.InternalEnvelope{
+		MsgType:  protocol.MsgTransactionsEOF,
+		ClientId: clientID,
+		Payload:  eofPayload,
+		// MsgID zero → bypasses publisher dedup downstream so it
+		// cannot collide with any batch MsgID sent before the crash.
+	})
+	if err != nil {
+		slog.Error("Error encoding flush EOF envelope", "error", err)
+		return false
+	}
+	if err := gateway.broker.Send(broker.Message{
+		RoutingKey:  broker.KeyControlEOF,
+		ContentType: broker.ContentTypeBinary,
+		Body:        envelope,
+	}); err != nil {
+		slog.Error("Error sending flush EOF to broker", "error", err)
+		return false
+	}
+	return true
 }
 
 func (gateway *Gateway) persistClientState(clientId uuid.UUID) bool {
@@ -424,13 +427,6 @@ func (gateway *Gateway) persistClientState(clientId uuid.UUID) bool {
 }
 
 func (gateway *Gateway) tryDeleteCheckpoint(clientId uuid.UUID) {
-	client := gateway.getClient(clientId)
-	if client == nil {
-		return
-	}
-	if !client.accountsEOFSent || !client.transactionsEOFSent {
-		return
-	}
 	if err := gateway.checkpoint.Delete(clientId); err != nil {
 		slog.Error("Error deleting gateway checkpoint", "clientId", clientId, "error", err)
 	}
@@ -445,25 +441,9 @@ func (gateway *Gateway) recoverPendingClients() error {
 	gateway.clientsMu.Unlock()
 
 	for _, clientID := range ids {
-		// Bump per-stream sequences by 2 so the EOF messages injected during
-		// recovery get MsgIDs that cannot collide with any batch that was
-		// sent (and possibly deduped downstream) before the crash.
-		gateway.clientsMu.Lock()
-		if c := gateway.clients[clientID]; c != nil {
-			if !c.accountsEOFSent {
-				c.accSeq += 2
-			}
-			if !c.transactionsEOFSent {
-				c.txSeq += 2
-			}
-		}
-		gateway.clientsMu.Unlock()
-
-		client := &clientconnection.ClientConnection{ClientId: clientID}
-		slog.Info("Recovering client by injecting pending EOFs", "clientId", clientID)
-		if !gateway.handleClientDisconnect(client) {
-			return errors.New("failed injecting EOFs during gateway recover")
-		}
+		slog.Info("Recovering client, sending flush EOF", "clientId", clientID)
+		gateway.sendMessageToBroker(protocol.MsgAccountsEOF, clientID, nil, broker.KeyNil)
+		gateway.sendFlushEOF(clientID)
 		if err := gateway.checkpoint.Delete(clientID); err != nil {
 			slog.Error("Error deleting recovered gateway checkpoint", "clientId", clientID, "error", err)
 		}

@@ -123,6 +123,12 @@ func (j *Query4) handleAccountsMessage(envelope protocol.InternalEnvelope) error
 
 func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientId := envelope.ClientId
+
+	flushCounts, err := j.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(flushCounts) {
+		j.eofCounters[clientId] = j.prevWorkerAmount
+	}
+
 	j.eofCounters[clientId]++
 	if j.eofCounters[clientId] < j.prevWorkerAmount {
 		slog.Debug("Received EOF from a worker, waiting for more...", "clientID", clientId, "count", j.eofCounters[clientId])
@@ -169,7 +175,7 @@ func (j *Query4) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 
 	// eof, err := inner.MarshalQuery4EOFPacket(pkt.ClientID)
 	eofID := protocol.StageMsgID(clientId, j.stage, "eof", 0)
-	err := j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
+	err = j.pub.PublishInternalWithID(clientId, protocol.MsgQuery4ResultEOF, broker.KeyControlEOF, nil, eofID)
 	if err != nil {
 		return err
 	}
