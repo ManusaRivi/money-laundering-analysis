@@ -34,6 +34,7 @@ type client struct {
 }
 
 var _ checkpoint.Checkpointable = (*ScatterAndGather)(nil)
+var _ checkpoint.AppendSource = (*ScatterAndGather)(nil)
 
 // Account -> set of Accounts (can be scatter or gather)
 type accountAdjacency struct {
@@ -75,6 +76,9 @@ type ScatterAndGather struct {
 
 	completedMu sync.Mutex
 	completed   map[uuid.UUID]struct{}
+
+	pendingScatter map[uuid.UUID]map[domain.Account]accountSet
+	pendingGather  map[uuid.UUID]map[domain.Account]accountSet
 }
 
 func NewScatterAndGather(cfg config.WorkerConfig, b broker.Broker, rabbitURL string) (*ScatterAndGather, error) {
@@ -102,6 +106,8 @@ func NewScatterAndGather(cfg config.WorkerConfig, b broker.Broker, rabbitURL str
 		peerCh:           make(chan peerMessage, peerChanBuffer),
 		pendingAcks:      make(map[uuid.UUID]func()),
 		completed:        make(map[uuid.UUID]struct{}),
+		pendingScatter:   make(map[uuid.UUID]map[domain.Account]accountSet),
+		pendingGather:    make(map[uuid.UUID]map[domain.Account]accountSet),
 	}
 	a.monitor = NewHeavyAccountsMonitor(cfg.WorkerID, cfg.WorkerAmount)
 	return a, nil
@@ -129,7 +135,7 @@ func (a *ScatterAndGather) Run() error {
 		a.exchange.StopConsuming()
 	}()
 
-	coord, err := checkpoint.NewCoordinator(a.cfg.CheckpointDir, a.pub, nil, a, a.cfg.CheckpointInterval)
+	coord, err := checkpoint.NewCoordinator(a.cfg.CheckpointDir, a, nil, a, a.cfg.CheckpointInterval)
 	if err != nil {
 		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
@@ -219,9 +225,6 @@ func (a *ScatterAndGather) processPeerMessage(pm peerMessage) {
 		pm.ack()
 		return
 	}
-	// Barrier already finished and the checkpoint was deleted. A late/duplicate peer
-	// message (e.g. a peer that restarted and re-broadcast) must be dropped, not
-	// resurrect fresh state that can never complete.
 	if a.isCompleted(pm.clientID) {
 		pm.ack()
 		return
@@ -253,28 +256,17 @@ func (a *ScatterAndGather) SnapshotClient(clientID uuid.UUID) ([]byte, error) {
 		return json.Marshal(scatterGatherCheckpoint{Completed: true})
 	}
 
-	a.clientsMu.Lock()
-	client, ok := a.clients[clientID]
-	a.clientsMu.Unlock()
-
 	degree, hasDegree := a.monitor.Snapshot(clientID)
-	if !ok && !hasDegree {
+	if !hasDegree {
 		return nil, nil
 	}
-
-	var cp scatterGatherCheckpoint
-	if ok {
-		cp.ScatterGroups = adjacencyToSlice(client.scatterGroups)
-		cp.GatherGroups = adjacencyToSlice(client.gatherGroups)
-	}
-	if hasDegree {
-		cp.HeavySources = degree.HeavySrcs
-		cp.HeavySinks = degree.HeavySinks
-		cp.DonePeers = degree.DonePeers
-		cp.LocalDone = degree.LocalDone
-		cp.Sealed = degree.Sealed
-	}
-	return json.Marshal(cp)
+	return json.Marshal(scatterGatherCheckpoint{
+		HeavySources: degree.HeavySrcs,
+		HeavySinks:   degree.HeavySinks,
+		DonePeers:    degree.DonePeers,
+		LocalDone:    degree.LocalDone,
+		Sealed:       degree.Sealed,
+	})
 }
 
 func (a *ScatterAndGather) RestoreClient(clientID uuid.UUID, data []byte) error {
@@ -292,12 +284,6 @@ func (a *ScatterAndGather) RestoreClient(clientID uuid.UUID, data []byte) error 
 		return nil
 	}
 
-	if len(cp.ScatterGroups) > 0 || len(cp.GatherGroups) > 0 {
-		client := a.getClient(clientID)
-		client.scatterGroups = adjacencyFromSlice(cp.ScatterGroups)
-		client.gatherGroups = adjacencyFromSlice(cp.GatherGroups)
-	}
-
 	if cp.Sealed || cp.LocalDone || len(cp.HeavySources) > 0 || len(cp.HeavySinks) > 0 || len(cp.DonePeers) > 0 {
 		a.monitor.Restore(clientID, degreeStateSnapshot{
 			HeavySrcs:  cp.HeavySources,
@@ -307,6 +293,38 @@ func (a *ScatterAndGather) RestoreClient(clientID uuid.UUID, data []byte) error 
 			Sealed:     cp.Sealed,
 		})
 	}
+	return nil
+}
+
+func (a *ScatterAndGather) DrainClient(clientID uuid.UUID) ([]byte, error) {
+	ps := a.pendingScatter[clientID]
+	pg := a.pendingGather[clientID]
+	if len(ps) == 0 && len(pg) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(scatterGatherCheckpoint{
+		ScatterGroups: adjacencyToSlice(ps),
+		GatherGroups:  adjacencyToSlice(pg),
+	})
+}
+
+func (a *ScatterAndGather) CommitClient(clientID uuid.UUID) error {
+	delete(a.pendingScatter, clientID)
+	delete(a.pendingGather, clientID)
+	return nil
+}
+
+func (a *ScatterAndGather) ReplayClient(clientID uuid.UUID, record []byte) error {
+	if len(record) == 0 || a.isCompleted(clientID) {
+		return nil
+	}
+	var cp scatterGatherCheckpoint
+	if err := json.Unmarshal(record, &cp); err != nil {
+		return err
+	}
+	client := a.getClient(clientID)
+	mergeAdjacency(client.scatterGroups, cp.ScatterGroups)
+	mergeAdjacency(client.gatherGroups, cp.GatherGroups)
 	return nil
 }
 
@@ -325,16 +343,31 @@ func adjacencyToSlice(groups map[domain.Account]accountSet) []accountAdjacency {
 	return out
 }
 
-func adjacencyFromSlice(entries []accountAdjacency) map[domain.Account]accountSet {
-	groups := make(map[domain.Account]accountSet, len(entries))
+func (a *ScatterAndGather) bufferEdge(buf map[uuid.UUID]map[domain.Account]accountSet, clientID uuid.UUID, key, neighbor domain.Account) {
+	groups := buf[clientID]
+	if groups == nil {
+		groups = make(map[domain.Account]accountSet)
+		buf[clientID] = groups
+	}
+	set := groups[key]
+	if set == nil {
+		set = make(accountSet)
+		groups[key] = set
+	}
+	set[neighbor] = struct{}{}
+}
+
+func mergeAdjacency(groups map[domain.Account]accountSet, entries []accountAdjacency) {
 	for _, e := range entries {
-		set := make(accountSet, len(e.Neighbors))
+		set := groups[e.Account]
+		if set == nil {
+			set = make(accountSet)
+			groups[e.Account] = set
+		}
 		for _, n := range e.Neighbors {
 			set[n] = struct{}{}
 		}
-		groups[e.Account] = set
 	}
-	return groups
 }
 
 func accountSetToSlice(set map[domain.Account]struct{}) []domain.Account {
@@ -396,7 +429,10 @@ func (a *ScatterAndGather) handleScatterTx(tx *protocol.Transaction, clientID uu
 		set = make(accountSet)
 		client.scatterGroups[srcAcc] = set
 	}
-	set[dstAcc] = struct{}{}
+	if _, present := set[dstAcc]; !present {
+		set[dstAcc] = struct{}{}
+		a.bufferEdge(a.pendingScatter, clientID, srcAcc, dstAcc)
+	}
 	return nil
 }
 
@@ -417,7 +453,10 @@ func (a *ScatterAndGather) handleGatherTx(tx *protocol.Transaction, clientID uui
 		set = make(accountSet)
 		client.gatherGroups[dstAcc] = set
 	}
-	set[srcAcc] = struct{}{}
+	if _, present := set[srcAcc]; !present {
+		set[srcAcc] = struct{}{}
+		a.bufferEdge(a.pendingGather, clientID, dstAcc, srcAcc)
+	}
 	return nil
 }
 
@@ -644,17 +683,10 @@ func (a *ScatterAndGather) dropClientState(clientID uuid.UUID) {
 	a.clientsMu.Lock()
 	delete(a.clients, clientID)
 	a.clientsMu.Unlock()
+	delete(a.pendingScatter, clientID)
+	delete(a.pendingGather, clientID)
 	a.monitor.Forget(clientID)
 	a.pub.Forget(clientID)
-}
-
-func (a *ScatterAndGather) gcCompleted(clientID uuid.UUID) error {
-	a.forgetCompleted(clientID)
-	if err := a.coord.Delete(clientID); err != nil {
-		slog.Error("Error deleting completed client checkpoint", "clientID", clientID, "error", err)
-		return err
-	}
-	return nil
 }
 
 func (a *ScatterAndGather) shardByValue(value string) string {

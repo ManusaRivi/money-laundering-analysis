@@ -177,12 +177,9 @@ func (co *Coordinator) Recover() error {
 		if err := co.seenStore.Truncate(key, committedGen); err != nil {
 			return fmt.Errorf("recover truncate seen %s: %w", key, err)
 		}
-		for _, rec := range recs {
-			if err := co.seen.ReplayClient(clientID, rec.Payload); err != nil {
-				return fmt.Errorf("recover replay seen %s: %w", key, err)
-			}
-		}
-
+		// Restore the overwrite slots before replaying the seen log: a slot whose
+		// state carries a terminal marker (e.g. the SaG's completed tombstone) can
+		// then have ReplayClient skip rebuilding append-only state it no longer needs.
 		if co.state != nil {
 			if err := co.restoreOverwrite(co.stateStore, co.state, clientID, key, committedGen); err != nil {
 				return fmt.Errorf("recover state %s: %w", key, err)
@@ -191,6 +188,12 @@ func (co *Coordinator) Recover() error {
 		if co.eof != nil {
 			if err := co.restoreOverwrite(co.eofStore, co.eof, clientID, key, committedGen); err != nil {
 				return fmt.Errorf("recover eof %s: %w", key, err)
+			}
+		}
+
+		for _, rec := range recs {
+			if err := co.seen.ReplayClient(clientID, rec.Payload); err != nil {
+				return fmt.Errorf("recover replay seen %s: %w", key, err)
 			}
 		}
 

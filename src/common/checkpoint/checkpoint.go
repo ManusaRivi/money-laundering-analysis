@@ -77,39 +77,3 @@ func readField(data []byte) ([]byte, []byte, error) {
 	}
 	return data[:n], data[n:], nil
 }
-
-type Manager struct {
-	store *FileStore
-}
-
-func NewManager(dir string) (*Manager, error) {
-	store, err := NewFileStore(dir)
-	if err != nil {
-		return nil, err
-	}
-	return &Manager{store: store}, nil
-}
-
-func (m *Manager) Save(clientID string, cp Checkpoint) error {
-	return m.store.Save(clientID, cp.Encode())
-}
-
-func (m *Manager) Load(clientID string) (Checkpoint, bool, error) {
-	data, ok, err := m.store.Load(clientID)
-	if err != nil || !ok {
-		return Checkpoint{}, ok, err
-	}
-	cp, err := Decode(data)
-	if err != nil {
-		return Checkpoint{}, false, err
-	}
-	return cp, true, nil
-}
-
-func (m *Manager) Delete(clientID string) error {
-	return m.store.Delete(clientID)
-}
-
-func (m *Manager) Keys() ([]string, error) {
-	return m.store.Keys()
-}

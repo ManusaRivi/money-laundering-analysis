@@ -24,12 +24,8 @@ const (
 	recordHeaderLen = 4 + 8 + 4
 )
 
-// crcTable is Castagnoli (crc32c) — cheap, hardware-accelerated, and used to
-// detect a torn trailing record in an append-only log after a crash.
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
-// baseStore holds the bits every store shares: the directory it owns, a mutex
-// serialising its writers, and the directory/listing/path helpers.
 type baseStore struct {
 	dir string
 	mu  sync.Mutex
@@ -46,8 +42,6 @@ func (s *baseStore) path(key, ext string) string {
 	return filepath.Join(s.dir, key+ext)
 }
 
-// syncDir fsyncs the directory so a create/rename/delete of a file within it is
-// itself durable — fsyncing the file alone does not persist its directory entry.
 func (s *baseStore) syncDir() error {
 	d, err := os.Open(s.dir)
 	if err != nil {
@@ -83,9 +77,6 @@ func validKey(key string) error {
 	return nil
 }
 
-// writeFileSync writes data to path (truncating any existing file), fsyncs the
-// file, and closes it. It does not fsync the directory; callers that need the
-// new directory entry to be durable must call syncDir themselves.
 func writeFileSync(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -131,84 +122,6 @@ func removeIfExists(path string) (bool, error) {
 	return false, err
 }
 
-// FileStore is the legacy single-blob overwrite store. It is retained only so the
-// existing Manager keeps working until the coordinator is rewired onto
-// OverwriteStore/AppendStore, after which FileStore and Manager are both removed.
-type FileStore struct {
-	baseStore
-}
-
-func NewFileStore(dir string) (*FileStore, error) {
-	if err := ensureDir(dir); err != nil {
-		return nil, err
-	}
-	return &FileStore{baseStore: baseStore{dir: dir}}, nil
-}
-
-func (s *FileStore) Save(key string, data []byte) error {
-	if err := validKey(key); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tmp := s.path(key, tmpExt)
-	if err := writeFileSync(tmp, data); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, s.path(key, fileExt)); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming checkpoint: %w", err)
-	}
-	return s.syncDir()
-}
-
-func (s *FileStore) Load(key string) ([]byte, bool, error) {
-	if err := validKey(key); err != nil {
-		return nil, false, err
-	}
-	data, err := os.ReadFile(s.path(key, fileExt))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("reading checkpoint: %w", err)
-	}
-	return data, true, nil
-}
-
-func (s *FileStore) Delete(key string) error {
-	if err := validKey(key); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	removed, err := removeIfExists(s.path(key, fileExt))
-	if err != nil {
-		return fmt.Errorf("deleting checkpoint: %w", err)
-	}
-	if removed {
-		return s.syncDir()
-	}
-	return nil
-}
-
-func (s *FileStore) Keys() ([]string, error) {
-	return s.listKeys(fileExt)
-}
-
-// OverwriteStore is a double-buffered, generation-stamped overwrite store for
-// state that is fully rewritten each checkpoint (max/avg/count aggregates, eof
-// counters). A checkpoint is written in two phases so it can be reconciled
-// against the commit marker after a crash:
-//
-//	Stage   — write key.ckpt.tmp {version|gen|data}; the live key.ckpt is untouched.
-//	Promote — once the generation is committed, rename key.ckpt.tmp -> key.ckpt.
-//
-// The previous committed file survives the whole Stage window, so a flush that
-// crashes before it commits rolls back to it; one that commits but crashes before
-// Promote is finished idempotently on recovery.
 type OverwriteStore struct {
 	baseStore
 }
@@ -220,10 +133,6 @@ func NewOverwriteStore(dir string) (*OverwriteStore, error) {
 	return &OverwriteStore{baseStore: baseStore{dir: dir}}, nil
 }
 
-// Stage writes the staged checkpoint for the next generation. The staged file and
-// its directory entry are made durable here, because the commit (the seen frame)
-// is appended afterwards: were the stage lost, the commit could point at state
-// that no longer exists, silently dropping that generation.
 func (s *OverwriteStore) Stage(key string, gen uint64, data []byte) error {
 	if err := validKey(key); err != nil {
 		return err
@@ -237,11 +146,6 @@ func (s *OverwriteStore) Stage(key string, gen uint64, data []byte) error {
 	return s.syncDir()
 }
 
-// Promote reconciles the staged file against the committed generation. If the
-// stage carries the committed generation it is materialised (rename -> key.ckpt);
-// otherwise — no stage, a torn stage, or a generation that never committed — any
-// staged file is dropped so it can never be mistaken for committed state. The
-// coordinator calls this both in a flush's apply phase and during recovery.
 func (s *OverwriteStore) Promote(key string, committedGen uint64) error {
 	if err := validKey(key); err != nil {
 		return err
@@ -333,9 +237,6 @@ func decodeOverwrite(raw []byte) ([]byte, uint64, error) {
 	return raw[overwriteHeaderLen:], binary.BigEndian.Uint64(raw[1:overwriteHeaderLen]), nil
 }
 
-// readOverwriteHeader reads only the {version|gen} header of a staged file, so
-// Promote can decide without loading a potentially large state body. valid is
-// false when the file is absent or its header is torn/unrecognised.
 func readOverwriteHeader(path string) (gen uint64, valid bool, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -365,10 +266,6 @@ type Record struct {
 	Payload []byte
 }
 
-// AppendStore is a generation-stamped, append-only record log for state that
-// grows monotonically (dedup seen sets, scatter/gather accumulations). Each flush
-// appends one framed record; recovery keeps records up to the committed
-// generation and truncates the staged-but-uncommitted tail.
 type AppendStore struct {
 	baseStore
 }
@@ -380,10 +277,6 @@ func NewAppendStore(dir string) (*AppendStore, error) {
 	return &AppendStore{baseStore: baseStore{dir: dir}}, nil
 }
 
-// Append writes one framed record and fsyncs the log. A brand-new log also fsyncs
-// the directory so its entry is durable; appends to an existing log are covered by
-// the file fsync. The frame's length and crc make a torn tail detectable, which
-// is what makes the write crash-safe (O_APPEND alone is not).
 func (s *AppendStore) Append(key string, gen uint64, payload []byte) error {
 	if err := validKey(key); err != nil {
 		return err
@@ -419,10 +312,6 @@ func (s *AppendStore) Append(key string, gen uint64, payload []byte) error {
 	return nil
 }
 
-// Load returns every intact record in order and the highest generation seen. It
-// stops at the first torn/corrupt frame (the end of the durable prefix) and does
-// not modify the file. For the seen log, the returned maxGen is the committed
-// generation watermark.
 func (s *AppendStore) Load(key string) ([]Record, uint64, error) {
 	if err := validKey(key); err != nil {
 		return nil, 0, err
@@ -456,9 +345,6 @@ func (s *AppendStore) Load(key string) ([]Record, uint64, error) {
 	return recs, maxGen, nil
 }
 
-// Truncate drops every record with gen > committedGen along with any torn trailing
-// bytes, leaving the log at exactly the committed prefix. It is idempotent: a
-// crash mid-truncate re-derives the same cut on the next run.
 func (s *AppendStore) Truncate(key string, committedGen uint64) error {
 	if err := validKey(key); err != nil {
 		return err
@@ -525,9 +411,6 @@ func encodeRecord(gen uint64, payload []byte) []byte {
 	return rec
 }
 
-// decodeRecordAt parses the framed record at off. ok is false when there is no
-// intact record there — a torn length/payload or a crc mismatch — which for an
-// append-only log marks the end of the durable prefix.
 func decodeRecordAt(raw []byte, off int) (gen uint64, payload []byte, next int, ok bool) {
 	if off+recordHeaderLen > len(raw) {
 		return 0, nil, off, false
