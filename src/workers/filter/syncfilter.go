@@ -109,7 +109,7 @@ func (f *SyncFilter) Run() error {
 	go f.syncEOFController.Start()
 
 	return f.Broker.StartConsuming(func(msg broker.Message, ack func(), nack func()) {
-		clientID, msgType, err := f.handleMessage(msg)
+		clientID, msgType, err := f.handleMessage(msg, ack)
 		if err != nil {
 			slog.Error("Error handling message", "error", err)
 			nack()
@@ -254,7 +254,7 @@ func (f *SyncFilter) forwardQuery1ResultBatchMessage(transactions []protocol.Tra
 	return f.encodeAndSendBatch(clientID, protocol.MsgQuery1Result, resultsBytes, len(results), resultID)
 }
 
-func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
+func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	// El filtro sincronizado no necesita hacer nada especial con los mensajes EOF, simplemente los propaga usando el EOFBroker.
 	slog.Debug("Received EOF packet, beginning syncing...")
 	counts, err := f.pub.DecodeEOFCounts(envelope.Payload)
@@ -263,7 +263,7 @@ func (f *SyncFilter) handleEOFMessage(envelope protocol.InternalEnvelope) error 
 		return err
 	}
 	f.coord.Flush()
-	f.syncEOFController.SyncEof(envelope.ClientId, counts, f.syncEOFKey)
+	f.syncEOFController.SyncEof(envelope.ClientId, counts, f.syncEOFKey, ack)
 	return nil
 }
 
@@ -285,13 +285,13 @@ func (f *SyncFilter) handleTransactionsBatchMessage(envelope protocol.InternalEn
 	return nil
 }
 
-func (f *SyncFilter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+func (f *SyncFilter) handleMessage(msg broker.Message, ack func()) (uuid.UUID, protocol.MsgType, error) {
 	if msg.ContentType != broker.ContentTypeBinary {
 		return uuid.Nil, protocol.MsgType(0), fmt.Errorf("unexpected content type: %v", msg.ContentType)
 	}
 
 	return f.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: f.handleTransactionsBatchMessage,
-		protocol.MsgTransactionsEOF:   f.handleEOFMessage,
+		protocol.MsgTransactionsEOF:   func(envelope protocol.InternalEnvelope) error { return f.handleEOFMessage(envelope, ack) },
 	})
 }

@@ -85,14 +85,14 @@ func (r *Spliter) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, msgType, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg, ack)
 		if err != nil {
 			nack()
 			return
 		}
-		r.coord.Track(clientID, ack)
-		if msgType == protocol.MsgTransactionsEOF {
-			r.coord.Flush()
+		// Avoid tracking an EOF message so it's not flushed. The eof ack is called by the syncEOFController.
+		if msgType != protocol.MsgTransactionsEOF {
+			r.coord.Track(clientID, ack)
 		}
 	})
 }
@@ -206,20 +206,20 @@ func (r *Spliter) handleTransactionBatchMessage(envelope protocol.InternalEnvelo
 	return nil
 }
 
-func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
+func (r *Spliter) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	eofCounts, err := r.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
 		slog.Error("Error decoding EOF counts", "error", err)
 		return err
 	}
 	r.coord.Flush()
-	r.syncEOFController.SyncEof(envelope.ClientId, eofCounts, r.syncEOFKey)
+	r.syncEOFController.SyncEof(envelope.ClientId, eofCounts, r.syncEOFKey, ack)
 	return nil
 }
 
-func (r *Spliter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+func (r *Spliter) handleMessage(msg broker.Message, ack func()) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionBatchMessage,
-		protocol.MsgTransactionsEOF:   r.handleEOFMessage,
+		protocol.MsgTransactionsEOF:   func(envelope protocol.InternalEnvelope) error { return r.handleEOFMessage(envelope, ack) },
 	})
 }

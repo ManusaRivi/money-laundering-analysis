@@ -29,6 +29,8 @@ type client struct {
 	expectedTotal  int                                       // total_messages que espera recibir el cluster para flushear
 	retryCount     int                                       // cantidad de reintentos de amount request
 
+	isLeader  bool
+	eofAck    func()
 	nodesInfo map[int]nodeInfo // senderID -> nodeInfo
 }
 
@@ -62,6 +64,8 @@ func NewClient(clientID uuid.UUID) *client {
 		msgRcvByID:     make(map[protocol.MsgID]int),
 		msgSentByKeyID: make(map[broker.KeyType]map[protocol.MsgID]int),
 		nodesInfo:      make(map[int]nodeInfo),
+		isLeader:       false,
+		eofAck:         nil,
 	}
 }
 
@@ -153,7 +157,7 @@ func (c *SyncEOFController) MessageSentWithKey(clientID uuid.UUID, keyType broke
 }
 
 // SyncEof inicia el proceso de sincronizacion con key Nil. Se llama cuando un nodo asume el rol de lider.
-func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyType]int, keyType broker.KeyType) {
+func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyType]int, keyType broker.KeyType, ack func()) {
 	expectedTotal := 0
 	if counts != nil {
 		expectedTotal = counts[keyType]
@@ -167,6 +171,8 @@ func (c *SyncEOFController) SyncEof(clientID uuid.UUID, counts map[broker.KeyTyp
 	client := c.clients[clientID]
 	client.expectedTotal = expectedTotal
 	client.retryCount = 0
+	client.isLeader = true
+	client.eofAck = ack
 	c.mu.Unlock()
 
 	slog.Debug("[SyncEOFController] SyncEof started",
@@ -258,6 +264,13 @@ func (c *SyncEOFController) processAmountRequest(msg ControlMessage) {
 func (c *SyncEOFController) processAmountResponse(msg ControlMessage) {
 	c.mu.Lock()
 	client := c.clients[msg.ClientID]
+	// If this node was leader, requested amounts then crashed, initial EOF was processed by another node,
+	// and now this node is receiving amount responses from other nodes for a client that it is not leading anymore.
+	if client == nil || !client.isLeader {
+		c.mu.Unlock()
+		slog.Debug("[SyncEOFController] Ignoring amount response, not leading", "client_id", msg.ClientID, "sender_id", msg.SenderID)
+		return
+	}
 	info := client.nodesInfo[msg.SenderID]
 	info.rcvByID = decodeIDCounts(msg.ReceivedIDs)
 	info.sentByKeyID = decodeSentIDCounts(msg.SentIDsByKey)
@@ -402,9 +415,17 @@ func (c *SyncEOFController) runRetryExceededCallback(clientID uuid.UUID) {
 
 func (c *SyncEOFController) cleanupClientState(clientID uuid.UUID) {
 	c.mu.Lock()
+	var ack func()
+	if client, ok := c.clients[clientID]; ok && client.isLeader {
+		ack = client.eofAck
+	}
 	delete(c.clients, clientID)
 	c.mu.Unlock()
 	slog.Debug("[SyncEOFController] Client state cleaned", "client_id", clientID)
+	if ack != nil {
+		slog.Debug("[SyncEOFController] Calling leader EOF ack", "client_id", clientID)
+		ack()
+	}
 }
 
 type clientCheckpoint struct {

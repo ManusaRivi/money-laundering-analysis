@@ -86,14 +86,13 @@ func (r *Router) Run() error {
 	go r.syncEOFController.Start()
 
 	return r.Broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
-		clientID, msgType, err := r.handleMessage(msg)
+		clientID, msgType, err := r.handleMessage(msg, ack)
 		if err != nil {
 			nack()
 			return
 		}
-		r.coord.Track(clientID, ack)
-		if msgType == protocol.MsgTransactionsEOF {
-			r.coord.Flush()
+		if msgType != protocol.MsgTransactionsEOF {
+			r.coord.Track(clientID, ack)
 		}
 	})
 }
@@ -191,7 +190,7 @@ func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) er
 	return nil
 }
 
-func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
+func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope, ack func()) error {
 	slog.Debug("Received EOF packet, beginning syncing...", "clientId", envelope.ClientId)
 	counts, err := r.pub.DecodeEOFCounts(envelope.Payload)
 	if err != nil {
@@ -199,13 +198,13 @@ func (r *Router) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	r.coord.Flush()
-	r.syncEOFController.SyncEof(envelope.ClientId, counts, r.syncEOFKey)
+	r.syncEOFController.SyncEof(envelope.ClientId, counts, r.syncEOFKey, ack)
 	return nil
 }
 
-func (r *Router) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
+func (r *Router) handleMessage(msg broker.Message, ack func()) (uuid.UUID, protocol.MsgType, error) {
 	return r.pub.Dispatch(msg, map[protocol.MsgType]messaging.Handler{
 		protocol.MsgTransactionsBatch: r.handleTransactionMessage,
-		protocol.MsgTransactionsEOF:   r.handleEOFMessage,
+		protocol.MsgTransactionsEOF:   func(envelope protocol.InternalEnvelope) error { return r.handleEOFMessage(envelope, ack) },
 	})
 }
