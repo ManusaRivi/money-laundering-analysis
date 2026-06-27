@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -10,6 +12,8 @@ import (
 	"syscall"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
+	"github.com/ManusaRivi/money-laundering-analysis/src/common/monitoring"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/protocol/codec"
 	"github.com/ManusaRivi/money-laundering-analysis/src/gateway/config"
@@ -19,6 +23,8 @@ import (
 )
 
 const Dollar = "US Dollar"
+const GatewayMonitorPrefix = "gateway"
+const GatewayMonitorID = 0
 
 type Client struct {
 	ID           uuid.UUID
@@ -39,7 +45,9 @@ type Gateway struct {
 	registry       *clientregistry.ClientRegistry
 	broker         broker.Broker
 	accountsBroker broker.Broker
+	checkpoint     *checkpoint.Coordinator
 	listener       net.Listener
+	mlCancel       context.CancelFunc
 	running        atomic.Bool
 	codec          codec.Codec
 	clientsMu      sync.Mutex
@@ -75,16 +83,39 @@ func NewGateway(config *config.GatewayConfig) (*Gateway, error) {
 
 	registry := clientregistry.NewClientRegistry()
 
-	gateway := &Gateway{registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
+	cpManager, err := checkpoint.NewManager(config.CheckpointDir)
+	if err != nil {
+		return nil, err
+	}
+
+	gateway := &Gateway{config: config, registry: &registry, broker: mainBroker, accountsBroker: accountsBroker, listener: listener, codec: codec.New(), clients: make(map[uuid.UUID]*Client), seenResults: make(map[uuid.UUID]map[protocol.MsgID]struct{})}
+	gateway.checkpoint = checkpoint.NewCoordinator(cpManager, &noopCheckpointable{}, nil, newGatewayStateCheckpointable(gateway), config.CheckpointInterval)
 	gateway.running.Store(true)
 	return gateway, nil
 }
 
 func (gateway *Gateway) Run() error {
 	defer func() {
+		if gateway.mlCancel != nil {
+			gateway.mlCancel()
+		}
 		gateway.listener.Close()
 		gateway.broker.StopConsuming()
 	}()
+
+	if gateway.config.Monitoring != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		gateway.mlCancel = cancel
+		go monitoring.Listen(ctx, gateway.config.Monitoring.Port, GatewayMonitorPrefix, GatewayMonitorID)
+	}
+
+	if err := gateway.checkpoint.Recover(); err != nil {
+		return err
+	}
+	if err := gateway.recoverPendingClients(); err != nil {
+		return err
+	}
+
 	go gateway.broker.StartConsuming(func(msg broker.Message, ack, nack func()) {
 		gateway.handleClientResponse(msg, ack, nack)
 	})
@@ -117,8 +148,15 @@ func (gateway *Gateway) Run() error {
 			tx_usd_count: 0,
 		}
 		gateway.clientsMu.Unlock()
+		if !gateway.persistClientState(clientId) {
+			gateway.forgetClient(clientId)
+			gateway.registry.Remove(client)
+			client.Conn.Close()
+			continue
+		}
 
 		go func() {
+			defer gateway.tryDeleteCheckpoint(clientId)
 			defer gateway.forgetClient(clientId)
 			defer gateway.registry.Remove(client)
 			defer client.Conn.Close()
@@ -186,6 +224,9 @@ func (gateway *Gateway) handleSignals() {
 	<-signals
 	slog.Info("SIGTERM signal received")
 	gateway.running.Store(false)
+	if gateway.mlCancel != nil {
+		gateway.mlCancel()
+	}
 	gateway.listener.Close()
 }
 
@@ -239,6 +280,10 @@ func (gateway *Gateway) sendMessageToBroker(msgType protocol.MsgType, clientId u
 		Body:        envelope,
 	}
 	if msgType == protocol.MsgAccountsBatch || msgType == protocol.MsgAccountsEOF {
+		if gateway.accountsBroker == nil {
+			slog.Error("accounts broker not configured", "msgType", msgType)
+			return false
+		}
 		err = gateway.accountsBroker.Send(brokerMsg)
 	} else {
 		err = gateway.broker.Send(brokerMsg)
@@ -263,6 +308,10 @@ func (gateway *Gateway) handleAccountsEOF(c *clientconnection.ClientConnection) 
 	if client := gateway.getClient(c.ClientId); client != nil {
 		client.accountsEOFSent = true
 	}
+	if !gateway.persistClientState(c.ClientId) {
+		return false
+	}
+	gateway.tryDeleteCheckpoint(c.ClientId)
 	return true
 }
 
@@ -305,6 +354,9 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 		client.tx_count += len(transactions)
 		client.tx_usd_count += len(dollarTx)
 	}
+	if !gateway.persistClientState(c.ClientId) {
+		return false
+	}
 	// ACK to Client would be sent here?
 	return true
 }
@@ -333,21 +385,71 @@ func (gateway *Gateway) handleTransactionsEOF(c *clientconnection.ClientConnecti
 		return false
 	}
 	client.transactionsEOFSent = true
+	if !gateway.persistClientState(c.ClientId) {
+		return false
+	}
+	gateway.tryDeleteCheckpoint(c.ClientId)
 	return true
 }
 
-func (gateway *Gateway) handleClientDisconnect(c *clientconnection.ClientConnection) {
+func (gateway *Gateway) handleClientDisconnect(c *clientconnection.ClientConnection) bool {
 	client := gateway.getClient(c.ClientId)
+	if client == nil {
+		return true
+	}
+	slog.Info("Client disconnected before finishing, synthesizing EOFs to release downstream state", "clientId", c.ClientId)
+	ok := true
+	if !client.accountsEOFSent {
+		ok = gateway.handleAccountsEOF(c) && ok
+	}
+	if !client.transactionsEOFSent {
+		ok = gateway.handleTransactionsEOF(c) && ok
+	}
+	gateway.tryDeleteCheckpoint(c.ClientId)
+	return ok
+}
+
+func (gateway *Gateway) persistClientState(clientId uuid.UUID) bool {
+	if err := gateway.checkpoint.SaveClient(clientId); err != nil {
+		slog.Error("Error saving gateway checkpoint", "clientId", clientId, "error", err)
+		return false
+	}
+	return true
+}
+
+func (gateway *Gateway) tryDeleteCheckpoint(clientId uuid.UUID) {
+	client := gateway.getClient(clientId)
 	if client == nil {
 		return
 	}
-	slog.Info("Client disconnected before finishing, synthesizing EOFs to release downstream state", "clientId", c.ClientId)
-	if !client.accountsEOFSent {
-		gateway.handleAccountsEOF(c)
+	if !client.accountsEOFSent || !client.transactionsEOFSent {
+		return
 	}
-	if !client.transactionsEOFSent {
-		gateway.handleTransactionsEOF(c)
+	if err := gateway.checkpoint.Delete(clientId); err != nil {
+		slog.Error("Error deleting gateway checkpoint", "clientId", clientId, "error", err)
 	}
+}
+
+func (gateway *Gateway) recoverPendingClients() error {
+	gateway.clientsMu.Lock()
+	ids := make([]uuid.UUID, 0, len(gateway.clients))
+	for id := range gateway.clients {
+		ids = append(ids, id)
+	}
+	gateway.clientsMu.Unlock()
+
+	for _, clientID := range ids {
+		client := &clientconnection.ClientConnection{ClientId: clientID}
+		slog.Info("Recovering client by injecting pending EOFs", "clientId", clientID)
+		if !gateway.handleClientDisconnect(client) {
+			return errors.New("failed injecting EOFs during gateway recover")
+		}
+		if err := gateway.checkpoint.Delete(clientID); err != nil {
+			slog.Error("Error deleting recovered gateway checkpoint", "clientId", clientID, "error", err)
+		}
+		gateway.forgetClient(clientID)
+	}
+	return nil
 }
 
 /*
@@ -397,7 +499,10 @@ func (gateway *Gateway) forwardResponse(msg broker.Message, ack, nack func()) {
 		Payload: envelope.Payload,
 	}); err != nil {
 		slog.Error("Error forwarding binary result to client", "clientId", envelope.ClientId, "err", err)
-		nack()
+		gateway.registry.Remove(client)
+		gateway.forgetClient(envelope.ClientId)
+		delete(gateway.seenResults, envelope.ClientId)
+		ack()
 		return
 	}
 	if deduped {

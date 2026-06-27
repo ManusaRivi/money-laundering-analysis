@@ -10,3 +10,7 @@ broker:
 
 server_host: "0.0.0.0"
 server_port: 8080
+checkpoint_interval: 100
+
+monitoring:
+  port: 9000
