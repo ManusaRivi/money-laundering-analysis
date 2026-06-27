@@ -28,7 +28,6 @@ services:
       - LOG_LEVEL=debug
       - ACCOUNTS_CONFIG_PATH=/app/accounts_queue_config.yaml
       - CHECKPOINT_DIR=/app/checkpoints
-      - SNIPER=true
     volumes:
       - ./configs/gateway.yaml:/app/config.yaml
       - ./configs/system.yaml:/app/system.yaml:ro

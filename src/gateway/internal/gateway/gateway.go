@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/broker"
 	"github.com/ManusaRivi/money-laundering-analysis/src/common/checkpoint"
@@ -349,11 +350,11 @@ func (gateway *Gateway) handleTransactionsBatch(c *clientconnection.ClientConnec
 		return false
 	}
 	
-	// if os.Getenv("SNIPER") == "true" {
-	// 	slog.Warn("[SNIPER] Sleeping to allow sniper to acquire target...")
-	// 	time.Sleep(500 * time.Millisecond)
-	// 	slog.Info("I survived the Sniper")
-	// }
+	if os.Getenv("SNIPER") == "true" {
+		slog.Warn("[SNIPER] Sleeping to allow sniper to acquire target...")
+		time.Sleep(500 * time.Millisecond)
+		slog.Info("I survived the Sniper")
+	}
 	
 	if client := gateway.getClient(c.ClientId); client != nil {
 		client.tx_count += len(transactions)
