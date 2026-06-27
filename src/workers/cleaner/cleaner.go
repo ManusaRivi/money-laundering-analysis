@@ -86,9 +86,8 @@ func (c *Cleaner) Run() error {
 			nack()
 			return
 		}
-		c.coord.Track(clientID, ack)
-		if msgType == protocol.MsgTransactionsEOF {
-			c.coord.Flush()
+		if msgType != protocol.MsgTransactionsEOF {
+			c.coord.Track(clientID, ack)
 		}
 	})
 }

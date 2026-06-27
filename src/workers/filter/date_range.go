@@ -99,9 +99,8 @@ func (f *DateRange) Run() error {
 			nack()
 			return
 		}
-		f.coord.Track(clientID, ack)
-		if msgType == protocol.MsgTransactionsEOF {
-			f.coord.Flush()
+		if msgType != protocol.MsgTransactionsEOF {
+			f.coord.Track(clientID, ack)
 		}
 	})
 }

@@ -115,11 +115,8 @@ func (f *SyncFilter) Run() error {
 			nack()
 			return
 		}
-		if err := f.coord.Track(clientID, ack); err != nil {
-			slog.Error("Error tracking message in checkpoint coordinator", "error", err)
-		}
-		if msgType == protocol.MsgTransactionsEOF {
-			f.coord.Flush()
+		if msgType != protocol.MsgTransactionsEOF {
+			f.coord.Track(clientID, ack)
 		}
 	})
 }
