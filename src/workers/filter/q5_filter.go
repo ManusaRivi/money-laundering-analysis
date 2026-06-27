@@ -196,6 +196,15 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		return err
 	}
 	slog.Debug("Received EOF message", "clientId", clientID, "counts", counts)
+
+	if codec.IsFlushEOF(counts) {
+		delete(f.workerEofReceived, clientID)
+		delete(f.receivedCount, clientID)
+		delete(f.sentCount, clientID)
+		delete(f.expectedPreviousCount, clientID)
+		return f.forwardFlushEOF(clientID)
+	}
+
 	f.workerEofReceived[clientID]++
 	f.expectedPreviousCount[clientID] += counts[broker.KeyNil]
 
@@ -231,6 +240,18 @@ func (f *Q5Filter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 		delete(f.receivedCount, clientID)
 		delete(f.sentCount, clientID)
 		delete(f.expectedPreviousCount, clientID)
+	}
+	return f.coord.Flush()
+}
+
+func (f *Q5Filter) forwardFlushEOF(clientID uuid.UUID) error {
+	eofEnvelope, err := f.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return fmt.Errorf("encoding flush EOF: %w", err)
+	}
+	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", f.cfg.WorkerPrefix, f.cfg.WorkerID), "eof", 0)
+	if err := f.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
+		return fmt.Errorf("sending flush EOF: %w", err)
 	}
 	return f.coord.Flush()
 }

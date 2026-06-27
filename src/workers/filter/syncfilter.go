@@ -117,6 +117,8 @@ func (f *SyncFilter) Run() error {
 		}
 		if msgType != protocol.MsgTransactionsEOF {
 			f.coord.Track(clientID, ack)
+		} else if clientID == uuid.Nil {
+			ack()
 		}
 	})
 }
@@ -138,8 +140,13 @@ func (f *SyncFilter) onflush(clientID uuid.UUID) error {
 }
 
 func (f *SyncFilter) onRetryExceeded(clientID uuid.UUID) error {
-	// TODO: Loguear que el cliente supero el maximo de reintentos y tomar la decision que se considere (ej: emitir un EOF forzado, loguear un error, etc)
-	return nil
+	slog.Warn("[SyncFilter] Retry exceeded for client, sending flush EOF downstream", "client_id", clientID)
+	msgType, key, payload, err := f.resolveEOFOnRetryExceeded()
+	if err != nil {
+		return err
+	}
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	return f.pub.PublishInternalWithID(clientID, msgType, key, payload, eofID)
 }
 
 func (f *SyncFilter) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
@@ -192,6 +199,17 @@ func (f *SyncFilter) resolveEOFMessage(finalSent map[broker.KeyType]int) (protoc
 	eofPayload, err := f.pub.EncodeEOFCounts(finalSent)
 	if err != nil {
 		return 0, broker.KeyNil, nil, fmt.Errorf("encoding EOF counts for EOF envelope: %w", err)
+	}
+	return protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, nil
+}
+
+func (f *SyncFilter) resolveEOFOnRetryExceeded() (protocol.MsgType, broker.KeyType, []byte, error) {
+	if f.cfg.Query == Query1 {
+		return protocol.MsgQuery1ResultEOF, broker.KeyNil, nil, nil
+	}
+	eofPayload, err := f.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return 0, broker.KeyNil, nil, err
 	}
 	return protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, nil
 }

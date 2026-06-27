@@ -156,18 +156,34 @@ func (c *Converter) handleTransactionMessage(envelope protocol.InternalEnvelope)
 func (c *Converter) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
 	slog.Debug("Forwarding EOF to next worker...", "clientID", clientID)
-	counts, err := c.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[clientID]})
+
+	counts, err := c.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(counts) {
+		delete(c.txProcessedCountForClient, clientID)
+		return c.forwardFlushEOF(clientID)
+	}
+
+	eofPayload, err := c.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: c.txProcessedCountForClient[clientID]})
 	if err != nil {
 		slog.Error("Error encoding EOF counts", "error", err)
 		return err
 	}
 	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", c.cfg.WorkerPrefix, c.cfg.WorkerID), "eof", 0)
-	if err := c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, counts, eofID); err != nil {
+	if err := c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID); err != nil {
 		slog.Error("Error sending EOF packet", "error", err)
 		return err
 	}
 	slog.Debug("Sent EOF packet after processing conversion results", "clientID", clientID, "msg_sent", c.txProcessedCountForClient[clientID])
 	return nil
+}
+
+func (c *Converter) forwardFlushEOF(clientID uuid.UUID) error {
+	eofEnvelope, err := c.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return fmt.Errorf("encoding flush EOF: %w", err)
+	}
+	eofID := protocol.StageMsgID(clientID, fmt.Sprintf("%s#%d", c.cfg.WorkerPrefix, c.cfg.WorkerID), "eof", 0)
+	return c.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID)
 }
 
 func (c *Converter) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {

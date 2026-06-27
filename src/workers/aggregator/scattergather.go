@@ -189,6 +189,14 @@ func (a *ScatterGather) handleTxQ4Message(envelope protocol.InternalEnvelope) er
 
 func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) error {
 	clientID := envelope.ClientId
+
+	flushCounts, err := a.pub.DecodeEOFCounts(envelope.Payload)
+	if err == nil && codec.IsFlushEOF(flushCounts) {
+		a.deleteClient(clientID)
+		delete(a.eofCounters, clientID)
+		return a.forwardFlushEOF(clientID)
+	}
+
 	a.eofCounters[clientID]++
 	slog.Debug("Received EOF packet", "clientID", clientID, "counter", a.eofCounters[clientID], "target", a.prevWorkerAmount)
 
@@ -264,6 +272,18 @@ func (a *ScatterGather) handleEOFMessage(envelope protocol.InternalEnvelope) err
 
 	a.deleteClient(clientID)
 	delete(a.eofCounters, clientID)
+	return a.coord.Flush()
+}
+
+func (a *ScatterGather) forwardFlushEOF(clientID uuid.UUID) error {
+	eofEnvelope, err := a.pub.EncodeEOFCountsEnvelope(clientID, map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return fmt.Errorf("encoding flush EOF: %w", err)
+	}
+	eofID := protocol.StageMsgID(clientID, a.stage(), "eof", 0)
+	if err := a.pub.PublishRawWithID(broker.KeyControlEOF, eofEnvelope, eofID); err != nil {
+		return fmt.Errorf("sending flush EOF: %w", err)
+	}
 	return a.coord.Flush()
 }
 

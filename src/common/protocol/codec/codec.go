@@ -993,6 +993,15 @@ func (BinaryCodec) DecodeEOFCounts(payload []byte) (map[broker.KeyType]int, erro
 	return counts, nil
 }
 
+func IsFlushEOF(counts map[broker.KeyType]int) bool {
+	for _, v := range counts {
+		if v == -1 {
+			return true
+		}
+	}
+	return false
+}
+
 // --- batch framing ---
 
 // encodeBatch serialises a slice of T into the standard result-batch layout

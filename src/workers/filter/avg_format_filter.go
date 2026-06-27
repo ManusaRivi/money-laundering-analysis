@@ -124,6 +124,8 @@ func (f *AvgFormatFilter) Run() error {
 			}
 			if msgType != protocol.MsgTransactionsEOF {
 				f.coord.Track(clientID, ack)
+			} else if clientID == uuid.Nil {
+				ack()
 			}
 		})
 	}()
@@ -248,6 +250,17 @@ func (f *AvgFormatFilter) handleAvgEOF(envelope protocol.InternalEnvelope) error
 
 	f.mu.Lock()
 	client := f.getOrCreateClientLocked(envelope.ClientId)
+
+	if codec.IsFlushEOF(counts) {
+		if !client.done {
+			client.done = true
+			close(client.doneCh)
+			slog.Debug("Avg flush EOF for client", "client_id", envelope.ClientId)
+		}
+		f.mu.Unlock()
+		return nil
+	}
+
 	client.eofCount++
 	for _, c := range counts {
 		client.expected += c
@@ -359,12 +372,24 @@ func (f *AvgFormatFilter) onflush(clientID uuid.UUID) error {
 		return err
 	}
 	f.mu.Lock()
+	if client, ok := f.clients[clientID]; ok {
+		if !client.done {
+			client.done = true
+			close(client.doneCh)
+		}
+	}
 	delete(f.clients, clientID)
 	f.mu.Unlock()
 	return nil
 }
 
 func (f *AvgFormatFilter) onRetryExceeded(clientID uuid.UUID) error {
+	slog.Warn("[AvgFormatFilter] Retry exceeded for client, sending flush EOF downstream", "client_id", clientID)
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	if err := f.pub.PublishInternalWithID(clientID, protocol.MsgQuery3ResultEOF, broker.KeyNil, nil, eofID); err != nil {
+		slog.Error("[AvgFormatFilter] Error sending forced EOF after retry exceeded", "error", err)
+		return err
+	}
 	return nil
 }
 
