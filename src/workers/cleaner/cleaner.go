@@ -88,6 +88,8 @@ func (c *Cleaner) Run() error {
 		}
 		if msgType != protocol.MsgTransactionsEOF {
 			c.coord.Track(clientID, ack)
+		} else if clientID == uuid.Nil {
+			ack()
 		}
 	})
 }
@@ -117,8 +119,13 @@ func (c *Cleaner) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType
 }
 
 func (c *Cleaner) onRetryExceeded(clientID uuid.UUID) error {
-	// TODO: Loguear que el cliente supero el maximo de reintentos y tomar la decision que se considere (ej: emitir un EOF forzado, loguear un error, etc)
-	return nil
+	slog.Warn("[Cleaner] Retry exceeded for client, sending flush EOF downstream", "client_id", clientID)
+	eofPayload, err := c.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return err
+	}
+	eofID := protocol.StageMsgID(clientID, c.cfg.WorkerPrefix, "eof", 0)
+	return c.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID)
 }
 
 func (c *Cleaner) Stop() {

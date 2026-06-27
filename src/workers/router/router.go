@@ -93,6 +93,8 @@ func (r *Router) Run() error {
 		}
 		if msgType != protocol.MsgTransactionsEOF {
 			r.coord.Track(clientID, ack)
+		} else if clientID == uuid.Nil {
+			ack()
 		}
 	})
 }
@@ -155,7 +157,13 @@ func (r *Router) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]
 }
 
 func (r *Router) onRetryExceeded(clientID uuid.UUID) error {
-	return nil
+	slog.Warn("[Router] Retry exceeded for client, sending flush EOF downstream", "client_id", clientID)
+	eofCounts, err := r.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return err
+	}
+	eofID := protocol.StageMsgID(clientID, r.cfg.WorkerPrefix, "eof", 0)
+	return r.encodeAndSendBatch(clientID, protocol.MsgTransactionsEOF, eofCounts, broker.KeyControlEOF, 0, eofID)
 }
 
 func (r *Router) handleTransactionMessage(envelope protocol.InternalEnvelope) error {

@@ -101,6 +101,8 @@ func (f *DateRange) Run() error {
 		}
 		if msgType != protocol.MsgTransactionsEOF {
 			f.coord.Track(clientID, ack)
+		} else if clientID == uuid.Nil {
+			ack()
 		}
 	})
 }
@@ -115,9 +117,13 @@ func (f *DateRange) onflush(clientID uuid.UUID) error {
 }
 
 func (f *DateRange) onRetryExceeded(clientID uuid.UUID) error {
-	// TODO: Loguear que el cliente supero el maximo de reintentos y tomar la decision que se considere (ej: emitir un EOF forzado, loguear un error, etc)
-	slog.Warn("Client exceeded max retries for EOF synchronization", "clientID", clientID)
-	return nil
+	slog.Warn("[DateRange] Retry exceeded for client, sending flush EOF downstream", "client_id", clientID)
+	eofPayload, err := f.pub.EncodeEOFCounts(map[broker.KeyType]int{broker.KeyNil: -1})
+	if err != nil {
+		return err
+	}
+	eofID := protocol.StageMsgID(clientID, f.cfg.WorkerPrefix, "eof", 0)
+	return f.pub.PublishInternalWithID(clientID, protocol.MsgTransactionsEOF, broker.KeyControlEOF, eofPayload, eofID)
 }
 
 func (f *DateRange) onLeaderFlush(clientID uuid.UUID, finalSent map[broker.KeyType]int) error {
