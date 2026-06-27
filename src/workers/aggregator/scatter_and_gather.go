@@ -673,12 +673,6 @@ func (a *ScatterAndGather) isCompleted(clientID uuid.UUID) bool {
 	return ok
 }
 
-func (a *ScatterAndGather) forgetCompleted(clientID uuid.UUID) {
-	a.completedMu.Lock()
-	delete(a.completed, clientID)
-	a.completedMu.Unlock()
-}
-
 func (a *ScatterAndGather) dropClientState(clientID uuid.UUID) {
 	a.clientsMu.Lock()
 	delete(a.clients, clientID)

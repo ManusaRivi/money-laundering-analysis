@@ -27,17 +27,11 @@ type joinCheckpoint struct {
 	Finalized   bool              `json:"finalized,omitempty"`
 }
 
-// cachedBatch holds a transaction batch that arrived before the accounts were
-// complete, together with its input MsgID so the join it eventually produces can
-// be emitted with a deterministic, restart-stable id.
 type cachedBatch struct {
 	MsgID protocol.MsgID         `json:"msg_id"`
 	Txs   []protocol.Transaction `json:"txs"`
 }
 
-// Join builds Query2Result records by joining max-amount transactions (received
-// from an upstream sum aggregator) with bank account info (received directly
-// from the gateway on a separate queue).
 type Join struct {
 	cfg            config.WorkerConfig
 	resultsBroker  broker.Broker
@@ -48,22 +42,12 @@ type Join struct {
 
 	previousWorkerAmount int
 
-	// procMu serializes the two consumer goroutines: it is held across the whole
-	// handle + Track sequence (see process), so only one message is in flight at
-	// a time and a checkpoint flush (inside Track) can never interleave with the
-	// other goroutine's handler and capture an inconsistent state/dedup snapshot.
-	// All maps below — and SnapshotClient/RestoreClient — are covered by it; the
-	// snapshot/restore paths run under it (flush) or at startup, so they do not
-	// re-acquire it.
 	procMu              sync.Mutex
 	workerEofReceived   map[uuid.UUID]int
 	accountsEofReceived map[uuid.UUID]bool
 	finalized           map[uuid.UUID]bool
 	bankNamesPerCli     map[uuid.UUID]map[string]string
-	// txCachePerCl buffers transaction batches only while the bank table is still
-	// incomplete (before the accounts EOF). Once accounts are complete it is
-	// drained and stays empty — later batches are joined and emitted on arrival.
-	txCachePerCl map[uuid.UUID][]cachedBatch
+	txCachePerCl        map[uuid.UUID][]cachedBatch
 }
 
 func NewJoin(cfg config.WorkerConfig, resultsBroker broker.Broker) (*Join, error) {
@@ -130,10 +114,6 @@ func (j *Join) Stop() {
 
 // Private Methods
 
-// process serializes the two consumer goroutines. procMu is held across the
-// whole handle + Track sequence so a checkpoint flush cannot interleave with the
-// sibling goroutine's handler — which would snapshot state and dedup at
-// different instants and (for the EOF counters) double-count on restart.
 func (j *Join) process(handle func(broker.Message) (uuid.UUID, protocol.MsgType, error), msg broker.Message, ack, nack func()) {
 	j.procMu.Lock()
 	defer j.procMu.Unlock()
@@ -147,7 +127,7 @@ func (j *Join) process(handle func(broker.Message) (uuid.UUID, protocol.MsgType,
 		slog.Error("Error tracking message in checkpoint coordinator", "error", err)
 	}
 	finalized := j.finalized[clientID]
-	if msgType == protocol.MsgTransactionsEOF || finalized {
+	if msgType == protocol.MsgAccountsEOF || msgType == protocol.MsgTransactionsEOF || finalized {
 		if err := j.coord.Flush(); err != nil {
 			slog.Error("Error flushing checkpoint coordinator", "error", err)
 		}

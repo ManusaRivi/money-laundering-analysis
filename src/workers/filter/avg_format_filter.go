@@ -2,6 +2,7 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -48,7 +49,12 @@ type AvgFormatFilter struct {
 
 	syncEOFController *eof.SyncEOFController
 	syncEOFKey        broker.KeyType
+
+	closeCh   chan struct{}
+	closeOnce sync.Once
 }
+
+var errAvgWaitInterrupted = errors.New("avg wait interrupted by shutdown")
 
 func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBroker broker.Broker) (*AvgFormatFilter, error) {
 	multiplier, ok := cfg.Params["multiplier"].(float64)
@@ -65,6 +71,7 @@ func NewAvgFormatFilter(cfg config.WorkerConfig, txBroker broker.Broker, avgBrok
 		pub:           messaging.New(codec.New(), txBroker),
 		clients:       make(map[uuid.UUID]*Client),
 		syncEOFKey:    eof.SyncKeyFromInputKeys(cfg.SyncEOFConfig.InputKeys),
+		closeCh:       make(chan struct{}),
 	}
 	return f, nil
 }
@@ -132,6 +139,7 @@ func (f *AvgFormatFilter) Run() error {
 }
 
 func (f *AvgFormatFilter) Stop() {
+	f.closeOnce.Do(func() { close(f.closeCh) })
 	if f.syncEOFController != nil {
 		f.syncEOFController.Stop()
 	}
@@ -197,16 +205,21 @@ func (f *AvgFormatFilter) getOrCreateClientLocked(clientID uuid.UUID) *Client {
 	return client
 }
 
-func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) {
+func (f *AvgFormatFilter) waitAvgDone(clientID uuid.UUID) bool {
 	f.mu.Lock()
 	client := f.getOrCreateClientLocked(clientID)
 	if client.done {
 		f.mu.Unlock()
-		return
+		return true
 	}
 	ch := client.doneCh
 	f.mu.Unlock()
-	<-ch
+	select {
+	case <-ch:
+		return true
+	case <-f.closeCh:
+		return false
+	}
 }
 
 func (f *AvgFormatFilter) handleAvgMessage(msg broker.Message) (uuid.UUID, protocol.MsgType, error) {
@@ -289,7 +302,9 @@ func (f *AvgFormatFilter) handleTransactionBatch(envelope protocol.InternalEnvel
 		return err
 	}
 
-	f.waitAvgDone(envelope.ClientId)
+	if !f.waitAvgDone(envelope.ClientId) {
+		return errAvgWaitInterrupted
+	}
 
 	f.mu.Lock()
 	client := f.clients[envelope.ClientId]
