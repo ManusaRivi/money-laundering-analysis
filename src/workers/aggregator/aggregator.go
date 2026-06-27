@@ -83,12 +83,12 @@ func NewAggregator(cfg config.WorkerConfig, b broker.Broker) (*Aggregator, error
 func (a *Aggregator) Run() error {
 	defer a.Broker.StopConsuming()
 
-	checkpointManager, err := checkpoint.NewManager(a.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(a.cfg.CheckpointDir, a.pub, nil, a, a.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	a.coord = checkpoint.NewCoordinator(checkpointManager, a.pub, nil, a, a.cfg.CheckpointInterval)
+	a.coord = coord
 	if err := a.coord.Recover(); err != nil {
 		return err
 	}
@@ -302,10 +302,6 @@ func (a *Aggregator) handleMessage(msg broker.Message) (uuid.UUID, protocol.MsgT
 	return clientID, msgType, err
 }
 
-// emitUngroupedCount emits the running count for clientID as a query-result
-// packet plus the matching query-EOF packet, then clears the per-client
-// counter. Only query 5 is wired today; extend the switch as other queries
-// adopt ungrouped count.
 func (a *Aggregator) emitUngroupedCount(clientID uuid.UUID) error {
 	count := a.countState[clientID]
 	delete(a.countState, clientID)

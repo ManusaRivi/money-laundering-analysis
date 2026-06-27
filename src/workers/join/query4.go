@@ -57,12 +57,12 @@ func (j *Query4) Run() error {
 		j.broker.StopConsuming()
 	}()
 
-	checkpointManager, err := checkpoint.NewManager(j.cfg.CheckpointDir)
+	coord, err := checkpoint.NewCoordinator(j.cfg.CheckpointDir, j.pub, nil, j, j.cfg.CheckpointInterval)
 	if err != nil {
-		slog.Error("Error creating checkpoint manager", "error", err)
+		slog.Error("Error creating checkpoint coordinator", "error", err)
 		return err
 	}
-	j.coord = checkpoint.NewCoordinator(checkpointManager, j.pub, nil, j, j.cfg.CheckpointInterval)
+	j.coord = coord
 	if err := j.coord.Recover(); err != nil {
 		return err
 	}
